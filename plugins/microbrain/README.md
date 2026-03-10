@@ -4,12 +4,12 @@ Reactive SQLite memory system for AI coding agents. Memories survive context com
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
-│                     MICROBRAIN ARCHITECTURE                    │
+│                     MICROBRAIN ARCHITECTURE                   │
 ├───────────────────────────────────────────────────────────────┤
 │                                                               │
 │  PLUGIN (.opencode/plugins/microbrain.ts)                     │
 │  +── session.created  → auto-load high-importance memories    │
-│  +── session.compacting → extract + save (LLM/heuristic)     │
+│  +── session.compacting → extract + save (LLM/heuristic)      │
 │  +── registers custom tools:                                  │
 │      +── memory_search  → FTS5 full-text search               │
 │      +── memory_save    → insert/update with validation       │
@@ -20,7 +20,7 @@ Reactive SQLite memory system for AI coding agents. Memories survive context com
 │  +── .opencode/memory.db (SQLite + FTS5)                      │
 │                                                               │
 │  OPTIONAL LLM                                                 │
-│  +── .opencode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf      │
+│  +── .opencode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf       │
 │      (used for extraction on compaction, ~500MB)              │
 │                                                               │
 └───────────────────────────────────────────────────────────────┘
