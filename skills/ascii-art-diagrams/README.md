@@ -54,9 +54,9 @@ src/
 
 ```
 ┌────────┬──────────────────────────────────────────┐
-│        │  Cache is NOT invalidated during          │
-│  NOTE  │  batch operations!                        │
-│        │  Results may be stale until refresh.      │
+│        │  Cache is NOT invalidated during         │
+│  NOTE  │  batch operations!                       │
+│        │  Results may be stale until refresh.     │
 └────────┴──────────────────────────────────────────┘
 ```
 
