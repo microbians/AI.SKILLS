@@ -2,58 +2,64 @@
 
 Reactive SQLite memory system for AI coding agents. Memories survive context compaction and are available across sessions.
 
-## Architecture
-
 ```
-+-----------------------------------------------------------------+
-|                     MICROBRAIN ARCHITECTURE                      |
-+-----------------------------------------------------------------+
-|                                                                  |
-|  PLUGIN (.opencode/plugins/microbrain.ts)                        |
-|  +-- session.created  -> auto-load high-importance memories      |
-|  +-- session.compacting -> extract + save memories (LLM/heurist)|
-|  +-- registers custom tools:                                     |
-|      +-- memory_search  -> FTS5 full-text search                 |
-|      +-- memory_save    -> insert/update with validation         |
-|      +-- memory_delete  -> delete memories by ID                 |
-|      +-- memory_stats   -> overview of stored knowledge          |
-|                                                                  |
-|  STORAGE                                                         |
-|  +-- .opencode/memory.db (SQLite + FTS5)                         |
-|                                                                  |
-|  OPTIONAL LLM                                                    |
-|  +-- .opencode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf         |
-|      (used for extraction on compaction, ~500MB)                  |
-|                                                                  |
-+-----------------------------------------------------------------+
+┌───────────────────────────────────────────────────────────────┐
+│                     MICROBRAIN ARCHITECTURE                    │
+├───────────────────────────────────────────────────────────────┤
+│                                                               │
+│  PLUGIN (.opencode/plugins/microbrain.ts)                     │
+│  +── session.created  → auto-load high-importance memories    │
+│  +── session.compacting → extract + save (LLM/heuristic)     │
+│  +── registers custom tools:                                  │
+│      +── memory_search  → FTS5 full-text search               │
+│      +── memory_save    → insert/update with validation       │
+│      +── memory_delete  → delete memories by ID               │
+│      +── memory_stats   → overview of stored knowledge        │
+│                                                               │
+│  STORAGE                                                      │
+│  +── .opencode/memory.db (SQLite + FTS5)                      │
+│                                                               │
+│  OPTIONAL LLM                                                 │
+│  +── .opencode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf      │
+│      (used for extraction on compaction, ~500MB)              │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 ## How it works
 
 ### Automatic behaviors (no agent action needed)
 
-- **Session start**: Loads the 8 most important memories (importance >= 4) and injects them as context
-- **Context compaction**: Extracts learnings from the conversation (via local LLM or heuristic fallback) and saves them to SQLite before context is compacted
+- **Session start:** Loads the 8 most important memories (importance >= 4) and injects them as context
+- **Context compaction:** Extracts learnings from the conversation (via local LLM or heuristic fallback) and saves them to SQLite before context is compacted
 
 ### Custom tools (agent calls when needed)
 
-| Tool | Description |
-|------|-------------|
-| `memory_search` | FTS5 full-text search. Filter by type, file, importance. |
-| `memory_save` | Save a learning. Auto-deduplicates (updates if subject matches). |
-| `memory_delete` | Delete one or more memories by ID. |
-| `memory_stats` | Overview: total count, by type/importance, recent entries. |
+```
+┌─────────────────┬─────────────────────────────────────────────┐
+│  Tool           │  Description                                │
+├─────────────────┼─────────────────────────────────────────────┤
+│  memory_search  │  FTS5 full-text search by type/file/score   │
+│  memory_save    │  Save learning, auto-dedup by subject       │
+│  memory_delete  │  Delete one or more memories by ID          │
+│  memory_stats   │  Count by type, importance, recent entries  │
+└─────────────────┴─────────────────────────────────────────────┘
+```
 
 ## Memory types
 
-| Type | Purpose |
-|------|---------|
-| `error` | Bugs + solutions |
-| `api` | Correct API usage |
-| `decision` | Design choices |
-| `pattern` | Code patterns / best practices |
-| `context` | File/module purpose |
-| `preference` | User preferences |
+```
+┌──────────────┬────────────────────────────────────────────────┐
+│  Type        │  Purpose                                       │
+├──────────────┼────────────────────────────────────────────────┤
+│  error       │  Bugs + solutions                              │
+│  api         │  Correct API usage                             │
+│  decision    │  Design choices                                │
+│  pattern     │  Code patterns / best practices                │
+│  context     │  File/module purpose                           │
+│  preference  │  User preferences                              │
+└──────────────┴────────────────────────────────────────────────┘
+```
 
 ## Quick install
 
@@ -86,12 +92,12 @@ See [INSTALL.md](INSTALL.md) for full installation details and troubleshooting.
 
 ```
 plugins/microbrain/
-+-- README.md               <- This file
-+-- INSTALL.md              <- Full installation guide
-+-- package.json.example    <- Example .opencode/package.json
-+-- plugins/
-    +-- microbrain.ts       <- The plugin (copy to .opencode/plugins/)
-    +-- README.md           <- Technical reference docs
++── README.md               ← This file
++── INSTALL.md              ← Full installation guide
++── package.json.example    ← Example .opencode/package.json
++── plugins/
+    +── microbrain.ts       ← The plugin (copy to .opencode/plugins/)
+    +── README.md           ← Technical reference docs
 ```
 
 ## Requirements

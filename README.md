@@ -4,18 +4,39 @@ Skills, plugins, and tools for AI coding agents (OpenCode, Claude Code).
 
 A collection of drop-in components that give AI agents persistent memory, safer coding habits, auto-generated documentation, and better local development workflows.
 
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│  AI.SKILLS                                                          │
+│                                                                     │
+│  skills/                                                            │
+│  ├── ascii-art-diagrams/       Unicode diagram formatting rules     │
+│  ├── defensive-development/    Verify-first coding practices        │
+│  ├── project-structure/        Auto-gen directory structure docs    │
+│  └── project-api/              Auto-gen API reference docs          │
+│                                                                     │
+│  plugins/                                                           │
+│  └── microbrain/               Persistent SQLite memory system      │
+│                                                                     │
+│  tools/                                                             │
+│  └── microlocalhostproxy/      Smart port + subdomain routing       │
+│                                                                     │
+│  boilerplate/                  Project template + instructions       │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
 ---
 
 ## Table of Contents
 
 - [Skills](#skills)
-  - [Microbrain (skill)](#microbrain-skill)
   - [Defensive Development](#defensive-development)
   - [ASCII Art Diagrams](#ascii-art-diagrams)
   - [Project Structure](#project-structure)
   - [Project API](#project-api)
 - [Plugins](#plugins)
-  - [Microbrain (plugin)](#microbrain-plugin)
+  - [Microbrain](#microbrain)
 - [Tools](#tools)
   - [Microlocalhostproxy](#microlocalhostproxy)
 - [Boilerplate](#boilerplate)
@@ -29,23 +50,6 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 
 Skill files (`.md`) that teach the agent specific behaviors and workflows. Drop them into `.claude/skills/` or `.opencode/skills/` and the agent picks them up automatically.
 
-### Microbrain (skill)
-
-> [`boilerplate/.opencode/skills/microbrain/`](boilerplate/.opencode/skills/microbrain/)
-
-Reactive SQLite memory system that runs as a skill with a PreCompact hook. The agent stores learnings (bug fixes, API patterns, design decisions, user preferences) in a local SQLite database with FTS5 full-text search. Memories survive context compaction and are loaded automatically at the start of every session.
-
-**Key features:**
-- SQLite database with full-text search (FTS5) for instant recall
-- PreCompact hook that extracts learnings before context is compacted, using a local LLM (Qwen 2.5 0.5B, ~500MB) or heuristic pattern matching as fallback
-- Six memory types: `error`, `api`, `decision`, `pattern`, `context`, `preference`
-- Five importance levels for prioritized recall
-- Session tracking with summaries
-- Self-installing: the agent detects a missing database and sets it up
-
-**Includes:** `SKILL.md`, `INSTALL.md`, `README.md`, `install.sh`, `hooks/pre-compact.js`, `package.json`
-
----
 
 ### Defensive Development
 
@@ -53,12 +57,27 @@ Reactive SQLite memory system that runs as a skill with a PreCompact hook. The a
 
 A set of verification-first coding practices that prevent the most common AI agent mistakes: inventing property names, forgetting imports, calling methods that don't exist, and breaking code during refactors.
 
+```
+┌───────────────────────────────────────────────────────────────┐
+│                                                               │
+│  DEFENSIVE DEVELOPMENT                                        │
+│                                                               │
+│  Protocol: READ → MAP → LIST → PRESENT → WAIT → EXECUTE      │
+│                                                               │
+│  Before editing     Read the file first, verify API names     │
+│  Before deleting    Confirmation based on line count          │
+│  Before refactoring Grep ALL references across codebase       │
+│  Before debugging   Add logs first, then change code          │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
+
 **Key features:**
-- **READ-VERIFY protocol:** Read -> Map -> List -> Present -> Wait -> Execute -> Verify
-- **API discovery rules:** how to find properties, constructors, getters/setters before using them
-- **Safe refactoring:** grep all references (code, tests, docs, config, comments) before renaming
-- **Deletion thresholds:** confirmation required based on line count (1-10 proceed, 11-50 explain, 51-100 justify, 100+ break into smaller operations)
-- **Debug first:** add logs before changing code
+- READ-VERIFY protocol for every file operation
+- API discovery rules: find properties, constructors, getters/setters before using them
+- Safe refactoring: grep all references (code, tests, docs, config, comments)
+- Deletion thresholds: 1-10 proceed, 11-50 explain, 51-100 justify, 100+ break down
+- Debug first: add logs before changing code
 
 **Includes:** `SKILL.md`, `README.md`
 
@@ -68,14 +87,19 @@ A set of verification-first coding practices that prevent the most common AI age
 
 > [`skills/ascii-art-diagrams/`](skills/ascii-art-diagrams/)
 
-Rules for the agent to generate consistent, well-formatted ASCII diagrams using Unicode box-drawing characters. Ensures boxes have equal-length lines, trees use proper spacers, arrows sit on their own line, and formatting stays consistent across the project.
+Rules for the agent to generate consistent, well-formatted ASCII diagrams using Unicode box-drawing characters.
 
-**Key features:**
-- Box drawing with equal-length lines and correct corners (`+---+`, `|   |`)
-- File trees with `|` spacers between siblings and empty lines after root
-- Arrows on their own line, never inline with text
-- Titles use `---` separators
-- Optimized for Fira Code / monospace fonts at line-height 1
+```
+┌─────────────────────────────────────────────────────────┐
+│                                                         │
+│  Boxes     Equal-length lines, correct corners          │
+│  Trees     │ spacers between siblings                   │
+│  Arrows    Own line, never inline with text              │
+│  Titles    ─── separators (not ═══)                     │
+│  Font      Fira Code recommended, line-height 1         │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
 
 **Includes:** `SKILL.md`, `README.md`
 
@@ -85,14 +109,25 @@ Rules for the agent to generate consistent, well-formatted ASCII diagrams using 
 
 > [`skills/project-structure/`](skills/project-structure/)
 
-Self-healing skill that auto-generates and maintains a `.claude/structure.md` file documenting the project's directory tree, key files, their purposes, and relationships. The agent runs it on the first session or whenever the structure seems outdated.
+Self-healing skill that auto-generates and maintains a `.claude/structure.md` file documenting the project's directory tree, key files, their purposes, and relationships.
 
-**Key features:**
-- Generates annotated directory tree via `find` and file analysis
-- Excludes `node_modules`, `dist`, `build`, dotfiles
-- Identifies entry points, configs, and test directories
-- Self-healing: regenerates when missing or outdated
-- Works with any JavaScript/TypeScript project
+```
+┌───────────────────────────────────────────────────────────────┐
+│                                                               │
+│  PROJECT STRUCTURE SKILL                                      │
+│                                                               │
+│  1. Agent detects .claude/structure.md is missing             │
+│     │                                                         │
+│     ├── Scans codebase with find + file analysis              │
+│     │                                                         │
+│     ├── Builds annotated directory tree                       │
+│     │                                                         │
+│     └── Writes organized docs to .claude/structure.md         │
+│                                                               │
+│  2. Self-healing: regenerates when outdated                   │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
 
 **Includes:** `SKILL.md`, `README.md`
 
@@ -104,12 +139,21 @@ Self-healing skill that auto-generates and maintains a `.claude/structure.md` fi
 
 Self-healing skill that auto-generates and maintains a `.claude/api.md` reference documenting the project's public API: classes with methods, inheritance hierarchies, constructor parameters, and exported functions.
 
-**Key features:**
-- Extracts class hierarchies (`Parent -> Child`)
-- Lists methods, constructors, getters/setters per class
-- Catalogs standalone exported functions with parameters
-- Self-healing: regenerates when missing or after major code changes
-- Uses `grep`/`awk` to scan `*.js` and `*.ts` files
+```
+┌───────────────────────────────────────────────────────────────┐
+│                                                               │
+│  PROJECT API SKILL                                            │
+│                                                               │
+│  Extracts:                                                    │
+│  +── Class hierarchies (Parent → Child)                       │
+│  +── Methods, constructors, getters/setters                   │
+│  +── Standalone exported functions with parameters            │
+│                                                               │
+│  Output: .claude/api.md                                       │
+│  Self-healing: regenerates when missing or after major changes│
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
 
 **Includes:** `SKILL.md`, `README.md`
 
@@ -119,21 +163,44 @@ Self-healing skill that auto-generates and maintains a `.claude/api.md` referenc
 
 Full-featured plugins with runtime logic that hook into the agent's lifecycle events.
 
-### Microbrain (plugin)
+
+### Microbrain
 
 > [`plugins/microbrain/`](plugins/microbrain/)
 
-The plugin version of Microbrain for OpenCode's plugin system. A single TypeScript file that registers custom tools and lifecycle hooks directly in the agent runtime, without needing external scripts or shell hooks.
+Persistent SQLite memory system for OpenCode. A single TypeScript file that registers custom tools and lifecycle hooks directly in the agent runtime.
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│                     MICROBRAIN ARCHITECTURE                    │
+├───────────────────────────────────────────────────────────────┤
+│                                                               │
+│  PLUGIN (.opencode/plugins/microbrain.ts)                     │
+│  +── session.created  → auto-load high-importance memories    │
+│  +── session.compacting → extract + save (LLM/heuristic)     │
+│  +── registers custom tools:                                  │
+│      +── memory_search  → FTS5 full-text search               │
+│      +── memory_save    → insert/update with validation       │
+│      +── memory_delete  → delete memories by ID               │
+│      +── memory_stats   → overview of stored knowledge        │
+│                                                               │
+│  STORAGE                                                      │
+│  +── .opencode/memory.db (SQLite + FTS5)                      │
+│                                                               │
+│  OPTIONAL LLM                                                 │
+│  +── .opencode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf      │
+│      (used for extraction on compaction, ~500MB)              │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
 
 **Key features:**
-- **`session.created` event:** auto-loads the 8 most important memories and injects them as context
-- **`session.compacting` event:** extracts learnings via local LLM or heuristic fallback and saves to SQLite before compaction
-- **`memory_search` tool:** FTS5 full-text search with filters by type, file, importance
-- **`memory_save` tool:** save learnings with validation, auto-deduplication (updates if subject matches)
-- **`memory_delete` tool:** delete memories by ID
-- **`memory_stats` tool:** overview of stored knowledge (counts by type, importance, recent entries)
-- Automatic database creation with schema, triggers, and FTS indexes
-- Input sanitization for LLM (strips control tokens, HTML tags, non-printable characters)
+- Auto-loads the 8 most important memories at session start
+- Auto-extracts learnings before context compaction (LLM or heuristic fallback)
+- FTS5 full-text search with filters by type, file, importance
+- Auto-deduplication (updates if subject matches)
+- Six memory types: `error`, `api`, `decision`, `pattern`, `context`, `preference`
+- Bilingual pattern matching (English + Spanish)
 
 **Includes:** `plugins/microbrain.ts`, `plugins/README.md`, `INSTALL.md`, `package.json.example`
 
@@ -145,26 +212,36 @@ The plugin version of Microbrain for OpenCode's plugin system. A single TypeScri
 
 Standalone utilities for development workflows. Not tied to the agent's skill system.
 
+
 ### Microlocalhostproxy
 
 > [`tools/microlocalhostproxy/`](tools/microlocalhostproxy/)
 
-Smart port resolution and local subdomain routing for Node.js dev servers on macOS. Solves two problems: port conflicts between projects, and remembering port numbers.
+Smart port resolution and local subdomain routing for Node.js dev servers on macOS.
 
-**Port resolution:**
-1. Port free -- uses it directly
-2. Port occupied by THIS project -- kills the old process, reuses the port
-3. Port occupied by ANOTHER project -- finds the next free port (up to +20)
-
-Detection uses `lsof` to get the PID on the port, then checks if its working directory is inside the current project root.
-
-**Devproxy (optional):** Routes `myproject.localhost` -> `localhost:PORT` via a central reverse proxy daemon at `~/.config/devproxy/`. First run auto-installs dnsmasq + pfctl rules. Subsequent runs just register the subdomain. Works in Safari, Chrome, Firefox -- no `/etc/hosts` editing.
-
-**Two patterns included:**
-- **Pattern A:** Single server (Next.js, Vite, Express)
-- **Pattern B:** Multi-process (frontend + backend on separate ports)
-
-Also includes AGENTS.md templates for both patterns and gotchas documentation.
+```
+┌───────────────────────────────────────────────────────────────┐
+│                                                               │
+│  MICROLOCALHOSTPROXY                                          │
+│                                                               │
+│  Browser → myapp.localhost:80                                 │
+│         → pfctl redirect → 127.0.0.1:8080                    │
+│         → devproxy (central proxy) → routes by Host header    │
+│         → 127.0.0.1:3001 (your dev server)                   │
+│                                                               │
+├───────────────────────────────────────────────────────────────┤
+│                                                               │
+│  PORT RESOLUTION                                              │
+│  +── Port free         → use it directly                      │
+│  +── Occupied by US    → kill old process, reuse port         │
+│  +── Occupied by OTHER → find next free port (up to +20)      │
+│                                                               │
+│  PATTERNS                                                     │
+│  +── Pattern A: Single server (Next.js, Vite, Express)        │
+│  +── Pattern B: Multi-process (frontend + backend)            │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
 
 **Includes:** `microlocalhostproxy.md` (full docs, code, templates), `README.md`
 
@@ -176,31 +253,31 @@ Also includes AGENTS.md templates for both patterns and gotchas documentation.
 
 > [`boilerplate/`](boilerplate/)
 
-Ready-to-use project template with all skills pre-configured. Copy into any new project and start working with a fully equipped AI agent.
+Project template with configuration files and instructions. No pre-installed components -- you choose what to install.
 
-**What's included:**
-- **AGENTS.md** -- Agent instructions template with placeholders (`{{PROJECT_NAME}}`, `{{TECH_STACK}}`, `{{PORT}}`, etc.)
-- **`.opencode/skills/`** -- All 5 skills pre-installed (microbrain, defensive-development, project-structure, project-api, ascii-art-diagrams)
-- **`.opencode/settings.json`** -- PreCompact hook configured for automatic memory extraction
-- **`.opencode/commands/`** -- Empty directory for custom slash commands
-- **`.gitignore`** -- Standard ignores for agent-powered projects (`.claude/`, `.opencode/`, `.env`, `node_modules/`, etc.)
-- **`tasks/`** -- Planning docs folder
-- **`SETUP.md`** -- Step-by-step setup guide
+```
+┌───────────────────────────────────────────────────────────────┐
+│                                                               │
+│  BOILERPLATE                                                  │
+│                                                               │
+│  +── AGENTS.md      Agent instructions template               │
+│  +── .gitignore     Standard ignores for agent projects       │
+│  +── tasks/         Planning docs folder                      │
+│  +── SETUP.md       Step-by-step install guide                │
+│                                                               │
+│  Placeholders: {{PROJECT_NAME}}, {{TECH_STACK}}, {{PORT}}     │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
 
 **Quick start:**
 ```bash
-# Copy to your project
-cp -r boilerplate/.opencode /path/to/your/project/
 cp boilerplate/AGENTS.md /path/to/your/project/
 cp boilerplate/.gitignore /path/to/your/project/
-
-# Symlink for Claude Code compatibility
-cd /path/to/your/project && ln -s .opencode .claude
-
-# Initialize microbrain
-.opencode/skills/microbrain/install.sh --with-llm
-
-# Customize AGENTS.md (replace {{placeholders}})
+mkdir -p /path/to/your/project/.opencode/skills
+mkdir -p /path/to/your/project/.opencode/plugins
+ln -s .opencode .claude
+# Install skills/plugins you need (see boilerplate/SETUP.md)
 ```
 
 See [`boilerplate/SETUP.md`](boilerplate/SETUP.md) for the full guide.
@@ -224,18 +301,22 @@ cp plugins/microbrain/plugins/microbrain.ts /path/to/project/.opencode/plugins/
 cd /path/to/project && ln -s .opencode .claude
 ```
 
-Or use the [boilerplate](#boilerplate) to get everything at once.
+Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 ---
 
 ## Compatibility
 
-| Platform | Support |
-|----------|---------|
-| **OpenCode** | Native via `.opencode/skills/` and `.opencode/plugins/` |
-| **Claude Code** | Via `.claude/` symlink to `.opencode/` |
-| **macOS** | Full support. Tools require macOS (lsof, pfctl, dnsmasq) |
-| **Linux** | Skills and plugins work. Tools (microlocalhostproxy) are macOS-only |
+```
+┌──────────────┬────────────────────────────────────────────────┐
+│  Platform    │  Support                                       │
+├──────────────┼────────────────────────────────────────────────┤
+│  OpenCode    │  Native (.opencode/skills/ and /plugins/)      │
+│  Claude Code │  Via .claude/ symlink to .opencode/            │
+│  macOS       │  Full support (tools require lsof, pfctl)      │
+│  Linux       │  Skills and plugins work. Tools are macOS-only │
+└──────────────┴────────────────────────────────────────────────┘
+```
 
 ---
 

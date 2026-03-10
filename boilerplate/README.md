@@ -2,12 +2,20 @@
 
 Project template for AI coding agents (OpenCode, Claude Code). Contains only configuration templates and instructions -- no pre-installed components. You choose what to install.
 
-## What's included
-
-- **AGENTS.md** -- Agent instructions template with placeholders (`{{PROJECT_NAME}}`, `{{TECH_STACK}}`, `{{PORT}}`, etc.)
-- **.gitignore** -- Standard ignores for agent-powered projects
-- **tasks/** -- Planning docs folder
-- **SETUP.md** -- Step-by-step setup guide with installation instructions for all available skills and plugins
+```
+┌───────────────────────────────────────────────────────────────┐
+│                                                               │
+│  BOILERPLATE                                                  │
+│                                                               │
+│  +── AGENTS.md      Agent instructions template               │
+│  +── .gitignore     Standard ignores for agent projects       │
+│  +── tasks/         Planning docs folder                      │
+│  +── SETUP.md       Step-by-step install guide                │
+│                                                               │
+│  Placeholders: {{PROJECT_NAME}}, {{TECH_STACK}}, {{PORT}}     │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
 
 ## Quick start
 
@@ -31,16 +39,18 @@ See [SETUP.md](SETUP.md) for the full guide including how to install each skill 
 
 ## Customization
 
-Replace these placeholders in `AGENTS.md`:
-
-| Placeholder | Description |
-|-------------|-------------|
-| `{{PROJECT_NAME}}` | Your project name |
-| `{{PROJECT_DESCRIPTION}}` | What the project does |
-| `{{TECH_STACK_FRONTEND}}` | Frontend tech (e.g., Next.js) |
-| `{{TECH_STACK_BACKEND}}` | Backend tech (e.g., Express) |
-| `{{PORT_BACKEND}}` | Backend port number |
-| `{{PORT_FRONTEND}}` | Frontend port number |
+```
+┌──────────────────────────┬────────────────────────────────────┐
+│  Placeholder             │  Description                       │
+├──────────────────────────┼────────────────────────────────────┤
+│  {{PROJECT_NAME}}        │  Your project name                 │
+│  {{PROJECT_DESCRIPTION}} │  What the project does             │
+│  {{TECH_STACK_FRONTEND}} │  Frontend tech (e.g. Next.js)      │
+│  {{TECH_STACK_BACKEND}}  │  Backend tech (e.g. Express)       │
+│  {{PORT_BACKEND}}        │  Backend port number               │
+│  {{PORT_FRONTEND}}       │  Frontend port number              │
+└──────────────────────────┴────────────────────────────────────┘
+```
 
 ## License
 

@@ -1,56 +1,47 @@
 # Defensive Development Skill
 
-Skill for defensive development: verify before acting.
+Verification-first coding practices for AI agents. Verify before acting.
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│                                                               │
+│  DEFENSIVE DEVELOPMENT                                        │
+│                                                               │
+│  Protocol: READ → MAP → LIST → PRESENT → WAIT → EXECUTE      │
+│                                                               │
+│  +── Before editing      Read the file, verify API names      │
+│  +── Before deleting     Confirmation based on line count     │
+│  +── Before refactoring  Grep ALL references across codebase  │
+│  +── Before debugging    Add logs first, then change code     │
+│                                                               │
+│  Philosophy: "Verify then trust"                              │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
 
 ## What is it
 
-A set of practices to avoid common programming errors:
-- Read before editing
-- Verify APIs before using
-- Confirm before deleting
-- Grep before refactoring
-
-**Philosophy:** "Verify then trust" — never assume, always verify.
+A set of practices that prevent the most common AI agent mistakes: inventing property names that don't exist, forgetting imports, calling non-existent methods, and breaking code during refactors.
 
 ## Features
 
-- **READ → VERIFY Protocol:** Read → Map → List → Present → Wait → Execute → Verify
-- **API Discovery:** How to find properties, constructors, getters/setters
-- **Safe Refactoring:** Grep all references before renaming
-- **Deletion Thresholds:** Confirmation required based on line count
-- **Debug First:** Logs before changing code
+- **READ-VERIFY protocol:** Read → Map → List → Present → Wait → Execute → Verify
+- **API discovery:** How to find properties, constructors, getters/setters before using them
+- **Safe refactoring:** Grep all references (code, tests, docs, config, comments) before renaming
+- **Deletion thresholds:** Confirmation required based on line count
+- **Debug first:** Logs before changing code
 
-## Installation
+## Deletion Thresholds
 
-```bash
-mkdir -p .claude/skills
-unzip defensive-development-skill.zip -d .claude/skills/
 ```
-
-## Key Rules
-
-### Before editing
-```bash
-# Read the file first
-cat src/file.js
-
-# Verify property name
-grep -n "propertyName" src/
-```
-
-### Before deleting
-| Lines | Action |
-|-------|--------|
-| 1-10 | Proceed (explain) |
-| 11-50 | Explain + confirm |
-| 51-100 | Detailed justification |
-| 100+ | Break into smaller operations |
-
-### Before refactoring
-```bash
-# Grep ALL references
-grep -rn "oldName" .
-# Include: code, tests, docs, config, comments
+┌─────────────┬─────────────────────────────────────────┐
+│  Lines      │  Action                                  │
+├─────────────┼─────────────────────────────────────────┤
+│  1-10       │  Proceed (explain)                       │
+│  11-50      │  Explain + confirm                       │
+│  51-100     │  Detailed justification                  │
+│  100+       │  Break into smaller operations           │
+└─────────────┴─────────────────────────────────────────┘
 ```
 
 ## Common Errors Prevented
@@ -61,9 +52,16 @@ grep -rn "oldName" .
 - Calling methods that don't exist
 - Incorrect parameter order
 
+## Installation
+
+```bash
+mkdir -p .claude/skills/defensive-development
+cp SKILL.md README.md /path/to/project/.claude/skills/defensive-development/
+```
+
 ## Requirements
 
-- Claude Code with skills support
+- Claude Code or OpenCode with skills support
 
 ## License
 

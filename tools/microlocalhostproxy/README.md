@@ -2,34 +2,44 @@
 
 Drop-in port resolution and local subdomain routing for Node.js dev servers.
 
+```
+┌───────────────────────────────────────────────────────────────┐
+│                                                               │
+│  MICROLOCALHOSTPROXY                                          │
+│                                                               │
+│  Browser → myapp.localhost:80                                 │
+│         → pfctl redirect → 127.0.0.1:8080                    │
+│         → devproxy (central proxy) → routes by Host header    │
+│         → 127.0.0.1:3001 (your dev server)                   │
+│                                                               │
+├───────────────────────────────────────────────────────────────┤
+│                                                               │
+│  PORT RESOLUTION                                              │
+│  +── Port free         → use it directly                      │
+│  +── Occupied by US    → kill old process, reuse port         │
+│  +── Occupied by OTHER → find next free port (up to +20)      │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
+
 ## What it does
 
-**Port resolution:**
-1. **Port free** -- uses it directly
-2. **Port occupied by THIS project** -- kills the old process, reuses port
-3. **Port occupied by ANOTHER project** -- finds next free port (up to +20)
+**Port resolution:** Detects port conflicts using `lsof` to get the PID, then checks if its working directory is inside the current project root. Kills stale processes from the same project, or finds a free port if another project owns it.
 
-**Devproxy (optional):** Routes `myproject.localhost` -> `localhost:PORT` via a central reverse proxy daemon. No `/etc/hosts` editing, works in Safari/Chrome/Firefox.
-
-```
-Browser -> myapp.localhost:80
-        -> pfctl redirect -> 127.0.0.1:8080
-        -> devproxy (central proxy) -> routes by Host header
-        -> 127.0.0.1:3001 (your dev server)
-```
+**Devproxy (optional):** Routes `myproject.localhost` → `localhost:PORT` via a central reverse proxy daemon. No `/etc/hosts` editing. Works in Safari, Chrome, Firefox.
 
 ## Patterns included
 
-| Pattern | Use case |
-|---------|----------|
-| **Pattern A** | Single server (Next.js, Vite, Express) |
-| **Pattern B** | Multi-process (frontend + backend on separate ports) |
+```
+┌─────────────┬─────────────────────────────────────────────────┐
+│  Pattern    │  Use case                                       │
+├─────────────┼─────────────────────────────────────────────────┤
+│  Pattern A  │  Single server (Next.js, Vite, Express)         │
+│  Pattern B  │  Multi-process (frontend + backend)             │
+└─────────────┴─────────────────────────────────────────────────┘
+```
 
 ## Quick start
-
-1. Copy the port helper functions from `microlocalhostproxy.md` into your dev startup file
-2. Use `resolvePort(basePort)` before starting your server
-3. (Optional) Add devproxy for `*.localhost` subdomain routing
 
 ```javascript
 import { devproxy } from './lib/devproxy.js';
