@@ -62,7 +62,7 @@ A set of verification-first coding practices that prevent the most common AI age
 │                                                               │
 │  DEFENSIVE DEVELOPMENT                                        │
 │                                                               │
-│  Protocol: READ → MAP → LIST → PRESENT → WAIT → EXECUTE      │
+│  Protocol: READ → MAP → LIST → PRESENT → WAIT → EXECUTE       │
 │                                                               │
 │  Before editing     Read the file first, verify API names     │
 │  Before deleting    Confirmation based on line count          │
