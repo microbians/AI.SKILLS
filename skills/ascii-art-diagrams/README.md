@@ -9,7 +9,7 @@ Rules for creating consistent, well-formatted ASCII diagrams with Unicode box-dr
 │                                                         │
 │  Boxes     Equal-length lines, correct corners          │
 │  Trees     │ spacers between siblings                   │
-│  Arrows    Own line, never inline with text              │
+│  Arrows    Own line, never inline with text             │
 │  Titles    ─── separators (not ═══)                     │
 │  Font      Fira Code recommended, line-height 1         │
 │                                                         │
