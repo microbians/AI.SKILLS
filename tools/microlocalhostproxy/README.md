@@ -8,9 +8,9 @@ Drop-in port resolution and local subdomain routing for Node.js dev servers.
 │  MICROLOCALHOSTPROXY                                          │
 │                                                               │
 │  Browser → myapp.localhost:80                                 │
-│         → pfctl redirect → 127.0.0.1:8080                    │
+│         → pfctl redirect → 127.0.0.1:8080                     │
 │         → devproxy (central proxy) → routes by Host header    │
-│         → 127.0.0.1:3001 (your dev server)                   │
+│         → 127.0.0.1:3001 (your dev server)                    │
 │                                                               │
 ├───────────────────────────────────────────────────────────────┤
 │                                                               │
