@@ -7,12 +7,12 @@ Verification-first coding practices for AI agents. Verify before acting.
 │                                                               │
 │  DEFENSIVE DEVELOPMENT                                        │
 │                                                               │
-│  Protocol: READ → MAP → LIST → PRESENT → WAIT → EXECUTE      │
+│  Protocol: READ → MAP → LIST → PRESENT → WAIT → EXECUTE       │
 │                                                               │
-│  +── Before editing      Read the file, verify API names      │
-│  +── Before deleting     Confirmation based on line count     │
-│  +── Before refactoring  Grep ALL references across codebase  │
-│  +── Before debugging    Add logs first, then change code     │
+│  ├── Before editing      Read the file, verify API names      │
+│  ├── Before deleting     Confirmation based on line count     │
+│  ├── Before refactoring  Grep ALL references across codebase  │
+│  └── Before debugging    Add logs first, then change code     │
 │                                                               │
 │  Philosophy: "Verify then trust"                              │
 │                                                               │
@@ -35,12 +35,12 @@ A set of practices that prevent the most common AI agent mistakes: inventing pro
 
 ```
 ┌─────────────┬─────────────────────────────────────────┐
-│  Lines      │  Action                                  │
+│  Lines      │  Action                                 │
 ├─────────────┼─────────────────────────────────────────┤
-│  1-10       │  Proceed (explain)                       │
-│  11-50      │  Explain + confirm                       │
-│  51-100     │  Detailed justification                  │
-│  100+       │  Break into smaller operations           │
+│  1-10       │  Proceed (explain)                      │
+│  11-50      │  Explain + confirm                      │
+│  51-100     │  Detailed justification                 │
+│  100+       │  Break into smaller operations          │
 └─────────────┴─────────────────────────────────────────┘
 ```
 

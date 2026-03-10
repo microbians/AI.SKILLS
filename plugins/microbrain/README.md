@@ -8,19 +8,19 @@ Reactive SQLite memory system for AI coding agents. Memories survive context com
 ├───────────────────────────────────────────────────────────────┤
 │                                                               │
 │  PLUGIN (.opencode/plugins/microbrain.ts)                     │
-│  +── session.created  → auto-load high-importance memories    │
-│  +── session.compacting → extract + save (LLM/heuristic)      │
-│  +── registers custom tools:                                  │
-│      +── memory_search  → FTS5 full-text search               │
-│      +── memory_save    → insert/update with validation       │
-│      +── memory_delete  → delete memories by ID               │
-│      +── memory_stats   → overview of stored knowledge        │
+│  ├── session.created  → auto-load high-importance memories    │
+│  ├── session.compacting → extract + save (LLM/heuristic)      │
+│  └── registers custom tools:                                  │
+│      ├── memory_search  → FTS5 full-text search               │
+│      ├── memory_save    → insert/update with validation       │
+│      ├── memory_delete  → delete memories by ID               │
+│      └── memory_stats   → overview of stored knowledge        │
 │                                                               │
 │  STORAGE                                                      │
-│  +── .opencode/memory.db (SQLite + FTS5)                      │
+│  └── .opencode/memory.db (SQLite + FTS5)                      │
 │                                                               │
 │  OPTIONAL LLM                                                 │
-│  +── .opencode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf       │
+│  └── .opencode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf       │
 │      (used for extraction on compaction, ~500MB)              │
 │                                                               │
 └───────────────────────────────────────────────────────────────┘
@@ -92,12 +92,12 @@ See [INSTALL.md](INSTALL.md) for full installation details and troubleshooting.
 
 ```
 plugins/microbrain/
-+── README.md               ← This file
-+── INSTALL.md              ← Full installation guide
-+── package.json.example    ← Example .opencode/package.json
-+── plugins/
-    +── microbrain.ts       ← The plugin (copy to .opencode/plugins/)
-    +── README.md           ← Technical reference docs
+├── README.md               ← This file
+├── INSTALL.md              ← Full installation guide
+├── package.json.example    ← Example .opencode/package.json
+└── plugins/
+    ├── microbrain.ts       ← The plugin (copy to .opencode/plugins/)
+    └── README.md           ← Technical reference docs
 ```
 
 ## Requirements

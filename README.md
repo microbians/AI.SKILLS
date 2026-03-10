@@ -145,9 +145,9 @@ Self-healing skill that auto-generates and maintains a `.claude/api.md` referenc
 │  PROJECT API SKILL                                            │
 │                                                               │
 │  Extracts:                                                    │
-│  +── Class hierarchies (Parent → Child)                       │
-│  +── Methods, constructors, getters/setters                   │
-│  +── Standalone exported functions with parameters            │
+│  ├── Class hierarchies (Parent → Child)                       │
+│  ├── Methods, constructors, getters/setters                   │
+│  └── Standalone exported functions with parameters            │
 │                                                               │
 │  Output: .claude/api.md                                       │
 │  Self-healing: regenerates when missing or after major changes│
@@ -176,19 +176,19 @@ Persistent SQLite memory system for OpenCode. A single TypeScript file that regi
 ├───────────────────────────────────────────────────────────────┤
 │                                                               │
 │  PLUGIN (.opencode/plugins/microbrain.ts)                     │
-│  +── session.created  → auto-load high-importance memories    │
-│  +── session.compacting → extract + save (LLM/heuristic)      │
-│  +── registers custom tools:                                  │
-│      +── memory_search  → FTS5 full-text search               │
-│      +── memory_save    → insert/update with validation       │
-│      +── memory_delete  → delete memories by ID               │
-│      +── memory_stats   → overview of stored knowledge        │
+│  ├── session.created  → auto-load high-importance memories    │
+│  ├── session.compacting → extract + save (LLM/heuristic)      │
+│  └── registers custom tools:                                  │
+│      ├── memory_search  → FTS5 full-text search               │
+│      ├── memory_save    → insert/update with validation       │
+│      ├── memory_delete  → delete memories by ID               │
+│      └── memory_stats   → overview of stored knowledge        │
 │                                                               │
 │  STORAGE                                                      │
-│  +── .opencode/memory.db (SQLite + FTS5)                      │
+│  └── .opencode/memory.db (SQLite + FTS5)                      │
 │                                                               │
 │  OPTIONAL LLM                                                 │
-│  +── .opencode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf       │
+│  └── .opencode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf       │
 │      (used for extraction on compaction, ~500MB)              │
 │                                                               │
 └───────────────────────────────────────────────────────────────┘
@@ -232,13 +232,13 @@ Smart port resolution and local subdomain routing for Node.js dev servers on mac
 ├───────────────────────────────────────────────────────────────┤
 │                                                               │
 │  PORT RESOLUTION                                              │
-│  +── Port free         → use it directly                      │
-│  +── Occupied by US    → kill old process, reuse port         │
-│  +── Occupied by OTHER → find next free port (up to +20)      │
+│  ├── Port free         → use it directly                      │
+│  ├── Occupied by US    → kill old process, reuse port         │
+│  └── Occupied by OTHER → find next free port (up to +20)      │
 │                                                               │
 │  PATTERNS                                                     │
-│  +── Pattern A: Single server (Next.js, Vite, Express)        │
-│  +── Pattern B: Multi-process (frontend + backend)            │
+│  ├── Pattern A: Single server (Next.js, Vite, Express)        │
+│  └── Pattern B: Multi-process (frontend + backend)            │
 │                                                               │
 └───────────────────────────────────────────────────────────────┘
 ```
@@ -260,10 +260,10 @@ Project template with configuration files and instructions. No pre-installed com
 │                                                               │
 │  BOILERPLATE                                                  │
 │                                                               │
-│  +── AGENTS.md      Agent instructions template               │
-│  +── .gitignore     Standard ignores for agent projects       │
-│  +── tasks/         Planning docs folder                      │
-│  +── SETUP.md       Step-by-step install guide                │
+│  ├── AGENTS.md      Agent instructions template               │
+│  ├── .gitignore     Standard ignores for agent projects       │
+│  ├── tasks/         Planning docs folder                      │
+│  └── SETUP.md       Step-by-step install guide                │
 │                                                               │
 │  Placeholders: {{PROJECT_NAME}}, {{TECH_STACK}}, {{PORT}}     │
 │                                                               │

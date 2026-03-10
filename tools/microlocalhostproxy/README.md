@@ -15,9 +15,9 @@ Drop-in port resolution and local subdomain routing for Node.js dev servers.
 ├───────────────────────────────────────────────────────────────┤
 │                                                               │
 │  PORT RESOLUTION                                              │
-│  +── Port free         → use it directly                      │
-│  +── Occupied by US    → kill old process, reuse port         │
-│  +── Occupied by OTHER → find next free port (up to +20)      │
+│  ├── Port free         → use it directly                      │
+│  ├── Occupied by US    → kill old process, reuse port         │
+│  └── Occupied by OTHER → find next free port (up to +20)      │
 │                                                               │
 └───────────────────────────────────────────────────────────────┘
 ```

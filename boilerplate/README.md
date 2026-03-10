@@ -7,10 +7,10 @@ Project template for AI coding agents (OpenCode, Claude Code). Contains only con
 │                                                               │
 │  BOILERPLATE                                                  │
 │                                                               │
-│  +── AGENTS.md      Agent instructions template               │
-│  +── .gitignore     Standard ignores for agent projects       │
-│  +── tasks/         Planning docs folder                      │
-│  +── SETUP.md       Step-by-step install guide                │
+│  ├── AGENTS.md      Agent instructions template               │
+│  ├── .gitignore     Standard ignores for agent projects       │
+│  ├── tasks/         Planning docs folder                      │
+│  └── SETUP.md       Step-by-step install guide                │
 │                                                               │
 │  Placeholders: {{PROJECT_NAME}}, {{TECH_STACK}}, {{PORT}}     │
 │                                                               │

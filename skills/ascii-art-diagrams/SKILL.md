@@ -170,44 +170,44 @@ Numbered steps with tree branches for sub-steps:
 2. SORT tasks by priority (low -> high)
 
 3. FOR EACH task (sorted):
-   |
-   +-- EXECUTE task
-   |
-   +-- IF task.hasCallback AND task.succeeded:
-       |
-       +-- IF callback.isAsync:
-           |
-           +-- QUEUE callback for later
+   │
+   ├── EXECUTE task
+   │
+   └── IF task.hasCallback AND task.succeeded:
+       │
+       └── IF callback.isAsync:
+           │
+           └── QUEUE callback for later
 
 4. PROCESS callbacks:
-   |
-   +-- IF pending_callbacks.length > 0:
-   |   |
-   |   +-- RUN each callback
-   |
-   +-- IF errors.length > 0:
-       |
-       +-- LOG errors to file
+   │
+   ├── IF pending_callbacks.length > 0:
+   │   │
+   │   └── RUN each callback
+   │
+   └── IF errors.length > 0:
+       │
+       └── LOG errors to file
 ```
 
 ### 3.2 Key Rules
 
-- `|` for vertical continuation
-- `+--` for branch with more siblings
-- `+--` for last branch (same character)
+- `│` for vertical continuation
+- `├──` for branch with more siblings below
+- `└──` for last branch (no more siblings)
 - Indent nested levels by 4 spaces
 - One empty line between major steps
 - Sub-branches connect without empty lines
 
-### 3.3 Continue `|` When More Siblings Follow
+### 3.3 Continue `│` When More Siblings Follow
 
 ```
 CORRECT
-+-- Child with nested content
-|   |
-|   +-- Nested item
-|
-+-- Last sibling
+├── Child with nested content
+│   │
+│   └── Nested item
+│
+└── Last sibling
 ```
 
 ---
@@ -216,7 +216,7 @@ CORRECT
 
 ### 4.1 Vertical Flow with Boxes
 
-Each step gets a box. Use `|` and `v` between boxes:
+Each step gets a box. Use `│` and `▼` between boxes:
 
 ```
 ┌───────────────────────┐
@@ -447,10 +447,10 @@ ____________________
 1. Step one
 
 2. Step two:
-   |
-   +-- Sub-step A
-   |
-   +-- Sub-step B
+   │
+   ├── Sub-step A
+   │
+   └── Sub-step B
 
 
 ┌───────────────────────┐

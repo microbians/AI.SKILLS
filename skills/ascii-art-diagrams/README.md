@@ -23,7 +23,7 @@ A formatting guide that teaches the agent to generate perfect ASCII diagrams. No
 ## Features
 
 - **Boxes:** Equal-length lines, Unicode corners (`┌ ┐ └ ┘`), 2-space padding
-- **Trees:** `│` for vertical continuation, `+──` for branches, 4-space indent
+- **Trees:** `│` for vertical continuation, `├──`/`└──` for branches, 4-space indent
 - **Arrows:** `▼ ▲ ◀ ▶` on their own line, `──▶──` for horizontal connectors
 - **Flow charts:** Boxes connected with `│` and `▼`, side branches for YES/NO
 - **Shade blocks:** `░ ▒ ▓ █` for grids, heatmaps, coverage diagrams

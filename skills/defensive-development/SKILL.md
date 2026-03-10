@@ -66,67 +66,67 @@ CORRECT MINDSET
 Before making ANY code change, follow this sequence:
 
 ```
-+---------------------------------------------------------------+
-|                                                               |
-|  READ -> MAP -> LIST -> PRESENT -> WAIT -> EXECUTE -> VERIFY  |
-|                                                               |
-+---------------------------------------------------------------+
+┌───────────────────────────────────────────────────────────────┐
+│                                                               │
+│  READ → MAP → LIST → PRESENT → WAIT → EXECUTE → VERIFY        │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
 
 1. READ
-   |
-   +-- Read the file(s) you plan to modify
-   |
-   +-- Read related files (imports, dependencies)
-   |
-   +-- Read tests for usage examples
+   │
+   ├── Read the file(s) you plan to modify
+   │
+   ├── Read related files (imports, dependencies)
+   │
+   └── Read tests for usage examples
 
 2. MAP
-   |
-   +-- Understand the code structure
-   |
-   +-- Identify dependencies and side effects
-   |
-   +-- Note all places that reference this code
+   │
+   ├── Understand the code structure
+   │
+   ├── Identify dependencies and side effects
+   │
+   └── Note all places that reference this code
 
 3. LIST
-   |
-   +-- List all changes needed
-   |
-   +-- List all files affected
-   |
-   +-- List potential risks
+   │
+   ├── List all changes needed
+   │
+   ├── List all files affected
+   │
+   └── List potential risks
 
 4. PRESENT
-   |
-   +-- Explain the plan before executing
-   |
-   +-- Show the specific changes
-   |
-   +-- Highlight any risks
+   │
+   ├── Explain the plan before executing
+   │
+   ├── Show the specific changes
+   │
+   └── Highlight any risks
 
 5. WAIT
-   |
-   +-- Get confirmation before destructive operations
-   |
-   +-- Ask if unclear about requirements
-   |
-   +-- Pause if something seems wrong
+   │
+   ├── Get confirmation before destructive operations
+   │
+   ├── Ask if unclear about requirements
+   │
+   └── Pause if something seems wrong
 
 6. EXECUTE
-   |
-   +-- Make surgical, focused changes
-   |
-   +-- One logical change at a time
-   |
-   +-- Keep changes minimal
+   │
+   ├── Make surgical, focused changes
+   │
+   ├── One logical change at a time
+   │
+   └── Keep changes minimal
 
 7. VERIFY
-   |
-   +-- Test the change works
-   |
-   +-- Verify no regressions
-   |
-   +-- Check edge cases (0, null, empty, missing)
+   │
+   ├── Test the change works
+   │
+   ├── Verify no regressions
+   │
+   └── Check edge cases (0, null, empty, missing)
 ```
 
 ### 1.3 Listen Literally
