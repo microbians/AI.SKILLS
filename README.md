@@ -21,7 +21,7 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 │  tools/                                                             │
 │  └── microlocalhostproxy/      Smart port + subdomain routing       │
 │                                                                     │
-│  boilerplate/                  Project template + instructions       │
+│  boilerplate/                  Project template + instructions      │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -94,7 +94,7 @@ Rules for the agent to generate consistent, well-formatted ASCII diagrams using 
 │                                                         │
 │  Boxes     Equal-length lines, correct corners          │
 │  Trees     │ spacers between siblings                   │
-│  Arrows    Own line, never inline with text              │
+│  Arrows    Own line, never inline with text             │
 │  Titles    ─── separators (not ═══)                     │
 │  Font      Fira Code recommended, line-height 1         │
 │                                                         │
@@ -172,12 +172,12 @@ Persistent SQLite memory system for OpenCode. A single TypeScript file that regi
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
-│                     MICROBRAIN ARCHITECTURE                    │
+│                     MICROBRAIN ARCHITECTURE                   │
 ├───────────────────────────────────────────────────────────────┤
 │                                                               │
 │  PLUGIN (.opencode/plugins/microbrain.ts)                     │
 │  +── session.created  → auto-load high-importance memories    │
-│  +── session.compacting → extract + save (LLM/heuristic)     │
+│  +── session.compacting → extract + save (LLM/heuristic)      │
 │  +── registers custom tools:                                  │
 │      +── memory_search  → FTS5 full-text search               │
 │      +── memory_save    → insert/update with validation       │
@@ -188,7 +188,7 @@ Persistent SQLite memory system for OpenCode. A single TypeScript file that regi
 │  +── .opencode/memory.db (SQLite + FTS5)                      │
 │                                                               │
 │  OPTIONAL LLM                                                 │
-│  +── .opencode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf      │
+│  +── .opencode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf       │
 │      (used for extraction on compaction, ~500MB)              │
 │                                                               │
 └───────────────────────────────────────────────────────────────┘
@@ -225,9 +225,9 @@ Smart port resolution and local subdomain routing for Node.js dev servers on mac
 │  MICROLOCALHOSTPROXY                                          │
 │                                                               │
 │  Browser → myapp.localhost:80                                 │
-│         → pfctl redirect → 127.0.0.1:8080                    │
+│         → pfctl redirect → 127.0.0.1:8080                     │
 │         → devproxy (central proxy) → routes by Host header    │
-│         → 127.0.0.1:3001 (your dev server)                   │
+│         → 127.0.0.1:3001 (your dev server)                    │
 │                                                               │
 ├───────────────────────────────────────────────────────────────┤
 │                                                               │
