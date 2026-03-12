@@ -8,8 +8,8 @@ Drop-in port resolution and local subdomain routing for Node.js dev servers.
 │  MICROLOCALHOSTPROXY                                          │
 │                                                               │
 │  Browser → myapp.localhost:80                                 │
-│         → pfctl redirect → 127.0.0.1:8080                     │
-│         → devproxy (central proxy) → routes by Host header    │
+│         → devproxy (listens directly on port 80)              │
+│         → routes by Host header                               │
 │         → 127.0.0.1:3001 (your dev server)                    │
 │                                                               │
 ├───────────────────────────────────────────────────────────────┤
@@ -26,7 +26,7 @@ Drop-in port resolution and local subdomain routing for Node.js dev servers.
 
 **Port resolution:** Detects port conflicts using `lsof` to get the PID, then checks if its working directory is inside the current project root. Kills stale processes from the same project, or finds a free port if another project owns it.
 
-**Devproxy (optional):** Routes `myproject.localhost` → `localhost:PORT` via a central reverse proxy daemon. No `/etc/hosts` editing. Works in Safari, Chrome, Firefox.
+**Devproxy (optional):** Routes `myproject.localhost` → `localhost:PORT` via a central reverse proxy daemon. The proxy runs as a LaunchDaemon on port 80 (starts as root, drops privileges after binding). No `/etc/hosts` editing. No pfctl. Works in Safari, Chrome, Firefox.
 
 ## Patterns included
 
@@ -56,7 +56,7 @@ Full documentation, code examples, AGENTS.md templates, and gotchas are in [`INS
 
 ## Requirements
 
-- macOS (uses `lsof` for PID/cwd detection, `pfctl` for port forwarding)
+- macOS (uses `lsof` for PID/cwd detection)
 - Node.js 18+ (top-level await)
 
 ## License

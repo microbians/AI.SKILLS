@@ -3,7 +3,9 @@
 	DEVPROXY - Central Reverse Proxy
 	
 	Routes *.localhost requests to registered project servers.
-	Accepts registrations/deregistrations via Unix socket.
+	Listens directly on port 80 (no pfctl needed).
+	Drops root privileges after binding to port 80.
+	Non-.localhost traffic is ignored (connection reset).
 	
 	Protocol (Unix socket, newline-delimited JSON):
 	  → { "action": "register", "subdomain": "myapp", "port": 3001 }
@@ -18,13 +20,13 @@
 
 import http from 'http';
 import { createServer as createNetServer } from 'net';
-import { existsSync, unlinkSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, unlinkSync, writeFileSync, chmodSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const PROXY_PORT = 8080;
+const LISTEN_PORT = 80;
 const SOCKET_PATH = join(__dirname, 'proxy.sock');
 const PID_FILE = join(__dirname, 'proxy.pid');
 
@@ -32,7 +34,7 @@ const PID_FILE = join(__dirname, 'proxy.pid');
 
 const routes = new Map(); // subdomain → port
 
-// ═══════════════════ HTTP PROXY ═══════════════════
+// ═══════════════════ HTTP SERVER ═══════════════════
 
 const httpServer = http.createServer((req, res) => {
 	const host = req.headers.host || '';
@@ -40,13 +42,11 @@ const httpServer = http.createServer((req, res) => {
 	const match = host.match(/^([a-z0-9_-]+)\.localhost(:\d+)?$/i);
 
 	if (!match) {
-		// Non-localhost traffic (e.g. Apple Mail Private Relay health checks)
-		// hits us because pfctl redirects ALL loopback port 80 → 8080.
-		// Instead of blocking with 404, redirect to HTTPS so the original
-		// service handles it. Fixes Mail not loading images.
-		const redirectUrl = `https://${host}${req.url}`;
-		res.writeHead(301, { Location: redirectUrl });
-		res.end();
+		// Non-localhost traffic — destroy socket immediately.
+		// This port only serves *.localhost subdomains.
+		// Any other traffic that arrives (shouldn't happen without pfctl)
+		// gets a clean connection reset.
+		req.socket.destroy();
 		return;
 	}
 
@@ -176,11 +176,27 @@ writeFileSync(PID_FILE, String(process.pid));
 
 // Start control socket
 controlServer.listen(SOCKET_PATH, () => {
+	// Make socket writable by non-root users so projects can register
+	chmodSync(SOCKET_PATH, 0o777);
 	console.log(`[devproxy] control socket: ${SOCKET_PATH}`);
 });
 
-// Start HTTP proxy
-httpServer.listen(PROXY_PORT, '127.0.0.1', () => {
-	console.log(`[devproxy] listening on 127.0.0.1:${PROXY_PORT}`);
+// Start HTTP server on port 80
+httpServer.listen(LISTEN_PORT, '127.0.0.1', () => {
+	console.log(`[devproxy] listening on 127.0.0.1:${LISTEN_PORT}`);
+
+	// Drop root privileges after binding to port 80
+	if (process.getuid && process.getuid() === 0) {
+		const uid = parseInt(process.env.SUDO_UID || '501', 10);
+		const gid = parseInt(process.env.SUDO_GID || '20', 10);
+		try {
+			process.setgid(gid);
+			process.setuid(uid);
+			console.log(`[devproxy] dropped privileges to uid=${uid} gid=${gid}`);
+		} catch (err) {
+			console.warn(`[devproxy] warning: could not drop privileges: ${err.message}`);
+		}
+	}
+
 	console.log(`[devproxy] ready — route *.localhost here`);
 });

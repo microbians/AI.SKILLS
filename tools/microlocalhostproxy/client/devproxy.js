@@ -10,7 +10,7 @@
 	  // ... create your server on some port ...
 	  devproxy({ port: 3001 }); // subdomain from package.json "name"
 	
-	First run: auto-installs dnsmasq, pfctl, resolver, etc.
+	First run: auto-installs dnsmasq, resolver, LaunchDaemon.
 	Subsequent runs: just registers and serves.
 	
 	@license MIT
@@ -19,7 +19,7 @@
 import { connect } from 'net';
 import { existsSync, readFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
-import { execSync, spawn } from 'child_process';
+import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
 
@@ -113,13 +113,31 @@ function sendCommand(cmd) {
 	});
 }
 
+const PLIST_PATH = '/Library/LaunchDaemons/com.devproxy.proxy.plist';
+
 function startProxy() {
 	return new Promise((resolve, reject) => {
-		const child = spawn('node', [PROXY_JS], {
-			stdio: 'ignore',
-			detached: true,
-		});
-		child.unref();
+		// The proxy runs as a LaunchDaemon on port 80 (requires root).
+		// Try to reload it via launchctl. If the plist exists, use osascript
+		// to get admin privileges via native macOS dialog.
+		if (!existsSync(PLIST_PATH)) {
+			reject(new Error('LaunchDaemon not installed — run install.sh first'));
+			return;
+		}
+
+		try {
+			execSync(
+				`osascript -e 'do shell script `
+				+ `"launchctl unload ${PLIST_PATH} 2>/dev/null; `
+				+ `sleep 1; `
+				+ `launchctl load ${PLIST_PATH}" `
+				+ `with administrator privileges'`,
+				{ stdio: 'ignore', timeout: 30000 }
+			);
+		} catch {
+			reject(new Error('Could not start proxy (authentication cancelled or failed)'));
+			return;
+		}
 
 		// Wait for socket to appear (proxy is ready)
 		let attempts = 0;
@@ -128,10 +146,10 @@ function startProxy() {
 			if (existsSync(SOCKET_PATH)) {
 				clearInterval(check);
 				// Small extra delay to ensure socket is listening
-				setTimeout(() => resolve(), 100);
-			} else if (attempts > 30) { // 3 seconds
+				setTimeout(() => resolve(), 200);
+			} else if (attempts > 50) { // 5 seconds
 				clearInterval(check);
-				reject(new Error('Proxy failed to start (socket not created after 3s)'));
+				reject(new Error('Proxy failed to start (socket not created after 5s)'));
 			}
 		}, 100);
 	});

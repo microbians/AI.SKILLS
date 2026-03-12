@@ -11,13 +11,13 @@ Drop-in port resolution and local subdomain routing for any Node.js dev server.
 
 Detection: uses `lsof` to get the PID on the port, then checks if its working directory is inside the current project root.
 
-**Devproxy (optional):** Routes `myproject.localhost` → `localhost:PORT` via a central reverse proxy daemon at `~/.config/devproxy/`. First run auto-installs dnsmasq + pfctl rules. Subsequent runs just register the subdomain.
+**Devproxy (optional):** Routes `myproject.localhost` → `localhost:PORT` via a central reverse proxy daemon at `~/.config/devproxy/`. The proxy listens directly on port 80 as a LaunchDaemon (starts as root, drops privileges after binding). First run auto-installs dnsmasq + the LaunchDaemon. Subsequent runs just register the subdomain.
 
 ---
 
 ## Prerequisites
 
-- macOS (uses `lsof` for PID/cwd detection, `pfctl` for port forwarding)
+- macOS (uses `lsof` for PID/cwd detection)
 - Node.js 18+ (top-level await)
 - devproxy infrastructure at `~/.config/devproxy/` (copy from `central/` in this repo)
 
@@ -358,18 +358,20 @@ srv.listen(port);
 srv.listen(port, '127.0.0.1');
 ```
 
-### Non-localhost traffic pass-through
-
-Since pfctl redirects ALL loopback port 80 traffic to 8080, any local HTTP request on port 80 (e.g., Apple Mail Private Relay health checks, system HTTP requests) will hit the proxy. The proxy handles this by returning a `301` redirect to the HTTPS version of the same URL for any request whose `Host` header is NOT `*.localhost`. This ensures non-dev traffic isn't blocked and apps like Mail continue working normally.
-
 ### Devproxy daemon can freeze
 
-macOS may suspend the proxy daemon process after prolonged inactivity (shows as state `SNs` in `ps`). Symptoms: `lsof` shows port 8080 LISTEN but connections timeout.
+macOS may suspend the LaunchDaemon process after prolonged inactivity (shows as state `SNs` in `ps`). Symptoms: `lsof` shows port 80 LISTEN but connections timeout.
 
-**Fix:** Kill and restart the daemon:
+**Fix:** Restart the daemon:
 ```bash
-kill -9 $(cat ~/.config/devproxy/proxy.pid)
-node ~/.config/devproxy/proxy.js &
+sudo launchctl unload /Library/LaunchDaemons/com.devproxy.proxy.plist
+sudo launchctl load /Library/LaunchDaemons/com.devproxy.proxy.plist
+```
+
+Or manually:
+```bash
+sudo kill $(cat ~/.config/devproxy/proxy.pid)
+# LaunchDaemon's KeepAlive will restart it automatically
 ```
 
 Routes are in-memory only — if the daemon restarts, projects re-register automatically on their next `npm run dev`. Re-registering the same subdomain overwrites the port (subdomain is the unique key).
@@ -400,13 +402,13 @@ echo '{"action":"list"}' | nc -U ~/.config/devproxy/proxy.sock
 # Check if daemon is alive
 echo '{"action":"ping"}' | nc -U ~/.config/devproxy/proxy.sock
 
-# Check pfctl redirect (port 80 → 8080)
-sudo pfctl -a com.devproxy -s nat
+# Check if proxy is listening on port 80
+lsof -i :80 -sTCP:LISTEN
 
 # Check DNS resolution
 dig +short myproject.localhost @127.0.0.1
 
-# Test proxy directly (bypassing DNS/pfctl)
+# Test proxy directly
 curl -H "Host: myproject.localhost" http://127.0.0.1:80/
 
 # See all registered PIDs on a port
@@ -414,6 +416,13 @@ lsof -ti:3011
 
 # Check if proxy process is healthy (look for S vs SNs state)
 ps aux | grep proxy.js
+
+# View proxy logs
+tail -f ~/.config/devproxy/proxy.log
+
+# Restart the LaunchDaemon
+sudo launchctl unload /Library/LaunchDaemons/com.devproxy.proxy.plist
+sudo launchctl load /Library/LaunchDaemons/com.devproxy.proxy.plist
 ```
 
 ---
@@ -452,10 +461,10 @@ lsof -ti:[PORT] | xargs kill -9 2>/dev/null; npm run dev
 ```
 
 ### If devproxy stops working
-The devproxy daemon (`~/.config/devproxy/proxy.js`) may freeze (macOS suspends idle processes). Fix:
+The devproxy runs as a LaunchDaemon on port 80. If it freezes (macOS suspends idle processes):
 ```bash
-kill -9 $(cat ~/.config/devproxy/proxy.pid) 2>/dev/null
-node ~/.config/devproxy/proxy.js &
+sudo launchctl unload /Library/LaunchDaemons/com.devproxy.proxy.plist
+sudo launchctl load /Library/LaunchDaemons/com.devproxy.proxy.plist
 ```
 After a daemon restart, routes are cleared. Projects re-register automatically on their next `npm run dev`.
 
@@ -501,10 +510,10 @@ lsof -ti:[API_PORT],[PUBLIC_PORT] | xargs kill -9 2>/dev/null; npm run dev
 ```
 
 ### If devproxy stops working
-The devproxy daemon (`~/.config/devproxy/proxy.js`) may freeze (macOS suspends idle processes). Fix:
+The devproxy runs as a LaunchDaemon on port 80. If it freezes (macOS suspends idle processes):
 ```bash
-kill -9 $(cat ~/.config/devproxy/proxy.pid) 2>/dev/null
-node ~/.config/devproxy/proxy.js &
+sudo launchctl unload /Library/LaunchDaemons/com.devproxy.proxy.plist
+sudo launchctl load /Library/LaunchDaemons/com.devproxy.proxy.plist
 ```
 After a daemon restart, routes are cleared. Projects re-register automatically on their next `npm run dev`.
 
