@@ -11,7 +11,7 @@ Drop-in port resolution and local subdomain routing for any Node.js dev server.
 
 Detection: uses `lsof` to get the PID on the port, then checks if its working directory is inside the current project root.
 
-**Devproxy (optional):** Routes `myproject.localhost` → `localhost:PORT` via a central reverse proxy daemon at `~/.config/devproxy/`. First run auto-installs dnsmasq + pfctl rules. Subsequent runs just register the subdomain. Routes are persisted to `routes.json` and auto-restored on daemon restart (dead ports are discarded). The daemon process is named `microproxy` (`process.title`).
+**Devproxy (optional):** Routes `myproject.localhost` → `localhost:PORT` via a central reverse proxy daemon at `~/.config/devproxy/`. First run auto-installs dnsmasq + pfctl rules. Subsequent runs just register the subdomain.
 
 ---
 
@@ -19,7 +19,7 @@ Detection: uses `lsof` to get the PID on the port, then checks if its working di
 
 - macOS (uses `lsof` for PID/cwd detection, `pfctl` for port forwarding)
 - Node.js 18+ (top-level await)
-- devproxy infrastructure at `~/.config/devproxy/` (extract from `microlocalhost_1.0.zip` if not present)
+- devproxy infrastructure at `~/.config/devproxy/` (copy from `central/` in this repo)
 
 ---
 
@@ -281,7 +281,7 @@ export default defineConfig({
 
 ### 1. Copy `lib/devproxy.js` into your project
 
-The file is a self-contained client that talks to the central proxy daemon. Copy it from any project that already has it, or extract from `microlocalhost_1.0.zip`:
+The file is a self-contained client that talks to the central proxy daemon. Copy it from the `client/` folder in this repo:
 
 ```
 myproject/
@@ -358,6 +358,10 @@ srv.listen(port);
 srv.listen(port, '127.0.0.1');
 ```
 
+### Non-localhost traffic pass-through
+
+Since pfctl redirects ALL loopback port 80 traffic to 8080, any local HTTP request on port 80 (e.g., Apple Mail Private Relay health checks, system HTTP requests) will hit the proxy. The proxy handles this by returning a `301` redirect to the HTTPS version of the same URL for any request whose `Host` header is NOT `*.localhost`. This ensures non-dev traffic isn't blocked and apps like Mail continue working normally.
+
 ### Devproxy daemon can freeze
 
 macOS may suspend the proxy daemon process after prolonged inactivity (shows as state `SNs` in `ps`). Symptoms: `lsof` shows port 8080 LISTEN but connections timeout.
@@ -368,19 +372,9 @@ kill -9 $(cat ~/.config/devproxy/proxy.pid)
 node ~/.config/devproxy/proxy.js &
 ```
 
-Routes are persisted to `~/.config/devproxy/routes.json`. On startup the daemon restores all saved routes whose ports are still responding, so **you don't need to re-register projects** after a daemon restart — only projects whose dev server was also stopped will be discarded.
+Routes are in-memory only — if the daemon restarts, projects re-register automatically on their next `npm run dev`. Re-registering the same subdomain overwrites the port (subdomain is the unique key).
 
-### Devproxy route persistence
-
-Routes are saved to `~/.config/devproxy/routes.json` on every register/deregister. On daemon startup:
-1. Loads saved routes from disk
-2. Probes each port with an HTTP request (1.5s timeout)
-3. Restores routes whose ports respond, discards dead ones
-4. Saves the cleaned-up set back to disk
-
-Re-registering the same subdomain overwrites the port (subdomain is the unique key/slug).
-
-**Manual registration** (if you don't want to restart a project):
+**Manual registration** (without restarting a project):
 ```bash
 echo '{"action":"register","subdomain":"myproject","port":3001}' | nc -U ~/.config/devproxy/proxy.sock
 ```
@@ -463,7 +457,7 @@ The devproxy daemon (`~/.config/devproxy/proxy.js`) may freeze (macOS suspends i
 kill -9 $(cat ~/.config/devproxy/proxy.pid) 2>/dev/null
 node ~/.config/devproxy/proxy.js &
 ```
-Routes are persisted — the daemon auto-restores routes whose ports are still alive. No need to restart projects unless their dev server was also stopped.
+After a daemon restart, routes are cleared. Projects re-register automatically on their next `npm run dev`.
 
 ### RULES for dev server changes
 - **NEVER hardcode ports** — always use `resolvePort()` or read from env vars
@@ -512,7 +506,7 @@ The devproxy daemon (`~/.config/devproxy/proxy.js`) may freeze (macOS suspends i
 kill -9 $(cat ~/.config/devproxy/proxy.pid) 2>/dev/null
 node ~/.config/devproxy/proxy.js &
 ```
-Routes are persisted — the daemon auto-restores routes whose ports are still alive. No need to restart projects unless their dev server was also stopped.
+After a daemon restart, routes are cleared. Projects re-register automatically on their next `npm run dev`.
 
 ### RULES for dev server changes
 - **NEVER hardcode ports** — always use `resolvePort()` or read from env vars
@@ -536,4 +530,4 @@ Add this to every project where smart-dev-port + devproxy is installed:
 lib/devproxy.js
 ```
 
-`lib/devproxy.js` is identical across all projects and depends on machine-local infrastructure (`~/.config/devproxy/`). It must NOT be committed. Each developer copies it from another project or extracts it from `microlocalhost_1.0.zip` on first setup.
+`lib/devproxy.js` is identical across all projects and depends on machine-local infrastructure (`~/.config/devproxy/`). It must NOT be committed. Each developer copies it from the `client/` folder in this repo on first setup.

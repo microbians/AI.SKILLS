@@ -1,0 +1,5 @@
+{
+	"name": "devproxy",
+	"type": "module",
+	"private": true
+}

@@ -52,7 +52,7 @@ server.listen(PORT, () => {
 
 ## Documentation
 
-Full documentation, code examples, AGENTS.md templates, and gotchas are in [`microlocalhostproxy.md`](microlocalhostproxy.md).
+Full documentation, code examples, AGENTS.md templates, and gotchas are in [`INSTALL.md`](INSTALL.md).
 
 ## Requirements
 
