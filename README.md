@@ -42,6 +42,7 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 - [Boilerplate](#boilerplate)
 - [Installation](#installation)
 - [Compatibility](#compatibility)
+- [Changelog](#changelog)
 - [License](#license)
 
 ---
@@ -225,25 +226,27 @@ Smart port resolution and local subdomain routing for Node.js dev servers on mac
 │  MICROLOCALHOSTPROXY                                          │
 │                                                               │
 │  Browser → myapp.localhost:80                                 │
-│         → pfctl redirect → 127.0.0.1:8080                     │
-│         → devproxy (central proxy) → routes by Host header    │
+│         → devproxy (listens directly on port 80)              │
+│         → routes by Host header                               │
 │         → 127.0.0.1:3001 (your dev server)                    │
 │                                                               │
 ├───────────────────────────────────────────────────────────────┤
+│                                                               │
+│  FEATURES                                                     │
+│  ├── LaunchDaemon on port 80 (no pfctl needed)                │
+│  ├── Retry with backoff on upstream errors                    │
+│  ├── Styled error page when server is unreachable             │
+│  └── Named routes (shown in devproxy list)                    │
 │                                                               │
 │  PORT RESOLUTION                                              │
 │  ├── Port free         → use it directly                      │
 │  ├── Occupied by US    → kill old process, reuse port         │
 │  └── Occupied by OTHER → find next free port (up to +20)      │
 │                                                               │
-│  PATTERNS                                                     │
-│  ├── Pattern A: Single server (Next.js, Vite, Express)        │
-│  └── Pattern B: Multi-process (frontend + backend)            │
-│                                                               │
 └───────────────────────────────────────────────────────────────┘
 ```
 
-**Includes:** `microlocalhostproxy.md` (full docs, code, templates), `README.md`
+**Includes:** `central/proxy.js`, `client/devproxy.js`, `INSTALL.md`, `README.md`
 
 **Requirements:** macOS, Node.js 18+
 
@@ -317,6 +320,20 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 │  Linux       │  Skills and plugins work. Tools are macOS-only │
 └──────────────┴────────────────────────────────────────────────┘
 ```
+
+---
+
+## Changelog
+
+| Date       | Change                                                                                      |
+|------------|---------------------------------------------------------------------------------------------|
+| 2026-03-18 | devproxy: retry with backoff, styled error page, route naming support                       |
+| 2026-03-18 | ASCII skill: add character count verification rule (Rule 8)                                 |
+| 2026-03-12 | devproxy: replace pfctl with LaunchDaemon listening directly on port 80                     |
+| 2026-03-12 | Restructure microlocalhostproxy into central/client modules with install script             |
+| 2026-03-10 | Unify all tree structures to Unicode characters and fix box widths                          |
+| 2026-03-10 | Rewrite all READMEs with ASCII art diagrams using Unicode box-drawing characters            |
+| 2026-03-10 | Initial release: skills, plugins, tools, and boilerplate for AI coding agents               |
 
 ---
 
