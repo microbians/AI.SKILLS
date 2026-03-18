@@ -384,9 +384,38 @@ SOLUTION:
 
 ---
 
-## Rule 8: Character Reference
+## Rule 8: Character Count Verification
 
-### Box Drawing -- ALWAYS use Unicode box-drawing characters
+### CRITICAL: Count Characters Per Line
+
+**Before finishing ANY box diagram, VERIFY that every line between ┌ and └ has EXACTLY the same number of characters.** This is the #1 source of broken diagrams.
+
+**Method:** Count the characters between (and including) the left border `│` and right border `│`. Every line must match the top `┌───┐` width.
+
+```
+WRONG (line 2 has 1 extra char — box breaks):
+┌─────────────┐
+│ content here │
+│ more content  │
+└─────────────┘
+
+CORRECT (all lines = 15 chars including borders):
+┌─────────────┐
+│ content     │
+│ more content│
+└─────────────┘
+```
+
+**When using █ or other fill characters inside boxes:**
+- Each █ occupies 1 character width in monospace
+- Spaces between █ blocks count as characters
+- Pad shorter lines with spaces to match the longest line
+
+---
+
+## Rule 9: Character Reference
+
+### Box Drawing — ALWAYS use Unicode box-drawing characters
 
 **NEVER use `+`, `-`, `|` for box borders.** Always use Unicode box-drawing:
 

@@ -203,8 +203,9 @@ function ensureProxyFiles() {
  * @param {Object} opts
  * @param {number} opts.port - The port your dev server listens on
  * @param {string} [opts.subdomain] - Override subdomain (default: package.json name)
+ * @param {string} [opts.name] - Display name for the project (shown in devproxy list)
  */
-export async function devproxy({ port, subdomain } = {}) {
+export async function devproxy({ port, subdomain, name } = {}) {
 	if (!port) {
 		console.error('  devproxy: port is required');
 		return;
@@ -235,7 +236,8 @@ export async function devproxy({ port, subdomain } = {}) {
 
 	// Register our subdomain
 	try {
-		const res = await sendCommand({ action: 'register', subdomain: sub, port });
+		const displayName = name || readPackageName() || sub;
+		const res = await sendCommand({ action: 'register', subdomain: sub, port, name: displayName });
 		if (res.ok) {
 			console.log(`  http://${sub}.localhost\n`);
 		} else {
