@@ -1,0 +1,60 @@
+{
+  "PostToolUse": [
+    {
+      "matcher": ".*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node ~/.claude/summarizer/summarize.mjs incremental",
+          "timeout": 60
+        }
+      ]
+    }
+  ],
+  "PreCompact": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/summarizer/start-llm.sh start > /dev/null 2>&1; node ~/.claude/summarizer/summarize.mjs compact",
+          "timeout": 15
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/summarizer/start-llm.sh stop > /dev/null 2>&1",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "SessionStart": [
+    {
+      "matcher": "startup|resume",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/summarizer/start-llm.sh start > /dev/null 2>&1; node ~/.claude/summarizer/summarize.mjs restore",
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "matcher": "clear",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/summarizer/start-llm.sh start > /dev/null 2>&1; node ~/.claude/summarizer/summarize.mjs restore",
+          "timeout": 120
+        }
+      ]
+    }
+  ]
+}

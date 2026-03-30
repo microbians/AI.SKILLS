@@ -21,6 +21,8 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 │  tools/                                                             │
 │  └── microlocalhostproxy/      Smart port + subdomain routing       │
 │                                                                     │
+│  ClaudeSumarizer/              Local LLM context summarizer         │
+│                                                                     │
 │  boilerplate/                  Project template + instructions      │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
