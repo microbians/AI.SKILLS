@@ -384,32 +384,56 @@ SOLUTION:
 
 ---
 
-## Rule 8: Character Count Verification
+## Rule 8: Character Count Verification (Mandatory Bash Check)
 
-### CRITICAL: Count Characters Per Line
+### CRITICAL: Verify Every Box With Bash
 
-**Before finishing ANY box diagram, VERIFY that every line between ┌ and └ has EXACTLY the same number of characters.** This is the #1 source of broken diagrams.
+**After generating ANY box diagram, you MUST run the verification command below before presenting it to the user.** Do NOT rely on visual counting — LLMs consistently miscount characters. Use real tooling instead.
 
-**Method:** Count the characters between (and including) the left border `│` and right border `│`. Every line must match the top `┌───┐` width.
+### Step 1: Generate the diagram normally
+
+Write the diagram as you normally would following Rules 1-7.
+
+### Step 2: Verify with bash
+
+Run this command, pasting your diagram between the quotes:
+
+```bash
+echo '┌─────────────────────────┐
+│  your content here      │
+│  more content           │
+└─────────────────────────┘' | while IFS= read -r line; do printf "%d: %s\n" "$(echo -n "$line" | wc -m)" "$line"; done
+```
+
+All lines MUST show the **same number**. Example output:
 
 ```
-WRONG (line 2 has 1 extra char — box breaks):
-┌─────────────┐
-│ content here │
-│ more content  │
-└─────────────┘
-
-CORRECT (all lines = 15 chars including borders):
-┌─────────────┐
-│ content     │
-│ more content│
-└─────────────┘
+27: ┌─────────────────────────┐
+27: │  your content here      │
+27: │  more content           │
+27: └─────────────────────────┘
 ```
 
-**When using █ or other fill characters inside boxes:**
-- Each █ occupies 1 character width in monospace
-- Spaces between █ blocks count as characters
-- Pad shorter lines with spaces to match the longest line
+### Step 3: Fix if numbers differ
+
+If any line shows a different count:
+
+```
+27: ┌─────────────────────────┐
+27: │  your content here      │
+28: │  more content            │   ← 28 ≠ 27, extra space
+27: └─────────────────────────┘
+```
+
+- Add or remove spaces before the right `│` to match the target width
+- Re-run the verification command
+- Repeat until ALL lines show the same number
+
+### Notes
+
+- The command uses `wc -m` which counts Unicode characters correctly (not bytes)
+- Each `█ ░ ▒ ▓ ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ▼ ▲ ◀ ▶` counts as 1 character
+- This check costs one tool call but eliminates all retry loops
 
 ---
 
