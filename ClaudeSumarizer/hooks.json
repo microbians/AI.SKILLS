@@ -29,8 +29,8 @@
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/summarizer/start-llm.sh stop > /dev/null 2>&1",
-          "timeout": 5
+          "command": "node ~/.claude/summarizer/summarize.mjs force; bash ~/.claude/summarizer/start-llm.sh stop > /dev/null 2>&1",
+          "timeout": 90
         }
       ]
     }

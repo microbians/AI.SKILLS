@@ -10,6 +10,8 @@
  *   incremental  - Summarize new conversation since last checkpoint (PostToolUse hook)
  *   compact      - Warn user that compaction is about to happen (PreCompact hook)
  *   restore      - Inject saved summaries after /clear (SessionStart:clear hook)
+ *   force        - Force an immediate summary regardless of counter/threshold (Stop hook or manual)
+ *   inject       - Inject arbitrary text as a summary entry (manual use)
  *
  * Reads hook JSON from stdin.
  */
@@ -453,12 +455,114 @@ ${finalSummary}
   }
 }
 
+async function force(hookInput) {
+  // Force an immediate summary, ignoring counter and min_new_chars threshold
+  const { session_id, transcript_path, cwd } = hookInput;
+  if (!session_id || !transcript_path) return;
+
+  const db = openDb();
+  if (!db) return;
+
+  try {
+    if (!(await ensureLLMRunning())) {
+      process.stderr.write('[summarizer] LLM not available, cannot force summary.\n');
+      return;
+    }
+
+    const stateKey = `offset:${session_id}`;
+    const stateRow = db.prepare('SELECT value FROM state WHERE key = ?').get(stateKey);
+    const lastOffset = stateRow ? parseInt(stateRow.value, 10) : 0;
+
+    const { messages, rawLength } = parseTranscript(transcript_path, lastOffset);
+    const text = messagesToText(messages);
+
+    if (text.length < 100) {
+      process.stderr.write('[summarizer] Not enough new content to summarize.\n');
+      return;
+    }
+
+    const prompt = `Summarize this coding conversation segment. Extract:
+
+- DECISIONS: What was decided and why (max 3)
+- CHANGES: Files modified and how (max 5)
+- PROBLEMS: Errors encountered and their solutions (max 3)
+- STATE: Current task status and next steps
+
+Be specific: include file paths, function names, error messages.
+Keep each item to 1-2 sentences.
+
+CONVERSATION:
+${text}`;
+
+    const summary = await callLLM(prompt);
+    if (!summary || summary.length < 50) {
+      process.stderr.write('[summarizer] LLM returned insufficient summary.\n');
+      return;
+    }
+
+    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM summaries WHERE session_id = ?').get(session_id);
+    const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
+
+    db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)').run(
+      session_id, cwd || '', chunkIndex, summary, messages.length
+    );
+    db.prepare(`INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, datetime('now'))`).run(stateKey, String(rawLength));
+
+    process.stderr.write(`[summarizer] Forced summary saved (chunk ${chunkIndex}, ${messages.length} messages).\n`);
+  } finally {
+    db.close();
+  }
+}
+
+async function inject(hookInput) {
+  // Inject arbitrary text as a summary entry
+  // Text comes from: --text "..." argument, or stdin if no hookInput
+  const session_id = hookInput.session_id || 'manual';
+  const cwd = hookInput.cwd || process.cwd();
+
+  // Get text from --text argument or from the remaining args
+  const textArgIdx = process.argv.indexOf('--text');
+  let text = '';
+  if (textArgIdx !== -1 && process.argv[textArgIdx + 1]) {
+    text = process.argv.slice(textArgIdx + 1).join(' ');
+  }
+
+  if (!text) {
+    process.stderr.write('Usage: summarize.mjs inject --text "your context here"\n');
+    process.exit(1);
+  }
+
+  const db = openDb();
+  if (!db) {
+    process.stderr.write('[summarizer] Cannot open database.\n');
+    return;
+  }
+
+  try {
+    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM summaries WHERE session_id = ?').get(session_id);
+    const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
+
+    db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)').run(
+      session_id, cwd, chunkIndex, `[MANUAL] ${text}`, 0
+    );
+
+    process.stderr.write(`[summarizer] Injected manual context (chunk ${chunkIndex}).\n`);
+  } finally {
+    db.close();
+  }
+}
+
 // ═══════════════════ MAIN ═══════════════════
 
 async function main() {
   const command = process.argv[2];
-  if (!command || !['incremental', 'compact', 'restore'].includes(command)) {
-    process.stderr.write('Usage: summarize.mjs <incremental|compact|restore>\n');
+  if (!command || !['incremental', 'compact', 'restore', 'force', 'inject'].includes(command)) {
+    process.stderr.write('Usage: summarize.mjs <incremental|compact|restore|force|inject>\n');
+    process.stderr.write('  incremental  Periodic summary (PostToolUse hook)\n');
+    process.stderr.write('  compact      Pre-compaction summary + warning (PreCompact hook)\n');
+    process.stderr.write('  restore      Inject summaries into new session (SessionStart hook)\n');
+    process.stderr.write('  force        Force immediate summary (Stop hook or manual)\n');
+    process.stderr.write('  inject       Inject manual text: --text "your context"\n');
     process.exit(1);
   }
 
@@ -478,6 +582,8 @@ async function main() {
       case 'incremental': await incremental(hookInput); break;
       case 'compact': await compact(hookInput); break;
       case 'restore': await restore(hookInput); break;
+      case 'force': await force(hookInput); break;
+      case 'inject': await inject(hookInput); break;
     }
   } catch (err) {
     // Silent failure — never break Claude Code

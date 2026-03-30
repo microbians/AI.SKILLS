@@ -6,10 +6,22 @@ A local LLM summarizer runs via Claude Code hooks to preserve conversation conte
 - **PostToolUse hook** runs every 15 tool calls — summarizes the conversation transcript via a local Qwen 2.5 3B model and stores summaries in `~/.claude/summarizer/summaries.db`
 - **SessionStart hook** (on `/clear`, `startup`, `resume`) — injects saved summaries as context into the new session
 - **PreCompact hook** — blocks compaction and suggests `/clear` so local summaries are used instead
-- **Stop hook** — shuts down the local LLM server when the session ends
+- **Stop hook** — forces a final summary of unsummarized conversation, then shuts down the local LLM server
+
+### Manual commands
+```bash
+# Force an immediate summary (skip counter/threshold)
+node ~/.claude/summarizer/summarize.mjs force
+
+# Inject arbitrary context into the summary database
+node ~/.claude/summarizer/summarize.mjs inject --text "your context here"
+```
+- **`force`** — Summarize all new conversation right now, without waiting for the periodic counter
+- **`inject`** — Add manual notes/context that will be restored in the next session (e.g., decisions made offline)
 
 ### Important behaviors
 - The summarizer is **automatic** — you don't need to do anything special, it runs in the background via hooks
+- On exit, any unsummarized conversation is captured automatically by the Stop hook
 - After `/clear`, previous context will appear as a `## Context from Previous Conversation` block — trust and use this context
 - Summaries are per-session and per-project (stored in SQLite with `session_id` and `project_dir`)
 - The local LLM server runs on `http://localhost:8922` — if it's not running, summarization silently skips

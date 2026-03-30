@@ -43,7 +43,22 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 1. **PostToolUse hook** — Every N tool calls (default: 15), parses the conversation transcript and sends it to a local LLM for summarization. Summaries are stored in SQLite.
 2. **PreCompact hook** — When Claude Code is about to compact context, warns the user and suggests `/clear` to use local summaries instead.
 3. **SessionStart hook** — On `/clear`, `startup`, or `resume`, injects saved summaries as context so the conversation can continue seamlessly.
-4. **Stop hook** — Shuts down the local LLM server when the session ends.
+4. **Stop hook** — Forces a final summary of any unsummarized conversation, then shuts down the local LLM server.
+
+### Manual commands
+
+You can also use the summarizer manually from the terminal:
+
+```bash
+# Force an immediate summary (no need to wait for N tool calls)
+node ~/.claude/summarizer/summarize.mjs force
+
+# Inject arbitrary context into the summary database
+node ~/.claude/summarizer/summarize.mjs inject --text "migrated auth to OAuth2, old session middleware removed"
+```
+
+- **`force`** — Summarizes all new conversation since the last checkpoint, ignoring the periodic counter and minimum character threshold. Useful before exiting or when you want to capture context right now.
+- **`inject`** — Stores any text you provide as a manual summary entry. Useful for adding context that didn't happen in the conversation (e.g., decisions made offline, notes for the next session).
 
 ## Requirements
 
