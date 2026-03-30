@@ -41,6 +41,7 @@ A collection of drop-in components that give AI agents persistent memory, safer 
   - [Microbrain](#microbrain)
 - [Tools](#tools)
   - [Microlocalhostproxy](#microlocalhostproxy)
+- [ClaudeSumarizer](#claudesumarizer)
 - [Boilerplate](#boilerplate)
 - [Installation](#installation)
 - [Compatibility](#compatibility)
@@ -254,6 +255,50 @@ Smart port resolution and local subdomain routing for Node.js dev servers on mac
 
 ---
 
+## ClaudeSumarizer
+
+> [`ClaudeSumarizer/`](ClaudeSumarizer/)
+
+Local LLM-powered conversation summarizer for Claude Code. Preserves context across `/clear` and session restarts using a small local model (Qwen 2.5 3B).
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│                                                               │
+│  CLAUDESUMARIZER                                              │
+│                                                               │
+│  HOOKS                                                        │
+│  ├── PostToolUse    Every N tool calls → summarize            │
+│  ├── PreCompact     Warn before compaction → suggest /clear   │
+│  ├── SessionStart   Inject saved summaries on /clear          │
+│  └── Stop           Shut down local LLM server                │
+│                                                               │
+│  FLOW                                                         │
+│  ├── Claude Code triggers hook events                         │
+│  │   │                                                        │
+│  │   └── Local LLM (Qwen 2.5 3B) summarizes conversation      │
+│  │       │                                                    │
+│  │       └── Summaries stored in SQLite                       │
+│  │                                                            │
+│  └── On /clear or new session:                                │
+│      │                                                        │
+│      └── Summaries injected as context                        │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
+
+**Key features:**
+- Automatic summarization every N tool calls (default: 15) via PostToolUse hook
+- PreCompact hook warns before context compaction, suggests `/clear` for local summaries
+- SessionStart hook injects saved summaries on `/clear`, `startup`, or `resume`
+- SQLite storage for persistent summaries across sessions
+- Configurable: model, summarization frequency, token limits, remote LLM support
+
+**Includes:** `summarize.mjs`, `start-llm.sh`, `config.json`, `hooks.json`, `install.sh`
+
+**Requirements:** macOS/Linux, Node.js 18+, llama-server (llama.cpp) in PATH, ~2GB disk for the GGUF model
+
+---
+
 ## Boilerplate
 
 > [`boilerplate/`](boilerplate/)
@@ -329,6 +374,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-03-30 | Add ClaudeSumarizer: local LLM context summarizer for Claude Code                           |
 | 2026-03-18 | devproxy: retry with backoff, styled error page, route naming support                       |
 | 2026-03-18 | ASCII skill: add character count verification rule (Rule 8)                                 |
 | 2026-03-12 | devproxy: replace pfctl with LaunchDaemon listening directly on port 80                     |
