@@ -262,28 +262,39 @@ Smart port resolution and local subdomain routing for Node.js dev servers on mac
 Local LLM-powered conversation summarizer for Claude Code. Preserves context across `/clear` and session restarts using a small local model (Qwen 2.5 3B).
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│                                                               │
-│  CLAUDESUMARIZER                                              │
-│                                                               │
-│  HOOKS                                                        │
-│  ├── PostToolUse    Every N tool calls → summarize            │
-│  ├── PreCompact     Warn before compaction → suggest /clear   │
-│  ├── SessionStart   Inject saved summaries on /clear          │
-│  └── Stop           Shut down local LLM server                │
-│                                                               │
-│  FLOW                                                         │
-│  ├── Claude Code triggers hook events                         │
-│  │   │                                                        │
-│  │   └── Local LLM (Qwen 2.5 3B) summarizes conversation      │
-│  │       │                                                    │
-│  │       └── Summaries stored in SQLite                       │
-│  │                                                            │
-│  └── On /clear or new session:                                │
-│      │                                                        │
-│      └── Summaries injected as context                        │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                                                              │
+│  ClaudeSumarizer                                             │
+│                                                              │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐      │
+│  │              │  │              │  │                │      │
+│  │  Claude      │  │  Hooks fire  │  │  Local LLM     │      │
+│  │  Code        ├──▶  on events   ├──▶  summarizes    │      │
+│  │              │  │              │  │                │      │
+│  └──────────────┘  └──────────────┘  └───────┬────────┘      │
+│                                              │               │
+│                                              │               │
+│                                              ▼               │
+│                                     ┌────────────────┐       │
+│                                     │                │       │
+│                                     │  SQLite DB     │       │
+│                                     │  stores        │       │
+│                                     │  summaries     │       │
+│                                     │                │       │
+│                                     └───────┬────────┘       │
+│                                             │                │
+│                      /clear ───────────────▶│                │
+│                                             │                │
+│                                             ▼                │
+│                                     ┌────────────────┐       │
+│                                     │                │       │
+│                                     │  Context       │       │
+│                                     │  injected into │       │
+│                                     │  new session   │       │
+│                                     │                │       │
+│                                     └────────────────┘       │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 **Key features:**
