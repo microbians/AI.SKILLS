@@ -35,6 +35,18 @@
       ]
     }
   ],
+  "SessionEnd": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node ~/.claude/summarizer/summarize.mjs force; bash ~/.claude/summarizer/start-llm.sh stop > /dev/null 2>&1; osascript -e 'display notification \"Sesión guardada\" with title \"Claude Code\"'",
+          "timeout": 90
+        }
+      ]
+    }
+  ],
   "SessionStart": [
     {
       "matcher": "startup|resume",

@@ -1,19 +1,17 @@
 # Manual Installation Guide
 
-If you prefer to install ClaudeSumarizer manually instead of using `install.sh`, follow these steps.
+If you prefer to install The Secretary manually instead of using `install.sh`, follow these steps.
 
 ## 1. Create directory and copy files
 
 ```bash
 mkdir -p ~/.claude/summarizer/models
 
-# Copy source files
 cp src/summarize.mjs ~/.claude/summarizer/
 cp src/start-llm.sh ~/.claude/summarizer/
 cp src/config.json ~/.claude/summarizer/
 cp src/package.json ~/.claude/summarizer/
 
-# Make start-llm.sh executable
 chmod +x ~/.claude/summarizer/start-llm.sh
 ```
 
@@ -24,18 +22,17 @@ cd ~/.claude/summarizer
 npm install
 ```
 
-## 3. Download the model
+## 3. Download the model (llama.cpp only)
 
 ```bash
+# Skip this if using MLX — it downloads automatically on first use
 curl -L -o ~/.claude/summarizer/models/qwen2.5-3b-instruct-q4_k_m.gguf \
   "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
 ```
 
-This is ~2GB. You can use any other GGUF model — just update `config.json` and `start-llm.sh`.
-
 ## 4. Add hooks to settings.json
 
-Open `~/.claude/settings.json` and add these hooks to the `hooks` object. If you already have hooks, merge them — don't replace.
+Open `~/.claude/settings.json` and merge these hooks (don't replace existing ones):
 
 ```json
 {
@@ -47,7 +44,7 @@ Open `~/.claude/settings.json` and add these hooks to the `hooks` object. If you
           {
             "type": "command",
             "command": "node ~/.claude/summarizer/summarize.mjs incremental",
-            "timeout": 30
+            "timeout": 60
           }
         ]
       }
@@ -70,8 +67,8 @@ Open `~/.claude/settings.json` and add these hooks to the `hooks` object. If you
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/summarizer/start-llm.sh stop > /dev/null 2>&1",
-            "timeout": 5
+            "command": "node ~/.claude/summarizer/summarize.mjs force; bash ~/.claude/summarizer/start-llm.sh stop > /dev/null 2>&1",
+            "timeout": 90
           }
         ]
       }
@@ -102,20 +99,21 @@ Open `~/.claude/settings.json` and add these hooks to the `hooks` object. If you
 }
 ```
 
-## 5. Verify
+## 5. Copy CLAUDE.md snippet
 
 ```bash
-# Start the LLM server
+cat src/claude-md-snippet.md >> ~/.claude/CLAUDE.md
+```
+
+## 6. Verify
+
+```bash
 bash ~/.claude/summarizer/start-llm.sh start
-
-# Check it responds
 curl -s http://localhost:8922/v1/models | head -1
-
-# Test summarizer (should exit silently — no stdin)
 echo '{}' | node ~/.claude/summarizer/summarize.mjs incremental
 echo $?  # Should be 0
 ```
 
-## 6. Restart Claude Code
+## 7. Restart Claude Code
 
 Close and reopen Claude Code. The hooks will activate automatically.

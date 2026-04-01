@@ -1,7 +1,7 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════
-# ClaudeSumarizer Installer
-# Installs the local LLM summarizer for Claude Code
+# The Secretary — Installer
+# AI-powered context persistence for Claude Code
 # Usage: bash install.sh [--uninstall]
 # ═══════════════════════════════════════════════════════════════════
 
@@ -23,10 +23,15 @@ info()  { echo -e "${GREEN}[✓]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
+# Match patterns for identifying our hooks in settings.json
+HOOK_MATCH="summarize\|start-llm"
+# Match patterns for identifying our sections in CLAUDE.md (old + new names)
+SNIPPET_MATCH="ClaudeSumarizer\|The Secretary"
+
 # ─── UNINSTALL ───────────────────────────────────────────────────
 
 if [ "$1" = "--uninstall" ]; then
-  echo "Uninstalling ClaudeSumarizer..."
+  echo "Uninstalling The Secretary..."
 
   # Stop LLM server
   if [ -f "$DEST/start-llm.sh" ]; then
@@ -47,7 +52,7 @@ if [ "$1" = "--uninstall" ]; then
         }
         if (Object.keys(s.hooks).length === 0) delete s.hooks;
       }
-      // Remove summarizer permissions
+      // Remove permissions
       if (s.permissions?.allow) {
         s.permissions.allow = s.permissions.allow.filter(p => !p.includes('summarize') && !p.includes('start-llm'));
       }
@@ -55,22 +60,26 @@ if [ "$1" = "--uninstall" ]; then
     " 2>/dev/null && info "Hooks removed from settings.json" || warn "Could not clean settings.json — remove hooks manually"
   fi
 
-  # Remove CLAUDE.md snippet if present
-  for f in ".claude/CLAUDE.md" "CLAUDE.md"; do
-    if [ -f "$f" ] && grep -q "ClaudeSumarizer" "$f" 2>/dev/null; then
+  # Remove CLAUDE.md snippet (handles both old and new section names)
+  for f in "$HOME/.claude/CLAUDE.md" ".claude/CLAUDE.md" "CLAUDE.md"; do
+    if [ -f "$f" ] && grep -qE "ClaudeSumarizer|The Secretary" "$f" 2>/dev/null; then
       node -e "
         const fs = require('fs');
         let md = fs.readFileSync('$f', 'utf-8');
+        // Remove old ClaudeSumarizer section
         md = md.replace(/\n*## ClaudeSumarizer[\s\S]*?(?=\n## [^C]|\n## $|$)/, '');
-        fs.writeFileSync('$f', md.trimEnd() + '\n');
-      " 2>/dev/null && info "Removed ClaudeSumarizer section from $f" || warn "Could not clean $f"
+        // Remove new The Secretary section
+        md = md.replace(/\n*## The Secretary[\s\S]*?(?=\n## [^T]|\n## $|$)/, '');
+        md = md.trimEnd();
+        if (md.length === 0) { fs.unlinkSync('$f'); } else { fs.writeFileSync('$f', md + '\n'); }
+      " 2>/dev/null && info "Removed section from $f" || warn "Could not clean $f"
     fi
   done
 
   # Remove directory
   rm -rf "$DEST"
   info "Removed $DEST"
-  info "ClaudeSumarizer uninstalled successfully."
+  info "The Secretary uninstalled successfully."
   exit 0
 fi
 
@@ -78,7 +87,7 @@ fi
 
 echo ""
 echo "════════════════════════════════════════════════"
-echo "  ClaudeSumarizer — Installer"
+echo "  The Secretary — Installer"
 echo "════════════════════════════════════════════════"
 echo ""
 
@@ -89,10 +98,22 @@ command -v npm &>/dev/null || error "npm is required but not found. Install it f
 NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
 [ "$NODE_VERSION" -ge 18 ] 2>/dev/null || error "Node.js 18+ is required (found: $(node -v))"
 
-if ! command -v llama-server &>/dev/null; then
-  warn "llama-server not found in PATH."
-  echo "  Install it with: brew install llama.cpp (macOS) or build from source."
-  echo "  The summarizer will be installed but won't work until llama-server is available."
+# Detect LLM backend
+HAS_MLX=false
+HAS_LLAMA=false
+if python3 -c "import mlx_lm" 2>/dev/null; then
+  HAS_MLX=true
+  info "MLX backend detected (Apple Silicon optimized)"
+fi
+if command -v llama-server &>/dev/null; then
+  HAS_LLAMA=true
+  info "llama.cpp backend detected"
+fi
+if [ "$HAS_MLX" = false ] && [ "$HAS_LLAMA" = false ]; then
+  warn "No LLM backend found."
+  echo "  Option 1 (recommended for Apple Silicon): pip install mlx-lm"
+  echo "  Option 2: brew install llama.cpp"
+  echo "  The Secretary will be installed but won't work until a backend is available."
   echo ""
 fi
 
@@ -114,10 +135,13 @@ cd "$DEST" && npm install --production --silent 2>/dev/null
 cd "$SCRIPT_DIR"
 info "Dependencies installed."
 
-# 4. Download model (if not already present)
-if [ ! -f "$DEST/models/$MODEL_FILE" ]; then
+# 4. Download model
+if [ "$HAS_MLX" = true ]; then
+  info "MLX will download the model automatically on first use (mlx-community/Qwen2.5-3B-Instruct-4bit)"
+  info "Skipping GGUF model download."
+elif [ ! -f "$DEST/models/$MODEL_FILE" ]; then
   echo ""
-  warn "Downloading model (~2GB). This may take a few minutes..."
+  warn "Downloading GGUF model (~2GB). This may take a few minutes..."
   echo "  URL: $MODEL_URL"
   echo ""
 
@@ -136,13 +160,12 @@ if [ ! -f "$DEST/models/$MODEL_FILE" ]; then
     error "Model download failed. Download manually from: $MODEL_URL"
   fi
 else
-  info "Model already present."
+  info "GGUF model already present."
 fi
 
 # 5. Merge hooks and permissions into settings.json
 info "Configuring Claude Code hooks and permissions..."
 
-# Ensure settings.json exists
 if [ ! -f "$SETTINGS" ]; then
   mkdir -p "$(dirname "$SETTINGS")"
   echo '{}' > "$SETTINGS"
@@ -156,32 +179,28 @@ node -e "
   const settings = JSON.parse(fs.readFileSync('$SETTINGS', 'utf-8'));
   const newHooks = JSON.parse(fs.readFileSync('$HOOKS_FILE', 'utf-8'));
 
-  // Initialize hooks object if missing
   if (!settings.hooks) settings.hooks = {};
 
-  // For each hook event, remove any existing summarizer entries then add new ones
   for (const [event, matchers] of Object.entries(newHooks)) {
     if (!settings.hooks[event]) settings.hooks[event] = [];
 
-    // Remove existing summarizer hooks (to avoid duplicates on re-install)
+    // Remove existing summarizer hooks (avoid duplicates on re-install)
     settings.hooks[event] = settings.hooks[event].filter(m =>
       !m.hooks?.some(h => h.command?.includes('summarize') || h.command?.includes('start-llm'))
     );
 
-    // Add new hooks
     settings.hooks[event].push(...matchers);
   }
 
-  // Add auto-allow permissions so the user isn't prompted for every hook execution
   if (!settings.permissions) settings.permissions = {};
   if (!settings.permissions.allow) settings.permissions.allow = [];
 
-  const summarizerPermissions = [
+  const perms = [
     'Bash(node ~/.claude/summarizer/summarize.mjs*)',
     'Bash(bash ~/.claude/summarizer/start-llm.sh*)'
   ];
 
-  for (const perm of summarizerPermissions) {
+  for (const perm of perms) {
     if (!settings.permissions.allow.includes(perm)) {
       settings.permissions.allow.push(perm);
     }
@@ -192,60 +211,69 @@ node -e "
 
 info "Hooks and permissions configured."
 
-# 6. Inject CLAUDE.md snippet into current project (if applicable)
+# 6. Inject CLAUDE.md snippet
 SNIPPET="$SCRIPT_DIR/src/claude-md-snippet.md"
-CLAUDE_MD=""
+GLOBAL_CLAUDE_MD="$HOME/.claude/CLAUDE.md"
 
-# Look for CLAUDE.md: first .claude/CLAUDE.md, then root CLAUDE.md
-if [ -f ".claude/CLAUDE.md" ]; then
-  CLAUDE_MD=".claude/CLAUDE.md"
-elif [ -f "CLAUDE.md" ]; then
-  CLAUDE_MD="CLAUDE.md"
-fi
+inject_snippet() {
+  local target="$1"
+  local label="$2"
 
-if [ -n "$CLAUDE_MD" ] && [ -f "$SNIPPET" ]; then
-  # Check if already injected
-  if grep -q "ClaudeSumarizer" "$CLAUDE_MD" 2>/dev/null; then
-    # Replace existing section
+  if [ ! -f "$target" ]; then
+    cat "$SNIPPET" > "$target"
+    info "Created $label with The Secretary docs"
+    return
+  fi
+
+  # Remove any existing section (old ClaudeSumarizer or new The Secretary)
+  if grep -qE "ClaudeSumarizer|The Secretary" "$target" 2>/dev/null; then
     node -e "
       const fs = require('fs');
-      let md = fs.readFileSync('$CLAUDE_MD', 'utf-8');
+      let md = fs.readFileSync('$target', 'utf-8');
       const snippet = fs.readFileSync('$SNIPPET', 'utf-8');
-      // Remove old section (from ## ClaudeSumarizer to next ## or EOF)
+      // Remove old section
       md = md.replace(/## ClaudeSumarizer[\\s\\S]*?(?=\\n## [^C]|\\n## \$|\$)/, '');
-      // Append new
+      // Remove new section (re-install case)
+      md = md.replace(/## The Secretary[\\s\\S]*?(?=\\n## [^T]|\\n## \$|\$)/, '');
       md = md.trimEnd() + '\\n\\n' + snippet.trim() + '\\n';
-      fs.writeFileSync('$CLAUDE_MD', md);
+      fs.writeFileSync('$target', md);
     "
-    info "Updated ClaudeSumarizer section in $CLAUDE_MD"
+    info "Updated The Secretary section in $label"
   else
-    # Append snippet
-    echo "" >> "$CLAUDE_MD"
-    cat "$SNIPPET" >> "$CLAUDE_MD"
-    echo "" >> "$CLAUDE_MD"
-    info "Added ClaudeSumarizer section to $CLAUDE_MD"
+    echo "" >> "$target"
+    cat "$SNIPPET" >> "$target"
+    echo "" >> "$target"
+    info "Added The Secretary section to $label"
   fi
-else
-  warn "No CLAUDE.md found in current directory. You can manually add the snippet from:"
-  warn "  $SNIPPET"
+}
+
+inject_snippet "$GLOBAL_CLAUDE_MD" "~/.claude/CLAUDE.md (global)"
+
+LOCAL_CLAUDE_MD=""
+if [ -f ".claude/CLAUDE.md" ]; then
+  LOCAL_CLAUDE_MD=".claude/CLAUDE.md"
+elif [ -f "CLAUDE.md" ]; then
+  LOCAL_CLAUDE_MD="CLAUDE.md"
 fi
 
-# 8. Verify installation
+if [ -n "$LOCAL_CLAUDE_MD" ]; then
+  inject_snippet "$LOCAL_CLAUDE_MD" "$LOCAL_CLAUDE_MD (project)"
+fi
+
+# 7. Verify installation
 echo ""
 info "Verifying installation..."
 
-# Check files exist
 [ -f "$DEST/summarize.mjs" ] || error "summarize.mjs not found"
 [ -f "$DEST/start-llm.sh" ] || error "start-llm.sh not found"
 [ -f "$DEST/config.json" ] || error "config.json not found"
 [ -d "$DEST/node_modules/better-sqlite3" ] || error "better-sqlite3 not installed"
 
-# Quick test: run summarizer with empty input (should exit cleanly)
 echo '{}' | node "$DEST/summarize.mjs" incremental 2>/dev/null
-info "Summarizer script works."
+info "Secretary script works."
 
-# Try to start LLM if llama-server is available
-if command -v llama-server &>/dev/null && [ -f "$DEST/models/$MODEL_FILE" ]; then
+# Try to start LLM
+if [ "$HAS_MLX" = true ] || { [ "$HAS_LLAMA" = true ] && [ -f "$DEST/models/$MODEL_FILE" ]; }; then
   echo ""
   info "Starting LLM server..."
   bash "$DEST/start-llm.sh" start
@@ -265,7 +293,12 @@ echo ""
 echo "  Files:    $DEST/"
 echo "  Config:   $DEST/config.json"
 echo "  Database: $DEST/summaries.db (created on first use)"
-echo "  Logs:     /tmp/llama-summarizer.log"
+echo ""
+echo "  Features:"
+echo "    - Conversation summarization (automatic)"
+echo "    - User memories: \"recuerda que...\" / \"olvida que...\""
+echo "    - Notes: \"toma nota:\" / \"borra la nota de...\""
+echo "    - Reminders: \"avísame el viernes...\" / \"ya hice...\""
 echo ""
 echo "  Restart Claude Code to activate the hooks."
 echo "  To uninstall: bash $SCRIPT_DIR/install.sh --uninstall"
