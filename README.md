@@ -5,29 +5,29 @@ Skills, plugins, and tools for AI coding agents (OpenCode, Claude Code).
 A collection of drop-in components that give AI agents persistent memory, safer coding habits, auto-generated documentation, and better local development workflows.
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│  AI.SKILLS                                                          │
-│                                                                     │
-│  skills/                                                            │
-│  ├── ascii-art-diagrams/       Unicode diagram formatting rules     │
-│  ├── defensive-development/    Verify-first coding practices        │
-│  ├── project-structure/        Auto-gen directory structure docs    │
-│  └── project-api/              Auto-gen API reference docs          │
-│                                                                     │
-│  plugins/                                                           │
-│  └── microbrain/               Persistent SQLite memory system      │
-│                                                                     │
-│  tools/                                                             │
-│  └── microlocalhostproxy/      Smart port + subdomain routing       │
-│                                                                     │
-│  TheSecretary/                 Local LLM context summarizer         │
-│                                                                     │
-│  opencodemlx/                  Local AI coding assistant (MLX)      │
-│                                                                     │
-│  boilerplate/                  Project template + instructions      │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  AI.SKILLS                                                      │
+│                                                                 │
+│  skills/                                                        │
+│    - ascii-art-diagrams/     Unicode diagram formatting rules   │
+│    - defensive-development/  Verify-first coding practices      │
+│    - project-structure/      Auto-gen directory structure docs  │
+│    - project-api/            Auto-gen API reference docs        │
+│                                                                 │
+│  plugins/                                                       │
+│    - microbrain/             Persistent SQLite memory system    │
+│                                                                 │
+│  tools/                                                         │
+│    - microlocalhostproxy/    Smart port + subdomain routing     │
+│                                                                 │
+│  TheSecretary/               Local LLM context summarizer       │
+│                                                                 │
+│  opencodemlx/                Local AI coding assistant (MLX)    │
+│                                                                 │
+│  boilerplate/                Project template + instructions    │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -119,21 +119,18 @@ Rules for the agent to generate consistent, well-formatted ASCII diagrams using 
 Self-healing skill that auto-generates and maintains a `.claude/structure.md` file documenting the project's directory tree, key files, their purposes, and relationships.
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│                                                               │
-│  PROJECT STRUCTURE SKILL                                      │
-│                                                               │
-│  1. Agent detects .claude/structure.md is missing             │
-│     │                                                         │
-│     ├── Scans codebase with find + file analysis              │
-│     │                                                         │
-│     ├── Builds annotated directory tree                       │
-│     │                                                         │
-│     └── Writes organized docs to .claude/structure.md         │
-│                                                               │
-│  2. Self-healing: regenerates when outdated                   │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                                                           │
+│  PROJECT STRUCTURE SKILL                                  │
+│                                                           │
+│  1. Agent detects .claude/structure.md is missing         │
+│     - Scans codebase with find + file analysis            │
+│     - Builds annotated directory tree                     │
+│     - Writes organized docs to .claude/structure.md       │
+│                                                           │
+│  2. Self-healing: regenerates when outdated               │
+│                                                           │
+└───────────────────────────────────────────────────────────┘
 ```
 
 **Includes:** `SKILL.md`, `README.md`
@@ -147,19 +144,19 @@ Self-healing skill that auto-generates and maintains a `.claude/structure.md` fi
 Self-healing skill that auto-generates and maintains a `.claude/api.md` reference documenting the project's public API: classes with methods, inheritance hierarchies, constructor parameters, and exported functions.
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│                                                               │
-│  PROJECT API SKILL                                            │
-│                                                               │
-│  Extracts:                                                    │
-│  ├── Class hierarchies (Parent → Child)                       │
-│  ├── Methods, constructors, getters/setters                   │
-│  └── Standalone exported functions with parameters            │
-│                                                               │
-│  Output: .claude/api.md                                       │
-│  Self-healing: regenerates when missing or after major changes│
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                                                           │
+│  PROJECT API SKILL                                        │
+│                                                           │
+│  Extracts:                                                │
+│  - Class hierarchies (Parent -> Child)                    │
+│  - Methods, constructors, getters/setters                 │
+│  - Standalone exported functions with parameters          │
+│                                                           │
+│  Output: .claude/api.md                                   │
+│  Self-healing: regenerates when missing or stale          │
+│                                                           │
+└───────────────────────────────────────────────────────────┘
 ```
 
 **Includes:** `SKILL.md`, `README.md`
@@ -178,27 +175,27 @@ Full-featured plugins with runtime logic that hook into the agent's lifecycle ev
 Persistent SQLite memory system for OpenCode. A single TypeScript file that registers custom tools and lifecycle hooks directly in the agent runtime.
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│                     MICROBRAIN ARCHITECTURE                   │
-├───────────────────────────────────────────────────────────────┤
-│                                                               │
-│  PLUGIN (.opencode/plugins/microbrain.ts)                     │
-│  ├── session.created  → auto-load high-importance memories    │
-│  ├── session.compacting → extract + save (LLM/heuristic)      │
-│  └── registers custom tools:                                  │
-│      ├── memory_search  → FTS5 full-text search               │
-│      ├── memory_save    → insert/update with validation       │
-│      ├── memory_delete  → delete memories by ID               │
-│      └── memory_stats   → overview of stored knowledge        │
-│                                                               │
-│  STORAGE                                                      │
-│  └── .opencode/memory.db (SQLite + FTS5)                      │
-│                                                               │
-│  OPTIONAL LLM                                                 │
-│  └── .opencode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf       │
-│      (used for extraction on compaction, ~500MB)              │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                  MICROBRAIN ARCHITECTURE                  │
+├───────────────────────────────────────────────────────────┤
+│                                                           │
+│  PLUGIN (.opencode/plugins/microbrain.ts)                 │
+│  - session.created: auto-load high-importance memories    │
+│  - session.compacting: extract + save (LLM/heuristic)     │
+│  - registers custom tools:                                │
+│      memory_search   FTS5 full-text search                │
+│      memory_save     insert/update with validation        │
+│      memory_delete   delete memories by ID                │
+│      memory_stats    overview of stored knowledge         │
+│                                                           │
+│  STORAGE                                                  │
+│  - .opencode/memory.db (SQLite + FTS5)                    │
+│                                                           │
+│  OPTIONAL LLM                                             │
+│  - .opencode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf     │
+│    (used for extraction on compaction, ~500MB)            │
+│                                                           │
+└───────────────────────────────────────────────────────────┘
 ```
 
 **Key features:**
@@ -227,29 +224,29 @@ Standalone utilities for development workflows. Not tied to the agent's skill sy
 Smart port resolution and local subdomain routing for Node.js dev servers on macOS.
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│                                                               │
-│  MICROLOCALHOSTPROXY                                          │
-│                                                               │
-│  Browser → myapp.localhost:80                                 │
-│         → devproxy (listens directly on port 80)              │
-│         → routes by Host header                               │
-│         → 127.0.0.1:3001 (your dev server)                    │
-│                                                               │
-├───────────────────────────────────────────────────────────────┤
-│                                                               │
-│  FEATURES                                                     │
-│  ├── LaunchDaemon on port 80 (no pfctl needed)                │
-│  ├── Retry with backoff on upstream errors                    │
-│  ├── Styled error page when server is unreachable             │
-│  └── Named routes (shown in devproxy list)                    │
-│                                                               │
-│  PORT RESOLUTION                                              │
-│  ├── Port free         → use it directly                      │
-│  ├── Occupied by US    → kill old process, reuse port         │
-│  └── Occupied by OTHER → find next free port (up to +20)      │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                                                           │
+│  MICROLOCALHOSTPROXY                                      │
+│                                                           │
+│  Browser -> myapp.localhost:80                            │
+│          -> devproxy (listens directly on port 80)        │
+│          -> routes by Host header                         │
+│          -> 127.0.0.1:3001 (your dev server)              │
+│                                                           │
+├───────────────────────────────────────────────────────────┤
+│                                                           │
+│  FEATURES                                                 │
+│  - LaunchDaemon on port 80 (no pfctl needed)              │
+│  - Retry with backoff on upstream errors                  │
+│  - Styled error page when server is unreachable           │
+│  - Named routes (shown in devproxy list)                  │
+│                                                           │
+│  PORT RESOLUTION                                          │
+│  - Port free          use it directly                     │
+│  - Occupied by US     kill old process, reuse port        │
+│  - Occupied by OTHER  find next free port (up to +20)     │
+│                                                           │
+└───────────────────────────────────────────────────────────┘
 ```
 
 **Includes:** `central/proxy.js`, `client/devproxy.js`, `INSTALL.md`, `README.md`
@@ -308,23 +305,22 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 Local AI coding assistant powered by Apple Silicon. Runs Qwen3.5-4B with TurboQuant KV cache compression for fast, private inference on-device.
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│                                                               │
-│  OpenCode MLX + TurboQuant                                    │
-│                                                               │
-│  OpenCode (TUI)                                               │
-│  ├── /v1/chat/completions (OpenAI-compatible)                 │
-│  └── Tool calling (bash, edit, read, write...)                │
-│                                                               │
-│  MLX + TurboQuant Server (localhost:8899)                     │
-│  ├── Qwen3.5-4B-MLX-8bit (~5 GB)                              │
-│  ├── TurboQuant KV cache (3-6x compression)                   │
-│  ├── Tool calling (Qwen XML -> OpenAI format)                 │
-│  └── Optional document/codebase pre-loading                   │
-│                                                               │
-│  Apple Silicon GPU (Metal)                                    │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│                                                       │
+│  OpenCode MLX + TurboQuant                            │
+│                                                       │
+│  ┌─────────────────────────────────────────────────┐  │
+│  │  OpenCode (TUI)                                 │  │
+│  │  /v1/chat/completions + tool calling            │  │
+│  ├─────────────────────────────────────────────────┤  │
+│  │  MLX + TurboQuant Server (localhost:8899)       │  │
+│  │  Qwen3.5-4B-MLX-8bit, KV cache 3-6x compress    │  │
+│  │  Tool calling, document/codebase pre-loading    │  │
+│  ├─────────────────────────────────────────────────┤  │
+│  │  Apple Silicon GPU (Metal)                      │  │
+│  └─────────────────────────────────────────────────┘  │
+│                                                       │
+└───────────────────────────────────────────────────────┘
 ```
 
 **Key features:**
@@ -347,18 +343,18 @@ Local AI coding assistant powered by Apple Silicon. Runs Qwen3.5-4B with TurboQu
 Project template with configuration files and instructions. No pre-installed components -- you choose what to install.
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│                                                               │
-│  BOILERPLATE                                                  │
-│                                                               │
-│  ├── AGENTS.md      Agent instructions template               │
-│  ├── .gitignore     Standard ignores for agent projects       │
-│  ├── tasks/         Planning docs folder                      │
-│  └── SETUP.md       Step-by-step install guide                │
-│                                                               │
-│  Placeholders: {{PROJECT_NAME}}, {{TECH_STACK}}, {{PORT}}     │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                                                           │
+│  BOILERPLATE                                              │
+│                                                           │
+│  - AGENTS.md      Agent instructions template             │
+│  - .gitignore     Standard ignores for agent projects     │
+│  - tasks/         Planning docs folder                    │
+│  - SETUP.md       Step-by-step install guide              │
+│                                                           │
+│  Placeholders: {{PROJECT_NAME}}, {{TECH_STACK}}, {{PORT}} │
+│                                                           │
+└───────────────────────────────────────────────────────────┘
 ```
 
 **Quick start:**

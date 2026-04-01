@@ -384,7 +384,53 @@ SOLUTION:
 
 ---
 
-## Rule 8: Character Count Verification (Mandatory Bash Check)
+## Rule 8: No Tree Characters Inside Box Content Lines
+
+### CRITICAL: Tree characters cause visual misalignment on GitHub
+
+**NEVER use `├──`, `└──`, or `│` as tree connectors mixed with text inside box content lines.** These characters render with inconsistent visual width in GitHub's monospace font, causing columns to misalign even when character counts match.
+
+```
+WRONG (tree chars mixed with text inside box)
+┌───────────────────────────────────────────┐
+│  Server (localhost:8899)                  │
+│  ├── Qwen3.5-4B-MLX-8bit                 │
+│  ├── TurboQuant KV cache                 │
+│  └── Tool calling                        │
+└───────────────────────────────────────────┘
+
+CORRECT (nested box with separators)
+┌───────────────────────────────────────────┐
+│  ┌───────────────────────────────────┐    │
+│  │  Server (localhost:8899)          │    │
+│  │  Qwen3.5-4B-MLX-8bit             │    │
+│  │  TurboQuant KV cache             │    │
+│  │  Tool calling                    │    │
+│  └───────────────────────────────────┘    │
+└───────────────────────────────────────────┘
+
+CORRECT (plain indented text, no tree chars)
+┌───────────────────────────────────────────┐
+│  Server (localhost:8899)                  │
+│    Qwen3.5-4B-MLX-8bit                   │
+│    TurboQuant KV cache                   │
+│    Tool calling                          │
+└───────────────────────────────────────────┘
+
+CORRECT (bullet lists)
+┌───────────────────────────────────────────┐
+│  Server (localhost:8899)                  │
+│  - Qwen3.5-4B-MLX-8bit                   │
+│  - TurboQuant KV cache                   │
+│  - Tool calling                          │
+└───────────────────────────────────────────┘
+```
+
+**Exception:** Tree characters ARE fine in standalone trees (Rule 3) that are NOT inside a `│...│` box border. They are also fine in Rule 6.2 (Info Box with Tree Inside) when the tree connectors are on their own lines with only `│` spacers, not mixed with descriptive text.
+
+---
+
+## Rule 9: Character Count Verification (Mandatory Bash Check)
 
 ### CRITICAL: Verify Every Box With Bash
 
@@ -392,7 +438,7 @@ SOLUTION:
 
 ### Step 1: Generate the diagram normally
 
-Write the diagram as you normally would following Rules 1-7.
+Write the diagram as you normally would following Rules 1-8.
 
 ### Step 2: Verify with bash
 
@@ -437,7 +483,7 @@ If any line shows a different count:
 
 ---
 
-## Rule 9: Character Reference
+## Rule 10: Character Reference
 
 ### Box Drawing — ALWAYS use Unicode box-drawing characters
 
