@@ -5,14 +5,14 @@ Local AI coding assistant powered by Apple Silicon. Runs Qwen3.5-4B with TurboQu
 ```
 ┌─────────────────────────────────────────────────┐
 │  OpenCode (TUI)                                 │
-│  ├── /v1/chat/completions (OpenAI-compatible)   │
-│  └── Tool calling (bash, edit, read, write...)  │
+│  - /v1/chat/completions (OpenAI-compatible)     │
+│  - Tool calling (bash, edit, read, write...)    │
 ├─────────────────────────────────────────────────┤
 │  MLX + TurboQuant Server (localhost:8899)       │
-│  ├── Qwen3.5-4B-MLX-8bit                       │
-│  ├── TurboQuant KV cache (3-6x compression)    │
-│  ├── Tool calling (Qwen XML -> OpenAI format)   │
-│  └── Optional document/codebase pre-loading     │
+│  - Qwen3.5-4B-MLX-8bit                          │
+│  - TurboQuant KV cache (3-6x compression)       │
+│  - Tool calling (Qwen XML -> OpenAI format)     │
+│  - Optional document/codebase pre-loading       │
 ├─────────────────────────────────────────────────┤
 │  Apple Silicon GPU (Metal)                      │
 └─────────────────────────────────────────────────┘
