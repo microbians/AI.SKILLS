@@ -35,29 +35,29 @@ Every 15 tool calls, the conversation is summarized by the local LLM and stored.
 Permanent facts about the user, detected via regex on every tool call.
 
 ```
-"Recuerda que soy developer senior"    →  💾 Memory saved
-"Prefiero TypeScript"                   →  💾 Memory saved
-"Olvida que soy developer"             →  🗑️ Memory deleted (LLM flexible matching)
+"Remember that I prefer TypeScript"     →  Memory saved
+"I use neovim as my editor"             →  Memory saved
+"Forget about my editor"                →  Memory deleted (LLM matching)
 ```
 
 ### Notes
 Project-scoped observations and info to keep track of.
 
 ```
-"Toma nota: el API key expira en junio"  →  📝 Note saved
-"Borra la nota del API key"              →  🗑️ Note deleted (LLM flexible matching)
+"Note: the staging API key expires in June"  →  Note saved
+"Delete the note about the API key"          →  Note deleted (LLM matching)
 ```
 
 ### Reminders
 Time-sensitive items with natural date parsing.
 
 ```
-"Avísame el viernes que hay deploy"      →  ⏰ Reminder saved (due: 2026-04-04)
-"Recuérdame mañana revisar los tests"    →  ⏰ Reminder saved (due: tomorrow)
-"Ya hice el deploy"                      →  ✅ Reminder done (LLM flexible matching)
+"Remind me on Friday about the deploy"   →  Reminder saved (due: Friday)
+"Remind me tomorrow to review the tests" →  Reminder saved (due: tomorrow)
+"The deploy is done"                     →  Reminder done (LLM matching)
 ```
 
-Supported date formats: "mañana", "pasado mañana", "el viernes", "en 3 días", "en 2 semanas", "el 15 de abril", "april 15", ISO dates.
+Supports bilingual date parsing (English and Spanish): "tomorrow", "next friday", "in 3 days", "in 2 weeks", "april 15", ISO dates, "mañana", "el viernes", etc.
 
 ## How it works
 
@@ -74,11 +74,11 @@ Supported date formats: "mañana", "pasado mañana", "el viernes", "en 3 días",
 ### Flexible matching via LLM
 
 Deletion and completion actions (forget memory, delete note, complete reminder) use the local LLM for flexible matching. This means:
-- "olvida lo del mono" matches "[REMEMBER] El usuario es un mono"
-- "forget about my favorite color" matches "[REMEMBER] El color favorito es naranja"
-- "borra la nota del servidor" matches "[NOTE] el servidor de staging se cae los martes"
+- "forget about my editor" matches "[REMEMBER] I use neovim as my editor"
+- "delete the note about staging" matches "[NOTE] staging server goes down on Tuesdays"
+- "the deploy is done" matches "[REMINDER] deploy to production on Friday"
 
-Cross-language matching works too (Spanish request → English memory, and vice versa).
+Cross-language matching works too (Spanish request matches English memory, and vice versa).
 
 ### Data categories
 
