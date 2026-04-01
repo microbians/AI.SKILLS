@@ -23,6 +23,8 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 │                                                                     │
 │  TheSecretary/                 Local LLM context summarizer         │
 │                                                                     │
+│  opencodemlx/                  Local AI coding assistant (MLX)      │
+│                                                                     │
 │  boilerplate/                  Project template + instructions      │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -42,6 +44,7 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 - [Tools](#tools)
   - [Microlocalhostproxy](#microlocalhostproxy)
 - [TheSecretary](#thesecretary)
+- [OpenCode MLX](#opencode-mlx)
 - [Boilerplate](#boilerplate)
 - [Installation](#installation)
 - [Compatibility](#compatibility)
@@ -298,6 +301,45 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 
 ---
 
+## OpenCode MLX
+
+> [`opencodemlx/`](opencodemlx/)
+
+Local AI coding assistant powered by Apple Silicon. Runs Qwen3.5-4B with TurboQuant KV cache compression for fast, private inference on-device.
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│                                                               │
+│  OpenCode MLX + TurboQuant                                    │
+│                                                               │
+│  OpenCode (TUI)                                               │
+│  ├── /v1/chat/completions (OpenAI-compatible)                 │
+│  └── Tool calling (bash, edit, read, write...)                │
+│                                                               │
+│  MLX + TurboQuant Server (localhost:8899)                     │
+│  ├── Qwen3.5-4B-MLX-8bit (~5 GB)                              │
+│  ├── TurboQuant KV cache (3-6x compression)                   │
+│  ├── Tool calling (Qwen XML -> OpenAI format)                 │
+│  └── Optional document/codebase pre-loading                   │
+│                                                               │
+│  Apple Silicon GPU (Metal)                                    │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
+
+**Key features:**
+- ~78 tok/s prefill, ~42 tok/s decode on M4 Pro
+- Up to 262K token context with TurboQuant 4-bit KV cache compression
+- OpenAI-compatible API with streaming and tool calling
+- Pre-load codebases or documents into KV cache for instant queries
+- One-command installer with Python virtualenv
+
+**Includes:** `server.py`, `install.sh`, `start-server.sh`, `stop-server.sh`, `status.sh`
+
+**Requirements:** macOS with Apple Silicon, Python 3.11+, ~10 GB disk, 16 GB+ RAM (64 GB+ for full 256K context)
+
+---
+
 ## Boilerplate
 
 > [`boilerplate/`](boilerplate/)
@@ -373,6 +415,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-04-01 | Add OpenCode MLX: local AI coding assistant with TurboQuant on Apple Silicon                  |
 | 2026-03-30 | Add TheSecretary: local LLM context summarizer for Claude Code                               |
 | 2026-03-18 | devproxy: retry with backoff, styled error page, route naming support                       |
 | 2026-03-18 | ASCII skill: add character count verification rule (Rule 8)                                 |

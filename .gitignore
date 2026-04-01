@@ -24,3 +24,9 @@ models/
 
 # Logs
 *.log
+
+# Python
+.venv/
+
+# Cloned repos (installed by scripts)
+opencodemlx/turbomlx-src/

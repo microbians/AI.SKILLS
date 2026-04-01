@@ -478,7 +478,6 @@ function classifyIntentRegex(line) {
 async function processSecretaryOrders(messages, db, cwd) {
   if (!db || !messages?.length) return;
 
-  const llmAvailable = await isLLMAvailable();
   const candidateLines = [];
 
   // Step 1: Pre-filter user lines that might be orders
@@ -498,6 +497,9 @@ async function processSecretaryOrders(messages, db, cwd) {
   if (candidateLines.length === 0) return;
 
   // Step 2: Classify each candidate via regex (reliable for clear patterns)
+  // Collect LLM-dependent deletions to launch in background
+  const bgDeletions = [];
+
   for (const line of candidateLines) {
     const classification = classifyIntentRegex(line);
 
@@ -505,25 +507,36 @@ async function processSecretaryOrders(messages, db, cwd) {
 
     // Step 3: Execute the action
     switch (classification.intent) {
+      // Sync actions (SQLite only, instant):
       case 'REMEMBER':
         await actionRemember(classification.content || line, db, cwd);
-        break;
-      case 'FORGET':
-        await actionForget(classification.content || line, db, cwd, llmAvailable);
         break;
       case 'NOTE':
         await actionNote(classification.content || line, db, cwd);
         break;
-      case 'NOTE_DELETE':
-        await actionNoteDelete(classification.content || line, db, cwd, llmAvailable);
-        break;
       case 'REMINDER':
         await actionReminder(classification.content || line, db, cwd);
         break;
+      // LLM-dependent actions — queue for background:
+      case 'FORGET':
+      case 'NOTE_DELETE':
       case 'REMINDER_DONE':
-        await actionReminderDone(classification.content || line, db, cwd, llmAvailable);
+        bgDeletions.push({ intent: classification.intent, content: classification.content || line });
         break;
     }
+  }
+
+  // Launch LLM-dependent deletions in background (don't block the hook)
+  if (bgDeletions.length > 0) {
+    const { spawn } = await import('child_process');
+    const child = spawn('node', [new URL(import.meta.url).pathname,
+      '_bg_delete', cwd || '', JSON.stringify(bgDeletions)
+    ], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    process.stderr.write(`[secretary] Deletions launched in background (${bgDeletions.length} action(s))\n`);
   }
 }
 
@@ -739,18 +752,60 @@ async function incremental(hookInput) {
 
     const { messages, rawLength } = parseTranscript(transcript_path, lastOffset);
 
-    // Process secretary orders on EVERY call (no counter gate)
+    // Process secretary orders on EVERY call (no counter gate) — fast regex, sync
     await processSecretaryOrders(messages, db, cwd);
 
     // Only do full LLM summary every N tool calls
     if (counter % config.summarize_every_n !== 0) return;
 
-    if (!(await ensureLLMRunning())) return;
-
     const text = messagesToText(messages);
     if (text.length < config.min_new_chars) return;
 
-    const prompt = `Summarize this coding conversation segment. Extract:
+    // Update offset NOW so next call doesn't re-process these messages
+    db.prepare(`INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, datetime('now'))`).run(stateKey, String(rawLength));
+
+    // Write conversation text to temp file for the background worker
+    const { writeFileSync } = await import('fs');
+    const { tmpdir } = await import('os');
+    const tmpFile = join(tmpdir(), `secretary-bg-${session_id}-${Date.now()}.txt`);
+    writeFileSync(tmpFile, text, 'utf-8');
+
+    // Launch LLM summarization in background — don't block Claude
+    const { spawn } = await import('child_process');
+    const child = spawn('node', [new URL(import.meta.url).pathname,
+      '_bg_summarize', session_id, cwd || '', String(messages.length), tmpFile
+    ], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    process.stderr.write(`[secretary] Summarization launched in background (counter=${counter})\n`);
+
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Background summarization worker — called as a forked child process.
+ * Args: _bg_summarize <session_id> <cwd> <message_count> <tmpFile>
+ */
+async function bgSummarize(sessionId, cwd, messageCount, tmpFile) {
+  let text;
+  try {
+    text = readFileSync(tmpFile, 'utf-8');
+    // Clean up temp file
+    const { unlinkSync } = await import('fs');
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+  } catch {
+    process.exit(1);
+  }
+
+  if (!(await ensureLLMRunning())) {
+    process.exit(1);
+  }
+
+  const prompt = `Summarize this coding conversation segment. Extract:
 
 - DECISIONS: What was decided and why (max 3)
 - CHANGES: Files modified and how (max 5)
@@ -763,18 +818,21 @@ Keep each item to 1-2 sentences.
 CONVERSATION:
 ${text}`;
 
-    const summary = await callLLM(prompt);
-    if (!summary || summary.length < 50) return;
+  const summary = await callLLM(prompt);
+  if (!summary || summary.length < 50) {
+    process.exit(0);
+  }
 
-    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM summaries WHERE session_id = ?').get(session_id);
+  const db = openDb();
+  if (!db) process.exit(1);
+
+  try {
+    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM summaries WHERE session_id = ?').get(sessionId);
     const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
 
     db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)').run(
-      session_id, cwd || '', chunkIndex, summary, messages.length
+      sessionId, cwd, chunkIndex, summary, parseInt(messageCount, 10)
     );
-
-    db.prepare(`INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, datetime('now'))`).run(stateKey, String(rawLength));
-
   } finally {
     db.close();
   }
@@ -1042,7 +1100,7 @@ ${allSummaries}`;
   }
 }
 
-async function force(hookInput) {
+async function force(hookInput, { stopLlm = false } = {}) {
   const { session_id, transcript_path, cwd } = hookInput;
   if (!session_id || !transcript_path) return;
 
@@ -1050,11 +1108,6 @@ async function force(hookInput) {
   if (!db) return;
 
   try {
-    if (!(await ensureLLMRunning())) {
-      process.stderr.write('☑ Session memory: skipped (LLM not available)\n');
-      return;
-    }
-
     const stateKey = `offset:${session_id}`;
     const stateRow = db.prepare('SELECT value FROM state WHERE key = ?').get(stateKey);
     const lastOffset = stateRow ? parseInt(stateRow.value, 10) : 0;
@@ -1070,35 +1123,24 @@ async function force(hookInput) {
       return;
     }
 
-    const prompt = `Summarize this coding conversation segment. Extract:
-
-- DECISIONS: What was decided and why (max 3)
-- CHANGES: Files modified and how (max 5)
-- PROBLEMS: Errors encountered and their solutions (max 3)
-- STATE: Current task status and next steps
-
-Be specific: include file paths, function names, error messages.
-Keep each item to 1-2 sentences.
-
-CONVERSATION:
-${text}`;
-
-    const summary = await callLLM(prompt);
-    if (!summary || summary.length < 50) {
-      process.stderr.write('☑ Session memory: save skipped (insufficient summary)\n');
-      return;
-    }
-
-    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM summaries WHERE session_id = ?').get(session_id);
-    const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
-
-    db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)').run(
-      session_id, cwd || '', chunkIndex, summary, messages.length
-    );
+    // Update offset NOW so next call doesn't re-process
     db.prepare(`INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, datetime('now'))`).run(stateKey, String(rawLength));
 
-    const now = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-    process.stderr.write(`☑ Session memory saved on ${now} (${messages.length} messages summarized)\n`);
+    // Write conversation text to temp file for the background worker
+    const { writeFileSync } = await import('fs');
+    const { tmpdir } = await import('os');
+    const tmpFile = join(tmpdir(), `secretary-bg-${session_id}-${Date.now()}.txt`);
+    writeFileSync(tmpFile, text, 'utf-8');
+    // Launch LLM summarization in background using spawn (faster than fork)
+    const { spawn } = await import('child_process');
+    const spawnArgs = [new URL(import.meta.url).pathname, '_bg_summarize', session_id, cwd || '', String(messages.length), tmpFile];
+    if (stopLlm) spawnArgs.push('--stop-llm');
+    const child = spawn('node', spawnArgs, {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    process.stderr.write(`☑ Session memory: summarization launched in background\n`);
   } finally {
     db.close();
   }
@@ -1277,6 +1319,55 @@ async function recall(hookInput, filter = 'all') {
 
 async function main() {
   const command = process.argv[2];
+
+  // Background summarization worker (forked child process)
+  if (command === '_bg_summarize') {
+    const [, , , sessionId, cwd, messageCount, tmpFile, ...flags] = process.argv;
+    try {
+      await bgSummarize(sessionId, cwd, messageCount, tmpFile);
+    } catch (err) {
+      process.stderr.write(`[secretary-bg] ${err.message}\n`);
+    }
+    // If called with --stop-llm, shut down the LLM server after summarizing
+    if (flags.includes('--stop-llm')) {
+      try {
+        execSync('bash ~/.claude/summarizer/start-llm.sh stop > /dev/null 2>&1');
+      } catch { /* ignore */ }
+    }
+    process.exit(0);
+  }
+
+  // Background deletion worker (forked child process for FORGET/NOTE_DELETE/REMINDER_DONE)
+  if (command === '_bg_delete') {
+    const [, , , cwd, actionsJson] = process.argv;
+    try {
+      const actions = JSON.parse(actionsJson);
+      const db = openDb();
+      if (!db) process.exit(1);
+      try {
+        const llmAvailable = await isLLMAvailable();
+        for (const { intent, content } of actions) {
+          switch (intent) {
+            case 'FORGET':
+              await actionForget(content, db, cwd, llmAvailable);
+              break;
+            case 'NOTE_DELETE':
+              await actionNoteDelete(content, db, cwd, llmAvailable);
+              break;
+            case 'REMINDER_DONE':
+              await actionReminderDone(content, db, cwd, llmAvailable);
+              break;
+          }
+        }
+      } finally {
+        db.close();
+      }
+    } catch (err) {
+      process.stderr.write(`[secretary-bg] delete error: ${err.message}\n`);
+    }
+    process.exit(0);
+  }
+
   const validCommands = ['incremental', 'compact', 'restore', 'force', 'inject', 'recall', 'recall-notes', 'recall-reminders'];
 
   if (!command || !validCommands.includes(command)) {
@@ -1308,7 +1399,7 @@ async function main() {
       case 'incremental': await incremental(hookInput); break;
       case 'compact': await compact(hookInput); break;
       case 'restore': await restore(hookInput); break;
-      case 'force': await force(hookInput); break;
+      case 'force': await force(hookInput, { stopLlm: process.argv.includes('--stop-llm') }); break;
       case 'inject': await inject(hookInput); break;
       case 'recall': await recall(hookInput, 'all'); break;
       case 'recall-notes': await recall(hookInput, 'notes'); break;
