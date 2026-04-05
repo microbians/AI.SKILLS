@@ -1,24 +1,33 @@
+#!/usr/bin/env node
 /********************************************************
-	DEVPROXY CLIENT — Drop-in local subdomain routing
-	
-	Import in any project's dev launcher to get a clean
-	subdomain URL like "myproject.localhost" instead of
-	"localhost:3001".
-	
-	Usage:
-	  import { devproxy } from './lib/devproxy.js';
-	  // ... create your server on some port ...
-	  devproxy({ port: 3001 }); // subdomain from package.json "name"
-	
-	First run: auto-installs dnsmasq, resolver, LaunchDaemon.
-	Subsequent runs: just registers and serves.
-	
+	DEVPROXY CLIENT — Zero-config local subdomain routing
+
+	Works in two modes:
+
+	1. CLI (any project — PHP, Node, Python, static):
+	   $ devproxy                  # auto-detect everything from cwd
+	   $ devproxy --port 8000      # override port
+	   $ devproxy --subdomain foo  # override subdomain
+	   $ devproxy list             # show all registered projects
+	   $ devproxy stop foo         # stop a running server
+	   $ devproxy remove foo       # remove project from registry
+
+	2. Module (Node.js projects):
+	   import { devproxy } from './lib/devproxy.js';
+	   devproxy({ port: 3001 });
+
+	Auto-detection:
+	  - Subdomain: derived from directory name
+	    - "LAB.Imager" → "imager", "MICRO.AutoMkt" → "automkt", "pepe" → "pepe"
+	  - Type: composer.json/index.php → php, package.json → node, *.py → python
+	  - Port: finds a free port starting from 8000 (php) or 3000 (node)
+
 	@license MIT
 ********************************************************/
 
-import { connect } from 'net';
-import { existsSync, readFileSync } from 'fs';
-import { join, dirname, resolve } from 'path';
+import { connect, createServer } from 'net';
+import { existsSync, readFileSync, readdirSync } from 'fs';
+import { join, dirname, basename, resolve } from 'path';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
@@ -32,9 +41,53 @@ const INSTALLED_MARKER = join(DEVPROXY_DIR, '.installed');
 
 // ═══════════════════ HELPERS ═══════════════════
 
+function deriveSubdomain(dir) {
+	const name = basename(dir);
+	// "LAB.Imager" → "imager", "MICRO.AutoMkt" → "automkt"
+	const part = name.includes('.') ? name.split('.').pop() : name;
+	return part.toLowerCase().replace(/[^a-z0-9-]/g, '');
+}
+
+function detectProjectType(dir) {
+	if (existsSync(join(dir, 'composer.json'))) return 'php';
+	if (existsSync(join(dir, 'index.php'))) return 'php';
+	if (existsSync(join(dir, 'public', 'index.php'))) return 'php';
+	if (existsSync(join(dir, 'artisan'))) return 'php'; // Laravel
+	if (existsSync(join(dir, 'package.json'))) return 'node';
+	if (existsSync(join(dir, 'requirements.txt'))) return 'python';
+	if (existsSync(join(dir, 'pyproject.toml'))) return 'python';
+	try {
+		const files = readdirSync(dir);
+		if (files.some(f => f.endsWith('.py'))) return 'python';
+		if (files.some(f => f.endsWith('.html'))) return 'static';
+	} catch {}
+	return 'static'; // fallback
+}
+
+function defaultBasePort(type) {
+	if (type === 'php') return 8000;
+	if (type === 'node') return 3000;
+	if (type === 'python') return 8000;
+	return 8080;
+}
+
+function isPortFree(port) {
+	return new Promise((resolve) => {
+		const srv = createServer();
+		srv.once('error', () => resolve(false));
+		srv.once('listening', () => { srv.close(); resolve(true); });
+		srv.listen(port);
+	});
+}
+
+async function findFreePort(base) {
+	for (let i = 0; i <= 20; i++) {
+		if (await isPortFree(base + i)) return base + i;
+	}
+	return base; // fallback
+}
+
 function readPackageName() {
-	// Walk up from the calling module's directory to find package.json
-	// Since we don't know the caller's path, use process.cwd()
 	let dir = process.cwd();
 	while (dir !== dirname(dir)) {
 		const pkgPath = join(dir, 'package.json');
@@ -42,9 +95,7 @@ function readPackageName() {
 			try {
 				const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
 				return pkg.name || null;
-			} catch {
-				return null;
-			}
+			} catch { return null; }
 		}
 		dir = dirname(dir);
 	}
@@ -52,7 +103,6 @@ function readPackageName() {
 }
 
 function askSubdomain() {
-	// Ask the user for a subdomain via native macOS dialog
 	try {
 		const result = execSync(
 			'osascript -e \'text returned of (display dialog '
@@ -64,10 +114,7 @@ function askSubdomain() {
 			{ encoding: 'utf-8' }
 		).trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
 		return result || null;
-	} catch {
-		// User cancelled
-		return null;
-	}
+	} catch { return null; }
 }
 
 function isProxyRunning() {
@@ -75,11 +122,9 @@ function isProxyRunning() {
 	try {
 		const pid = parseInt(readFileSync(PID_FILE, 'utf-8').trim(), 10);
 		if (isNaN(pid)) return false;
-		process.kill(pid, 0); // signal 0 = check if alive
+		process.kill(pid, 0);
 		return true;
-	} catch {
-		return false;
-	}
+	} catch { return false; }
 }
 
 function sendCommand(cmd) {
@@ -97,16 +142,13 @@ function sendCommand(cmd) {
 			buffer += data.toString();
 			const nl = buffer.indexOf('\n');
 			if (nl !== -1) {
-				try {
-					resolve(JSON.parse(buffer.slice(0, nl)));
-				} catch (err) {
-					reject(err);
-				}
+				try { resolve(JSON.parse(buffer.slice(0, nl))); }
+				catch (err) { reject(err); }
 				socket.end();
 			}
 		});
 		socket.on('error', reject);
-		socket.setTimeout(3000, () => {
+		socket.setTimeout(5000, () => {
 			socket.destroy();
 			reject(new Error('Timeout'));
 		});
@@ -117,14 +159,10 @@ const PLIST_PATH = '/Library/LaunchDaemons/com.devproxy.proxy.plist';
 
 function startProxy() {
 	return new Promise((resolve, reject) => {
-		// The proxy runs as a LaunchDaemon on port 80 (requires root).
-		// Try to reload it via launchctl. If the plist exists, use osascript
-		// to get admin privileges via native macOS dialog.
 		if (!existsSync(PLIST_PATH)) {
 			reject(new Error('LaunchDaemon not installed — run install.sh first'));
 			return;
 		}
-
 		try {
 			execSync(
 				`osascript -e 'do shell script `
@@ -138,16 +176,13 @@ function startProxy() {
 			reject(new Error('Could not start proxy (authentication cancelled or failed)'));
 			return;
 		}
-
-		// Wait for socket to appear (proxy is ready)
 		let attempts = 0;
 		const check = setInterval(() => {
 			attempts++;
 			if (existsSync(SOCKET_PATH)) {
 				clearInterval(check);
-				// Small extra delay to ensure socket is listening
 				setTimeout(() => resolve(), 200);
-			} else if (attempts > 50) { // 5 seconds
+			} else if (attempts > 50) {
 				clearInterval(check);
 				reject(new Error('Proxy failed to start (socket not created after 5s)'));
 			}
@@ -156,18 +191,13 @@ function startProxy() {
 }
 
 function ensureInstalled() {
-	// Check if devproxy infrastructure is installed
 	if (existsSync(INSTALLED_MARKER)) return true;
-
-	// Check if install script exists
 	if (!existsSync(INSTALL_SH)) {
 		console.error('\n  devproxy: install.sh not found at ' + INSTALL_SH);
 		console.error('  Run the devproxy setup first.\n');
 		return false;
 	}
-
 	console.log('\n  devproxy: first-time setup — installing system components...\n');
-
 	try {
 		execSync(`bash "${INSTALL_SH}"`, { stdio: 'inherit' });
 		return existsSync(INSTALLED_MARKER);
@@ -178,15 +208,9 @@ function ensureInstalled() {
 }
 
 function ensureProxyFiles() {
-	// Check that proxy.js and install.sh exist in DEVPROXY_DIR
-	// If not, this is a fresh machine — copy them from our bundled copies
 	if (!existsSync(DEVPROXY_DIR)) {
 		execSync(`mkdir -p "${DEVPROXY_DIR}"`);
 	}
-
-	// The proxy.js and install.sh should already be at DEVPROXY_DIR
-	// (placed there by copying central/ files from the repo)
-	// If they're missing, we can't proceed
 	if (!existsSync(PROXY_JS)) {
 		console.error('\n  devproxy: proxy.js not found at ' + PROXY_JS);
 		console.error('  Extract the devproxy files to ~/.config/devproxy/ first.\n');
@@ -195,15 +219,29 @@ function ensureProxyFiles() {
 	return true;
 }
 
-// ═══════════════════ PUBLIC API ═══════════════════
+async function ensureProxy() {
+	if (!ensureProxyFiles()) return false;
+	if (!ensureInstalled()) return false;
+	if (!isProxyRunning()) {
+		try {
+			await startProxy();
+		} catch (err) {
+			console.error('  devproxy: failed to start proxy —', err.message);
+			return false;
+		}
+	}
+	return true;
+}
+
+// ═══════════════════ PUBLIC API (Module mode) ═══════════════════
 
 /**
  * Register this project's dev server with devproxy.
- * 
+ *
  * @param {Object} opts
  * @param {number} opts.port - The port your dev server listens on
  * @param {string} [opts.subdomain] - Override subdomain (default: package.json name)
- * @param {string} [opts.name] - Display name for the project (shown in devproxy list)
+ * @param {string} [opts.name] - Display name for the project
  */
 export async function devproxy({ port, subdomain, name } = {}) {
 	if (!port) {
@@ -211,30 +249,14 @@ export async function devproxy({ port, subdomain, name } = {}) {
 		return;
 	}
 
-	// Resolve subdomain: explicit > package.json > ask user
 	const sub = subdomain || readPackageName() || askSubdomain();
 	if (!sub) {
 		console.error('  devproxy: no subdomain provided (cancelled)');
 		return;
 	}
 
-	// Ensure proxy infrastructure files exist
-	if (!ensureProxyFiles()) return;
+	if (!(await ensureProxy())) return;
 
-	// Ensure system-level components are installed (first time only)
-	if (!ensureInstalled()) return;
-
-	// Ensure proxy process is running
-	if (!isProxyRunning()) {
-		try {
-			await startProxy();
-		} catch (err) {
-			console.error('  devproxy: failed to start proxy —', err.message);
-			return;
-		}
-	}
-
-	// Register our subdomain
 	try {
 		const displayName = name || readPackageName() || sub;
 		const res = await sendCommand({ action: 'register', subdomain: sub, port, name: displayName });
@@ -247,19 +269,157 @@ export async function devproxy({ port, subdomain, name } = {}) {
 		console.error('  devproxy: could not register —', err.message);
 	}
 
-	// Deregister on exit
 	function deregister() {
 		try {
-			// Sync deregister — we're shutting down
 			const socket = connect(SOCKET_PATH);
 			socket.write(JSON.stringify({ action: 'deregister', subdomain: sub }) + '\n');
 			socket.end();
-		} catch {
-			// Best-effort
-		}
+		} catch {}
 	}
 
 	process.on('SIGINT', () => { deregister(); process.exit(0); });
 	process.on('SIGTERM', () => { deregister(); process.exit(0); });
 	process.on('exit', deregister);
+}
+
+// ═══════════════════ CLI MODE ═══════════════════
+
+async function cli() {
+	const args = process.argv.slice(2);
+	const command = args[0] || 'register';
+
+	// ── List ──
+	if (command === 'list' || command === 'ls') {
+		if (!(await ensureProxy())) process.exit(1);
+		const res = await sendCommand({ action: 'list' });
+		if (!res.ok) { console.error('Error:', res.error); process.exit(1); }
+
+		const routes = res.routes || {};
+		const entries = Object.entries(routes);
+		if (entries.length === 0) {
+			console.log('  No projects registered.');
+		} else {
+			console.log('');
+			for (const [sub, info] of entries) {
+				const status = info.running ? '\x1b[32m●\x1b[0m' : '\x1b[90m○\x1b[0m';
+				const autoTag = info.autostart ? ' [auto]' : '';
+				console.log(`  ${status} http://${sub}.localhost → :${info.port} (${info.name})${autoTag}`);
+			}
+			console.log('');
+		}
+		process.exit(0);
+	}
+
+	// ── Stop ──
+	if (command === 'stop') {
+		const sub = args[1];
+		if (!sub) { console.error('Usage: devproxy stop <subdomain>'); process.exit(1); }
+		if (!(await ensureProxy())) process.exit(1);
+		const res = await sendCommand({ action: 'stop', subdomain: sub });
+		console.log(res.ok ? `  ✓ Stopped ${sub}.localhost` : `  ✗ ${res.error}`);
+		process.exit(res.ok ? 0 : 1);
+	}
+
+	// ── Remove ──
+	if (command === 'remove' || command === 'rm') {
+		const sub = args[1];
+		if (!sub) { console.error('Usage: devproxy remove <subdomain>'); process.exit(1); }
+		if (!(await ensureProxy())) process.exit(1);
+		const res = await sendCommand({ action: 'remove-project', subdomain: sub });
+		console.log(res.ok ? `  ✓ Removed ${sub}.localhost` : `  ✗ ${res.error}`);
+		process.exit(res.ok ? 0 : 1);
+	}
+
+	// ── Start (explicit) ──
+	if (command === 'start') {
+		const sub = args[1];
+		if (!sub) { console.error('Usage: devproxy start <subdomain>'); process.exit(1); }
+		if (!(await ensureProxy())) process.exit(1);
+		const res = await sendCommand({ action: 'start', subdomain: sub });
+		console.log(res.ok ? `  ✓ Started ${sub}.localhost` : `  ✗ ${res.error}`);
+		process.exit(res.ok ? 0 : 1);
+	}
+
+	// ── Register (default — auto-detect from cwd) ──
+	if (command === 'register' || !['list', 'ls', 'stop', 'remove', 'rm', 'start', 'help'].includes(command)) {
+		// Parse flags
+		let subdomain = null;
+		let port = null;
+		let name = null;
+		let type = null;
+		let dir = process.cwd();
+
+		for (let i = (command === 'register' ? 1 : 0); i < args.length; i++) {
+			if (args[i] === '--subdomain' || args[i] === '-s') { subdomain = args[++i]; continue; }
+			if (args[i] === '--port' || args[i] === '-p') { port = parseInt(args[++i], 10); continue; }
+			if (args[i] === '--name' || args[i] === '-n') { name = args[++i]; continue; }
+			if (args[i] === '--type' || args[i] === '-t') { type = args[++i]; continue; }
+			if (args[i] === '--dir' || args[i] === '-d') { dir = resolve(args[++i]); continue; }
+		}
+
+		// Auto-detect
+		if (!subdomain) subdomain = deriveSubdomain(dir);
+		if (!type) type = detectProjectType(dir);
+		if (!port) port = await findFreePort(defaultBasePort(type));
+		if (!name) name = subdomain;
+
+		if (!(await ensureProxy())) process.exit(1);
+
+		const res = await sendCommand({
+			action: 'register-project',
+			subdomain,
+			dir,
+			type,
+			port,
+			name,
+		});
+
+		if (res.ok) {
+			console.log(`\n  ✓ ${name} registered`);
+			console.log(`    URL:  http://${subdomain}.localhost`);
+			console.log(`    Dir:  ${dir}`);
+			console.log(`    Type: ${type}`);
+			console.log(`    Port: ${port}\n`);
+		} else {
+			console.error(`  ✗ ${res.error}`);
+			process.exit(1);
+		}
+		process.exit(0);
+	}
+
+	// ── Help ──
+	console.log(`
+  devproxy — zero-config local subdomain routing
+
+  Usage:
+    devproxy                          Register current directory (auto-detect)
+    devproxy --port 8000              Register with specific port
+    devproxy --subdomain foo          Register with specific subdomain
+    devproxy list                     Show all registered projects
+    devproxy start <subdomain>        Start a project's server
+    devproxy stop <subdomain>         Stop a project's server
+    devproxy remove <subdomain>       Remove a project from registry
+    devproxy help                     Show this help
+
+  Flags:
+    -s, --subdomain <name>    Override subdomain
+    -p, --port <number>       Override port
+    -n, --name <name>         Display name
+    -t, --type <type>         Project type (php, node, python, static)
+    -d, --dir <path>          Project directory (default: cwd)
+`);
+	process.exit(0);
+}
+
+// ═══════════════════ ENTRY POINT ═══════════════════
+
+// Detect if running as CLI (executed directly) vs imported as module
+const __filename = fileURLToPath(import.meta.url);
+const isDirectRun = process.argv[1] && resolve(process.argv[1]) === resolve(__filename);
+
+if (isDirectRun) {
+	cli().catch((err) => {
+		console.error('  devproxy error:', err.message);
+		process.exit(1);
+	});
 }

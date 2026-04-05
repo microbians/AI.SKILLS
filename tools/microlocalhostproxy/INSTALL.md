@@ -1,424 +1,197 @@
-# Smart Dev Port — Auto port resolution + devproxy for dev servers
+# devproxy — Installation & Usage Guide
 
-Drop-in port resolution and local subdomain routing for any Node.js dev server.
+Zero-config local subdomain routing with auto-start for any project type.
 
 ## What it does
 
-**Port resolution:**
-1. **Port free** → uses it directly
-2. **Port occupied by THIS project** → kills the old process, reuses port
-3. **Port occupied by ANOTHER project** → finds next free port (up to +20)
+**Auto-detection:** Scans the current directory to determine project type (PHP, Node, Python, static) and derives the subdomain from the directory name.
 
-Detection: uses `lsof` to get the PID on the port, then checks if its working directory is inside the current project root.
+**Auto-start:** When a request hits `myproject.localhost` and the server isn't running, devproxy starts it automatically using the appropriate command (`php -S`, `npm run dev`, `python -m http.server`, etc.).
 
-**Devproxy (optional):** Routes `myproject.localhost` → `localhost:PORT` via a central reverse proxy daemon at `~/.config/devproxy/`. The proxy listens directly on port 80 as a LaunchDaemon (starts as root, drops privileges after binding). First run auto-installs dnsmasq + the LaunchDaemon. Subsequent runs just register the subdomain.
+**Persistence:** Registered projects are saved to `~/.config/devproxy/projects.json` and survive reboots. Visit the URL anytime — the server starts on demand.
+
+**Idle cleanup:** Auto-started servers with no traffic for 15 minutes are stopped automatically.
 
 ---
 
 ## Prerequisites
 
-- macOS (uses `lsof` for PID/cwd detection)
-- Node.js 18+ (top-level await)
-- devproxy infrastructure at `~/.config/devproxy/` (copy from `central/` in this repo)
+- macOS (uses LaunchDaemon for port 80 binding)
+- Node.js 18+
 
 ---
 
-## Port helper functions (shared by all patterns)
+## Installation
 
-These three functions are the core. Copy them into whichever file manages your dev startup:
+```bash
+# 1. Copy central files
+mkdir -p ~/.config/devproxy
+cp central/proxy.js ~/.config/devproxy/
+cp central/install.sh ~/.config/devproxy/
+cp central/package.json ~/.config/devproxy/
 
-```javascript
-import { execSync } from 'child_process';
-import { createServer } from 'net';
-
-function isPortFree(port) {
-  return new Promise((resolve) => {
-    const srv = createServer();
-    srv.once('error', () => resolve(false));
-    srv.once('listening', () => { srv.close(); resolve(true); });
-    srv.listen(port);  // ⚠ NO host argument — see Gotchas
-  });
-}
-
-function getPortPid(port) {
-  try {
-    const out = execSync(`lsof -ti:${port}`, { encoding: 'utf-8' }).trim();
-    const pid = parseInt(out.split('\n')[0], 10);
-    return isNaN(pid) ? null : pid;
-  } catch { return null; }
-}
-
-function isOurProject(pid) {
-  try {
-    const cwd = execSync(
-      `lsof -p ${pid} | grep cwd | awk '{print $NF}'`,
-      { encoding: 'utf-8' }
-    ).trim();
-    return cwd.startsWith(PROJECT_ROOT);
-  } catch { return false; }
-}
-
-async function resolvePort(basePort, label = 'Server') {
-  if (await isPortFree(basePort)) return basePort;
-
-  const pid = getPortPid(basePort);
-  if (pid && isOurProject(pid)) {
-    console.log(`  [${label}] Killing previous instance (PID ${pid}) on port ${basePort}`);
-    try { process.kill(pid, 'SIGTERM'); } catch {}
-    for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 200));
-      if (await isPortFree(basePort)) return basePort;
-    }
-  }
-
-  for (let i = 1; i <= 20; i++) {
-    if (await isPortFree(basePort + i)) {
-      console.log(`  [${label}] Port ${basePort} in use by another project, using ${basePort + i}`);
-      return basePort + i;
-    }
-  }
-  throw new Error(`[${label}] No free port in range ${basePort}-${basePort + 20}`);
-}
+# 2. Run installer
+bash ~/.config/devproxy/install.sh
 ```
 
-> `PROJECT_ROOT` must be defined before these functions. See patterns below.
+The installer sets up:
+1. **dnsmasq** — resolves `*.localhost` → 127.0.0.1
+2. **macOS resolver** — `/etc/resolver/localhost`
+3. **LaunchDaemon** — proxy on port 80, auto-starts at boot, drops root after binding
+4. **CLI tool** — `devproxy` command available globally via `/usr/local/bin/devproxy`
 
 ---
 
-## Pattern A: Single server (Next.js, Vite, Express, etc.)
+## Pattern A: Single server (Next.js, Vite, Express)
 
-Create `dev.mjs` next to the project's `package.json`:
+Node projects with their own dev launcher:
 
 ```javascript
-/**
- * Smart dev wrapper — auto port resolution + devproxy
- * Usage: node dev.mjs
- */
-import { spawn, execSync } from 'child_process';
-import { createServer } from 'net';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
-import { devproxy } from './lib/devproxy.js';  // optional
+// dev.mjs
+import { devproxy } from './lib/devproxy.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = __dirname;
-const BASE_PORT = parseInt(process.env.PORT || '3001', 10);
-
-// ── Port helpers (paste from above) ──────────────────────
-// isPortFree, getPortPid, isOurProject, resolvePort
-// ...
-
-// ── Start ────────────────────────────────────────────────
-
-const PORT = await resolvePort(BASE_PORT);
-
-// === Next.js ===
-const child = spawn('npx', ['next', 'dev', '--port', String(PORT)], {
-  stdio: 'inherit',
-  env: { ...process.env, PORT: String(PORT) },
-});
-
-// === OR Vite ===
-// const child = spawn('npx', ['vite', '--port', String(PORT)], { ... });
-
-// === OR Express / plain Node ===
-// const child = spawn('node', ['server.js'], {
-//   stdio: 'inherit',
-//   env: { ...process.env, PORT: String(PORT) },
-// });
-
-// Register devproxy (optional — remove if not using devproxy)
-setTimeout(() => {
+const PORT = await resolvePort(3001);
+server.listen(PORT, () => {
   devproxy({ port: PORT, subdomain: 'myproject' });
-}, 3000);
+});
+```
 
-child.on('close', (code) => process.exit(code));
+Copy `client/devproxy.js` to `lib/devproxy.js` in your project. Add to `.gitignore`:
+```
+lib/devproxy.js
 ```
 
 ---
 
 ## Pattern B: Multi-process (frontend + backend)
 
-For monorepos with a frontend (Next.js/Vite) and a backend (Express/Fastify) on separate ports. Create `start.js` at the project root:
+Same as Pattern A but with two servers. See the full multi-process template in the code examples below.
 
-```javascript
-/**
- * Multi-process dev launcher with smart port resolution + devproxy
- * Usage: node start.js --dev
- */
-import { spawn, execSync } from 'child_process';
-import { createServer } from 'net';
-import { dirname, resolve } from 'path';
-import { fileURLToPath } from 'url';
-import { devproxy } from './lib/devproxy.js';  // optional
+---
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = __dirname;
-const isDev = process.argv.includes('--dev');
+## Pattern C: Any project (PHP, Python, static, etc.)
 
-// ── Port helpers (paste from above) ──────────────────────
-// isPortFree, getPortPid, isOurProject, resolvePort
-// ...
+**Zero config.** Just run `devproxy` from the project directory:
 
-// ── Resolve BOTH ports ───────────────────────────────────
-// IMPORTANT: resolve backend first, then frontend.
-// The frontend needs the resolved backend port for API proxy/rewrites.
-
-const BASE_API_PORT = parseInt(process.env.INTERNAL_API_PORT || '3010', 10);
-const BASE_PUBLIC_PORT = parseInt(process.env.PORT || '3011', 10);
-
-const API_PORT = await resolvePort(BASE_API_PORT, 'API');
-const PUBLIC_PORT = await resolvePort(BASE_PUBLIC_PORT, 'Client');
-
-console.log(`[MyProject] Starting...`);
-console.log(`  Frontend: port ${PUBLIC_PORT}`);
-console.log(`  Backend:  port ${API_PORT} (internal)`);
-
-// ── Process launcher ─────────────────────────────────────
-
-function startProcess(name, command, args, cwd, env = {}) {
-  const proc = spawn(command, args, {
-    cwd,
-    stdio: 'inherit',
-    env: { ...process.env, ...env },
-  });
-  proc.on('error', (err) => {
-    console.error(`[${name}] Failed to start: ${err.message}`);
-    process.exit(1);
-  });
-  proc.on('exit', (code) => {
-    if (code !== 0 && code !== null) {
-      console.error(`[${name}] Exited with code ${code}`);
-      process.exit(code);
-    }
-  });
-  return proc;
-}
-
-// ── Start backend ────────────────────────────────────────
-
-const serverProc = startProcess(
-  'API',
-  'node',
-  [isDev ? '--watch' : '', 'index.js'].filter(Boolean),
-  resolve(__dirname, 'server'),
-  {
-    PORT: String(API_PORT),
-    NODE_ENV: isDev ? 'development' : 'production',
-  }
-);
-
-// ── Start frontend ───────────────────────────────────────
-// CRITICAL: pass the resolved API_PORT so the frontend's proxy/rewrites
-// point to the correct backend port (e.g. Next.js rewrites, Vite proxy).
-
-const clientProc = startProcess(
-  'Client',
-  'npm',
-  ['run', 'dev', '--', '--port', String(PUBLIC_PORT)],
-  resolve(__dirname, 'client'),
-  {
-    PORT: String(PUBLIC_PORT),
-    INTERNAL_API_PORT: String(API_PORT),  // ← frontend reads this for rewrites
-    NODE_ENV: 'development',
-  }
-);
-
-// ── Devproxy (optional) ──────────────────────────────────
-// Register the PUBLIC (frontend) port — that's what the browser hits.
-
-if (isDev) {
-  setTimeout(() => {
-    devproxy({ port: PUBLIC_PORT, subdomain: 'myproject' });
-  }, 3000);
-}
-
-// ── Graceful shutdown ────────────────────────────────────
-
-function shutdown() {
-  serverProc.kill('SIGTERM');
-  clientProc.kill('SIGTERM');
-  setTimeout(() => process.exit(0), 3000);
-}
-
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+```bash
+cd ~/Programacion/MICRO.AutoMkt
+devproxy
 ```
 
-### Frontend config (Next.js example)
-
-The frontend must read `INTERNAL_API_PORT` to proxy API calls to the resolved backend port:
-
-```typescript
-// next.config.ts
-const API_URL = `http://localhost:${process.env.INTERNAL_API_PORT || '3010'}`;
-
-const nextConfig = {
-  async rewrites() {
-    return [
-      { source: '/api/:path*', destination: `${API_URL}/api/:path*` },
-    ];
-  },
-};
-export default nextConfig;
+Output:
+```
+  ✓ automkt registered
+    URL:  http://automkt.localhost
+    Dir:  /Users/.../MICRO.AutoMkt
+    Type: php
+    Port: 8000
 ```
 
-For Vite:
-```typescript
-// vite.config.ts
-export default defineConfig({
-  server: {
-    proxy: {
-      '/api': `http://localhost:${process.env.INTERNAL_API_PORT || '3010'}`,
-    },
-  },
-});
+Now visit `http://automkt.localhost` — the proxy auto-starts `php -S` pointed at the `public/` directory.
+
+### How auto-detection works
+
+**Subdomain** (from directory name):
+- `LAB.Imager` → `imager` (part after the dot, lowercase)
+- `MICRO.AutoMkt` → `automkt`
+- `pepe` → `pepe` (no dot, name as-is)
+
+**Project type** (by files present):
+| Files detected | Type |
+|---|---|
+| `composer.json`, `index.php`, `public/index.php`, `artisan` | `php` |
+| `package.json` | `node` |
+| `requirements.txt`, `pyproject.toml`, `*.py` | `python` |
+| `*.html` (fallback) | `static` |
+
+**Start command** (auto-generated):
+| Type | Command |
+|---|---|
+| `php` | `php -S 127.0.0.1:PORT -t public/` (or project root if no `public/`) |
+| `node` | `npm run dev` (or `npm start`, or `node start.js/server.js/index.js`) |
+| `python` | `python3 -m http.server PORT` |
+| `static` | `php -S 127.0.0.1:PORT -t DIR` |
+
+### Override defaults
+
+```bash
+devproxy --port 9000              # Use specific port
+devproxy --subdomain myname       # Override subdomain
+devproxy --type node              # Override detected type
 ```
 
 ---
 
-## Setting up devproxy
+## CLI Reference
 
-### 1. Copy `lib/devproxy.js` into your project
-
-The file is a self-contained client that talks to the central proxy daemon. Copy it from the `client/` folder in this repo:
-
-```
-myproject/
-  lib/
-    devproxy.js    ← copy this file
-  start.js         ← or dev.mjs
-  package.json
-```
-
-### 2. CORS for the subdomain
-
-If your backend has CORS restrictions, add the devproxy subdomain to allowed origins:
-
-```javascript
-// Express example
-const corsOrigin = process.env.NODE_ENV === 'production'
-  ? true
-  : ['http://localhost:3011', 'http://myproject.localhost'];
-app.use(cors({ origin: corsOrigin }));
-```
-
-### 3. Subdomain naming
-
-`devproxy()` resolves the subdomain in this order:
-1. Explicit `subdomain` option → `devproxy({ port, subdomain: 'myapp' })`
-2. `name` field from nearest `package.json`
-3. Interactive macOS dialog prompt (last resort)
-
-Always pass it explicitly to avoid surprises.
-
-### 4. Wire to npm scripts
-
-```json
-{
-  "scripts": {
-    "dev": "node start.js --dev"
-  }
-}
-```
-
-Or for single-server projects:
-```json
-{
-  "scripts": {
-    "dev": "node dev.mjs"
-  }
-}
-```
-
-### 5. Add to `.gitignore`
-
-`lib/devproxy.js` is a local-only file (identical across all projects, depends on machine-specific `~/.config/devproxy/` infrastructure). It must NOT be committed to the repo.
-
-Add this to the project's `.gitignore`:
-
-```gitignore
-# Devproxy (local-only, machine-specific)
-lib/devproxy.js
+```bash
+devproxy                          # Register cwd (auto-detect)
+devproxy --port 8000              # Register with specific port
+devproxy --subdomain foo          # Register with specific subdomain
+devproxy --type php               # Override project type
+devproxy --dir /path/to/project   # Register a different directory
+devproxy list                     # Show all registered projects + status
+devproxy start <subdomain>        # Manually start a server
+devproxy stop <subdomain>         # Stop a running server
+devproxy remove <subdomain>       # Remove from registry permanently
+devproxy help                     # Show help
 ```
 
 ---
 
-## Gotchas
+## Proxy Socket Protocol
 
-### `isPortFree` must NOT bind to a specific host
+The proxy accepts JSON commands via Unix socket (`~/.config/devproxy/proxy.sock`):
 
-Node's `server.listen(port)` (no host) binds to `::` (all interfaces, IPv4+IPv6). If you test only `127.0.0.1`, a server listening on `::` won't be detected and you'll get `EADDRINUSE` when the real server starts.
-
-```javascript
-// ✅ Correct
-srv.listen(port);
-
-// ❌ Wrong — misses IPv6 listeners
-srv.listen(port, '127.0.0.1');
-```
-
-### Devproxy daemon can freeze
-
-macOS may suspend the LaunchDaemon process after prolonged inactivity (shows as state `SNs` in `ps`). Symptoms: `lsof` shows port 80 LISTEN but connections timeout.
-
-**Fix:** Restart the daemon:
 ```bash
-sudo launchctl unload /Library/LaunchDaemons/com.devproxy.proxy.plist
-sudo launchctl load /Library/LaunchDaemons/com.devproxy.proxy.plist
+# Register a project (persistent, with auto-start)
+echo '{"action":"register-project","subdomain":"automkt","dir":"/path/to/project","type":"php","port":8000}' | nc -U ~/.config/devproxy/proxy.sock
+
+# Register a route (dynamic, non-persistent — for Node projects that manage their own server)
+echo '{"action":"register","subdomain":"myapp","port":3001,"name":"My App"}' | nc -U ~/.config/devproxy/proxy.sock
+
+# List everything
+echo '{"action":"list"}' | nc -U ~/.config/devproxy/proxy.sock
+
+# Start/stop a project's server
+echo '{"action":"start","subdomain":"automkt"}' | nc -U ~/.config/devproxy/proxy.sock
+echo '{"action":"stop","subdomain":"automkt"}' | nc -U ~/.config/devproxy/proxy.sock
+
+# Remove a project permanently
+echo '{"action":"remove-project","subdomain":"automkt"}' | nc -U ~/.config/devproxy/proxy.sock
+
+# Deregister a dynamic route
+echo '{"action":"deregister","subdomain":"myapp"}' | nc -U ~/.config/devproxy/proxy.sock
+
+# Ping
+echo '{"action":"ping"}' | nc -U ~/.config/devproxy/proxy.sock
 ```
-
-Or manually:
-```bash
-sudo kill $(cat ~/.config/devproxy/proxy.pid)
-# LaunchDaemon's KeepAlive will restart it automatically
-```
-
-Routes are in-memory only — if the daemon restarts, projects re-register automatically on their next `npm run dev`. Re-registering the same subdomain overwrites the port (subdomain is the unique key).
-
-**Manual registration** (without restarting a project):
-```bash
-echo '{"action":"register","subdomain":"myproject","port":3001}' | nc -U ~/.config/devproxy/proxy.sock
-```
-
-### Multi-process: resolve backend port FIRST
-
-When both frontend and backend need port resolution, resolve the backend port first. The frontend depends on knowing the backend's actual port for API proxy/rewrite config. Pass it via environment variable (e.g., `INTERNAL_API_PORT`).
-
-### Don't hardcode ports in sub-package scripts
-
-If your root `start.js` resolves ports dynamically, don't also hardcode ports in the sub-package's `package.json` scripts. Either:
-- Remove the port from the sub-package script and always launch via root `start.js`
-- Or keep the sub-package script as a fallback but accept the `--port X --port Y` duplication (cosmetic, harmless)
 
 ---
 
 ## Debugging
 
 ```bash
-# Check what's registered
-echo '{"action":"list"}' | nc -U ~/.config/devproxy/proxy.sock
+# Show registered projects
+devproxy list
 
-# Check if daemon is alive
+# Check proxy is alive
 echo '{"action":"ping"}' | nc -U ~/.config/devproxy/proxy.sock
 
-# Check if proxy is listening on port 80
+# Check port 80 is listening
 lsof -i :80 -sTCP:LISTEN
 
 # Check DNS resolution
-dig +short myproject.localhost @127.0.0.1
+dig +short test.localhost @127.0.0.1
 
 # Test proxy directly
-curl -H "Host: myproject.localhost" http://127.0.0.1:80/
+curl -H "Host: automkt.localhost" http://127.0.0.1:80/
 
-# See all registered PIDs on a port
-lsof -ti:3011
-
-# Check if proxy process is healthy (look for S vs SNs state)
-ps aux | grep proxy.js
-
-# View proxy logs
+# View proxy logs (includes auto-start output)
 tail -f ~/.config/devproxy/proxy.log
+
+# View persisted projects
+cat ~/.config/devproxy/projects.json
 
 # Restart the LaunchDaemon
 sudo launchctl unload /Library/LaunchDaemons/com.devproxy.proxy.plist
@@ -427,116 +200,26 @@ sudo launchctl load /Library/LaunchDaemons/com.devproxy.proxy.plist
 
 ---
 
-## AGENTS.md section (copy into each project)
+## Gotchas
 
-When installing smart-dev-port + devproxy into a project, add the following section to the project's `AGENTS.md` (or equivalent agent instructions file). Adapt the values in `[brackets]` to the specific project.
+### Servers need a moment to boot
+When a server is auto-started, the first request gets a "Starting..." page that auto-refreshes after 2 seconds. Subsequent requests are proxied normally.
 
----
+### Idle timeout
+Auto-started servers are killed after 15 minutes of inactivity. The next request will auto-start them again (with a brief loading page).
 
-### Template for single-server projects (Pattern A)
-
-````markdown
-## DEV SERVER & DEVPROXY
-
-**Dev command:** `npm run dev` (runs `node dev.mjs`)
-**URL:** `http://[subdomain].localhost` (via devproxy) or `http://localhost:[PORT]`
-**Base port:** `[PORT]` (auto-resolves if occupied — see `dev.mjs`)
-
-### How dev startup works (`dev.mjs`)
-- Smart port resolution: if port [PORT] is busy, kills previous instance of THIS project or finds next free port
-- Registers `[subdomain].localhost` with devproxy daemon (`~/.config/devproxy/`)
-- Devproxy routes `[subdomain].localhost` → `localhost:<resolved-port>` via reverse proxy on port 80
-
-### Key files
-- `dev.mjs` — Dev launcher with port resolution + devproxy registration
-- `lib/devproxy.js` — Devproxy client (do NOT modify — shared pattern across projects, gitignored)
-
-### Restarting dev server
-```bash
-# Preferred — smart port resolution handles killing previous instance:
-npm run dev
-
-# Manual full kill if needed:
-lsof -ti:[PORT] | xargs kill -9 2>/dev/null; npm run dev
-```
-
-### If devproxy stops working
-The devproxy runs as a LaunchDaemon on port 80. If it freezes (macOS suspends idle processes):
+### LaunchDaemon can freeze
+macOS may suspend the daemon after prolonged inactivity. Fix:
 ```bash
 sudo launchctl unload /Library/LaunchDaemons/com.devproxy.proxy.plist
 sudo launchctl load /Library/LaunchDaemons/com.devproxy.proxy.plist
 ```
-After a daemon restart, routes are cleared. Projects re-register automatically on their next `npm run dev`.
 
-### RULES for dev server changes
-- **NEVER hardcode ports** — always use `resolvePort()` or read from env vars
-- **NEVER modify `lib/devproxy.js`** — it's a shared client, identical across projects, gitignored
-- **Ports are dynamic** — don't assume `:PORT` is always [PORT], check what `dev.mjs` resolved
-- If adding CORS, include `http://[subdomain].localhost` in allowed origins
-- Browser URL is `http://[subdomain].localhost`, NOT `localhost:[PORT]`
-- **Railway/production NOT affected** — `dev.mjs` and `devproxy.js` are gitignored, production uses `build`+`start` only
-````
+### Port conflicts
+The CLI finds a free port automatically (tries base port, then +1 to +20). If a project was previously registered on a port that's now in use, the auto-start will still work — the proxy retries with backoff.
 
 ---
 
-### Template for multi-process projects (Pattern B)
+## License
 
-````markdown
-## DEV SERVER & DEVPROXY
-
-**Dev command:** `npm run dev` (runs `node start.js --dev`)
-**URL:** `http://[subdomain].localhost` (via devproxy) or `http://localhost:[PUBLIC_PORT]`
-**Ports:** Frontend :[PUBLIC_PORT] | Backend :[API_PORT] (both auto-resolve if occupied)
-
-### How dev startup works (`start.js --dev`)
-1. Resolves backend port (base [API_PORT]) — kills previous instance of THIS project or finds next free
-2. Resolves frontend port (base [PUBLIC_PORT]) — same logic
-3. Starts backend with resolved port via `PORT` env var
-4. Starts frontend with resolved port + passes `INTERNAL_API_PORT` env var so rewrites/proxy point to correct backend
-5. Registers `[subdomain].localhost` with devproxy daemon → routes to frontend port
-
-### Key files
-- `start.js` — Multi-process dev launcher with port resolution + devproxy
-- `lib/devproxy.js` — Devproxy client (do NOT modify — shared pattern across projects, gitignored)
-- `[frontend-config]` — Reads `INTERNAL_API_PORT` env var for API proxy/rewrites
-
-### Restarting dev server
-```bash
-# Preferred — smart port resolution handles killing previous instances:
-npm run dev
-
-# Manual full kill if needed:
-lsof -ti:[API_PORT],[PUBLIC_PORT] | xargs kill -9 2>/dev/null; npm run dev
-```
-
-### If devproxy stops working
-The devproxy runs as a LaunchDaemon on port 80. If it freezes (macOS suspends idle processes):
-```bash
-sudo launchctl unload /Library/LaunchDaemons/com.devproxy.proxy.plist
-sudo launchctl load /Library/LaunchDaemons/com.devproxy.proxy.plist
-```
-After a daemon restart, routes are cleared. Projects re-register automatically on their next `npm run dev`.
-
-### RULES for dev server changes
-- **NEVER hardcode ports** — always use `resolvePort()` or read from env vars
-- **NEVER modify `lib/devproxy.js`** — it's a shared client, identical across projects, gitignored
-- **Ports are dynamic** — don't assume :[API_PORT] and :[PUBLIC_PORT] are fixed, check what `start.js` resolved
-- **INTERNAL_API_PORT must flow** — if backend port changes, frontend must receive it via env var for rewrites to work
-- If adding/changing CORS on the backend, include `http://[subdomain].localhost` in allowed origins
-- Browser URL is `http://[subdomain].localhost`, NOT `localhost:[PUBLIC_PORT]`
-- When verifying with curl, use `http://[subdomain].localhost` as the primary URL
-- **Railway/production NOT affected** — `start.js` and `devproxy.js` are gitignored, production uses `build`+`start` only
-````
-
----
-
-### `.gitignore` additions
-
-Add this to every project where smart-dev-port + devproxy is installed:
-
-```gitignore
-# Devproxy (local-only, machine-specific)
-lib/devproxy.js
-```
-
-`lib/devproxy.js` is identical across all projects and depends on machine-local infrastructure (`~/.config/devproxy/`). It must NOT be committed. Each developer copies it from the `client/` folder in this repo on first setup.
+MIT

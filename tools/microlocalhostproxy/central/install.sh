@@ -269,6 +269,44 @@ else
 	skip "no system changes needed"
 fi
 
+# ═══════════════════ CLI TOOL ═══════════════════
+
+echo "  [+] CLI tool"
+
+# Copy the client CLI to devproxy dir
+CLIENT_JS="$(dirname "$0")/../client/devproxy.js"
+DEST_CLI="$DEVPROXY_DIR/devproxy-cli.js"
+
+if [ -f "$CLIENT_JS" ]; then
+	cp "$CLIENT_JS" "$DEST_CLI"
+	chmod +x "$DEST_CLI"
+	ok "CLI copied to $DEST_CLI"
+else
+	# Try alternative location (when run from DEVPROXY_DIR itself)
+	if [ -f "$DEVPROXY_DIR/devproxy-cli.js" ]; then
+		skip "CLI already present"
+	else
+		echo -e "  ${YELLOW}!${NC} client/devproxy.js not found — CLI not installed"
+	fi
+fi
+
+# Create symlink in /usr/local/bin for global access
+SYMLINK_PATH="/usr/local/bin/devproxy"
+if [ -L "$SYMLINK_PATH" ] && [ "$(readlink "$SYMLINK_PATH")" = "$DEST_CLI" ]; then
+	skip "symlink already exists at $SYMLINK_PATH"
+else
+	# This needs admin since /usr/local/bin may require root
+	if [ -d "/usr/local/bin" ]; then
+		run_as_admin "ln -sf ${DEST_CLI} ${SYMLINK_PATH}"
+		ok "symlink created: devproxy → $DEST_CLI"
+	else
+		run_as_admin "mkdir -p /usr/local/bin && ln -sf ${DEST_CLI} ${SYMLINK_PATH}"
+		ok "symlink created: devproxy → $DEST_CLI"
+	fi
+fi
+
+echo ""
+
 # ═══════════════════ VERIFY ═══════════════════
 
 echo ""
