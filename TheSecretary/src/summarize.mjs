@@ -349,7 +349,7 @@ function parseDueDate(text) {
  * Pre-filter: cheap regex to detect lines that MIGHT be secretary orders.
  * This avoids sending every user line to the LLM.
  */
-const ORDER_PREFILTER = /(?:recuerda|remember|olvida|forget|nota|note|anota|apunta|av[ií]sa|remind|recordatorio|reminder|borra|elimina|delete|remove|ya\s+(?:hice|no)|mark\s+done|prefiero|prefer|soy\s+|i\s+am|i'm\s+|mi\s+nombre|my\s+name|me\s+llamo|toma\s+nota|take\s+note|pon\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder|quita|tacha|cancela|cancel|dismiss|descartar?|no\s+recuerdes|don't\s+remember|no\s+olvides|don't\s+forget|listo\s+el|completed?)/i;
+const ORDER_PREFILTER = /(?:recuerda|remember|olvida|forget|nota|note|anota|apunta|av[ií]sa|remind|recordatorio|reminder|borra|elimina|delete|remove|ya\s+(?:hice|no)|mark\s+done|prefiero|prefer|soy\s+|i\s+am|i'm\s+|mi\s+nombre|my\s+name|me\s+llamo|toma\s+nota|take\s+note|pon\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder|quita|tacha|cancela|cancel|dismiss|descartar?|no\s+recuerdes|don't\s+remember|no\s+olvides|don't\s+forget|listo\s+el|completed?|global)/i;
 
 /**
  * Lines that look like tool outputs — never process as user orders.
@@ -435,8 +435,10 @@ Examples:
 function classifyIntentRegex(line) {
   const t = line.trim();
 
-  // REMEMBER
+  // REMEMBER (detect "global" modifier: "recuerda global que...", "remember global that...")
+  if (/(?:recuerda\s+global\s+que|remember\s+global\s+that)\s+(.+)/i.test(t)) return { intent: 'REMEMBER', content: t, global: true };
   if (/(?:recuerda\s+que|no\s+olvides\s+que|remember\s+that|don'?t\s+forget\s+that)\s+(.+)/i.test(t)) return { intent: 'REMEMBER', content: t };
+  if (/^(?:recuerda|remember)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'REMEMBER', content: t, global: true };
   if (/^(?:recuerda|remember)[:\s]+(.+)/i.test(t)) return { intent: 'REMEMBER', content: t };
   if (/(?:^|\.\s*)(?:yo\s+)?soy\s+(?:un[ao]?\s+)?(.+)/i.test(t)) return { intent: 'REMEMBER', content: t };
   if (/(?:^|\.\s*)(?:i\s+am|i'm)\s+(?:a\s+)?(.+)/i.test(t)) return { intent: 'REMEMBER', content: t };
@@ -449,15 +451,19 @@ function classifyIntentRegex(line) {
   if (/(?:no\s+recuerdes|don'?t\s+remember)\s+/i.test(t)) return { intent: 'FORGET', content: t };
   if (/(?:ya\s+no\s+soy|i'?m\s+no\s+longer)\s+/i.test(t)) return { intent: 'FORGET', content: t };
 
-  // NOTE
+  // NOTE (detect "global" modifier: "anota global que...", "nota global: ...")
+  if (/^(?:toma\s+nota|anota|apunta|nota|take\s+(?:a\s+)?note|note\s+(?:down|this)|note)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'NOTE', content: RegExp.$1, global: true };
   if (/^(?:toma\s+nota|anota|apunta|nota|take\s+(?:a\s+)?note|note\s+(?:down|this)|note)[:\s]+(.+)/i.test(t)) return { intent: 'NOTE', content: RegExp.$1 };
 
   // NOTE_DELETE
   if (/(?:borra|elimina|delete|remove|quita|tacha)\s+(?:la\s+)?(?:nota|note)/i.test(t)) return { intent: 'NOTE_DELETE', content: t };
 
-  // REMINDER
+  // REMINDER (detect "global" modifier)
+  if (/^(?:av[ií]same|recuerd[ae]me|remind\s+me)\s+global\s+(.+)/i.test(t)) return { intent: 'REMINDER', content: RegExp.$1, global: true };
   if (/^(?:av[ií]same|recuerd[ae]me|remind\s+me)\s+(.+)/i.test(t)) return { intent: 'REMINDER', content: RegExp.$1 };
+  if (/^(?:pon(?:me)?\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'REMINDER', content: RegExp.$1, global: true };
   if (/^(?:pon(?:me)?\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder)[:\s]+(.+)/i.test(t)) return { intent: 'REMINDER', content: RegExp.$1 };
+  if (/^(?:reminder|recordatorio)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'REMINDER', content: RegExp.$1, global: true };
   if (/^(?:reminder|recordatorio)[:\s]+(.+)/i.test(t)) return { intent: 'REMINDER', content: RegExp.$1 };
 
   // REMINDER_DONE
@@ -506,16 +512,18 @@ async function processSecretaryOrders(messages, db, cwd) {
     if (classification.intent === 'NONE') continue;
 
     // Step 3: Execute the action
+    // Use '__global__' as project_dir when the "global" modifier is detected
+    const effectiveCwd = classification.global ? '__global__' : cwd;
     switch (classification.intent) {
       // Sync actions (SQLite only, instant):
       case 'REMEMBER':
-        await actionRemember(classification.content || line, db, cwd);
+        await actionRemember(classification.content || line, db, effectiveCwd);
         break;
       case 'NOTE':
-        await actionNote(classification.content || line, db, cwd);
+        await actionNote(classification.content || line, db, effectiveCwd);
         break;
       case 'REMINDER':
-        await actionReminder(classification.content || line, db, cwd);
+        await actionReminder(classification.content || line, db, effectiveCwd);
         break;
       // LLM-dependent actions — queue for background:
       case 'FORGET':
@@ -545,7 +553,7 @@ async function processSecretaryOrders(messages, db, cwd) {
 async function actionRemember(content, db, cwd) {
   const existingManual = db.prepare(`
     SELECT summary FROM summaries
-    WHERE project_dir = ? AND session_id = 'manual' AND status = 'active'
+    WHERE project_dir IN (?, '__global__') AND session_id = 'manual' AND status = 'active'
   `).all(cwd || '').map(r => r.summary.toLowerCase());
 
   const normalized = content.toLowerCase();
@@ -568,7 +576,7 @@ async function actionRemember(content, db, cwd) {
 async function actionForget(content, db, cwd, llmAvailable) {
   const manualEntries = db.prepare(`
     SELECT id, summary FROM summaries
-    WHERE project_dir = ? AND session_id = 'manual' AND status = 'active'
+    WHERE project_dir IN (?, '__global__') AND session_id = 'manual' AND status = 'active'
   `).all(cwd || '');
 
   if (manualEntries.length === 0) return;
@@ -587,7 +595,7 @@ async function actionForget(content, db, cwd, llmAvailable) {
 async function actionNote(content, db, cwd) {
   const existingNotes = db.prepare(`
     SELECT summary FROM summaries
-    WHERE project_dir = ? AND session_id = 'notes' AND status = 'active'
+    WHERE project_dir IN (?, '__global__') AND session_id = 'notes' AND status = 'active'
   `).all(cwd || '').map(r => r.summary.toLowerCase());
 
   const normalized = content.toLowerCase();
@@ -610,7 +618,7 @@ async function actionNote(content, db, cwd) {
 async function actionNoteDelete(content, db, cwd, llmAvailable) {
   const noteEntries = db.prepare(`
     SELECT id, summary FROM summaries
-    WHERE project_dir = ? AND session_id = 'notes' AND status = 'active'
+    WHERE project_dir IN (?, '__global__') AND session_id = 'notes' AND status = 'active'
   `).all(cwd || '');
 
   if (noteEntries.length === 0) return;
@@ -630,7 +638,7 @@ async function actionReminder(content, db, cwd) {
   // Dedup: check if a similar reminder already exists
   const existingReminders = db.prepare(`
     SELECT summary FROM summaries
-    WHERE project_dir = ? AND session_id = 'reminders' AND status = 'active'
+    WHERE project_dir IN (?, '__global__') AND session_id = 'reminders' AND status = 'active'
   `).all(cwd || '').map(r => r.summary.toLowerCase());
 
   const normalized = content.toLowerCase();
@@ -657,7 +665,7 @@ async function actionReminder(content, db, cwd) {
 async function actionReminderDone(content, db, cwd, llmAvailable) {
   const reminderEntries = db.prepare(`
     SELECT id, summary FROM summaries
-    WHERE project_dir = ? AND session_id = 'reminders' AND status = 'active'
+    WHERE project_dir IN (?, '__global__') AND session_id = 'reminders' AND status = 'active'
   `).all(cwd || '');
 
   if (reminderEntries.length === 0) return;
@@ -914,7 +922,10 @@ async function restore(hookInput) {
   const { session_id, cwd } = hookInput;
 
   const db = openDb();
-  if (!db) return;
+  if (!db) {
+    process.stdout.write(`⚠️ **The Secretary: No se pudo abrir la base de datos.** Ejecuta manualmente:\n\`\`\`bash\nbash ~/.claude/summarizer/start-llm.sh start\necho '{"cwd":"${cwd || ''}"}' | node ~/.claude/summarizer/summarize.mjs recall\n\`\`\`\n`);
+    return;
+  }
 
   try {
     // ── Gather all data ──
@@ -937,27 +948,27 @@ async function restore(hookInput) {
     // Fetch all categories
     const manualEntries = cwd ? db.prepare(`
       SELECT summary, created_at FROM summaries
-      WHERE project_dir = ? AND session_id = 'manual' AND status = 'active'
+      WHERE project_dir IN (?, '__global__') AND session_id = 'manual' AND status = 'active'
       ORDER BY created_at ASC
     `).all(cwd) : [];
 
     const noteEntries = cwd ? db.prepare(`
       SELECT summary, created_at FROM summaries
-      WHERE project_dir = ? AND session_id = 'notes' AND status = 'active'
+      WHERE project_dir IN (?, '__global__') AND session_id = 'notes' AND status = 'active'
       ORDER BY created_at ASC
     `).all(cwd) : [];
 
     const today = new Date().toISOString().split('T')[0];
     const overdueReminders = cwd ? db.prepare(`
       SELECT summary, due_at FROM summaries
-      WHERE project_dir = ? AND session_id = 'reminders' AND status = 'active'
+      WHERE project_dir IN (?, '__global__') AND session_id = 'reminders' AND status = 'active'
         AND due_at IS NOT NULL AND due_at <= ?
       ORDER BY due_at ASC
     `).all(cwd, today) : [];
 
     const upcomingReminders = cwd ? db.prepare(`
       SELECT summary, due_at FROM summaries
-      WHERE project_dir = ? AND session_id = 'reminders' AND status = 'active'
+      WHERE project_dir IN (?, '__global__') AND session_id = 'reminders' AND status = 'active'
         AND (due_at IS NULL OR due_at > ?)
       ORDER BY due_at ASC
       LIMIT 10
@@ -1086,6 +1097,11 @@ ${allSummaries}`;
     // ── Final output ──
     const totalItems = summaries.length + manualEntries.length + noteEntries.length + overdueReminders.length + upcomingReminders.length;
 
+    if (totalItems === 0) {
+      process.stdout.write(`⚠️ **The Secretary: No hay contexto previo para este proyecto.** Si crees que debería haberlo, ejecuta:\n\`\`\`bash\nbash ~/.claude/summarizer/start-llm.sh start\necho '{"cwd":"${cwd || ''}"}' | node ~/.claude/summarizer/summarize.mjs recall\n\`\`\`\n`);
+      return;
+    }
+
     output += `\n---\n*${totalItems} items restored by The Secretary.*`;
 
     const allDates = [...summaries, ...manualEntries, ...noteEntries].map(e => e.created_at).filter(Boolean);
@@ -1196,8 +1212,8 @@ async function recall(hookInput, filter = 'all') {
     // Memories
     if (filter === 'all' || filter === 'memories') {
       const entries = db.prepare(`
-        SELECT id, summary, created_at FROM summaries
-        WHERE project_dir = ? AND session_id = 'manual' AND status = 'active'
+        SELECT id, summary, created_at, project_dir FROM summaries
+        WHERE project_dir IN (?, '__global__') AND session_id = 'manual' AND status = 'active'
         ORDER BY created_at ASC
       `).all(cwd);
 
@@ -1206,7 +1222,8 @@ async function recall(hookInput, filter = 'all') {
         for (const e of entries) {
           const clean = e.summary.replace(/^\[(?:REMEMBER|MANUAL)\]\s*/i, '');
           const date = e.created_at ? new Date(e.created_at + 'Z').toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
-          output += `- ${clean}${date ? ` _(${date})_` : ''}\n`;
+          const globalTag = e.project_dir === '__global__' ? ' [global]' : '';
+          output += `- ${clean}${date ? ` _(${date})_` : ''}${globalTag}\n`;
         }
         output += '\n';
       }
@@ -1215,8 +1232,8 @@ async function recall(hookInput, filter = 'all') {
     // Notes
     if (filter === 'all' || filter === 'notes') {
       const entries = db.prepare(`
-        SELECT id, summary, created_at FROM summaries
-        WHERE project_dir = ? AND session_id = 'notes' AND status = 'active'
+        SELECT id, summary, created_at, project_dir FROM summaries
+        WHERE project_dir IN (?, '__global__') AND session_id = 'notes' AND status = 'active'
         ORDER BY created_at ASC
       `).all(cwd);
 
@@ -1225,7 +1242,8 @@ async function recall(hookInput, filter = 'all') {
         for (const e of entries) {
           const clean = e.summary.replace(/^\[NOTE\]\s*/i, '');
           const date = e.created_at ? new Date(e.created_at + 'Z').toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
-          output += `- ${clean}${date ? ` _(${date})_` : ''}\n`;
+          const globalTag = e.project_dir === '__global__' ? ' [global]' : '';
+          output += `- ${clean}${date ? ` _(${date})_` : ''}${globalTag}\n`;
         }
         output += '\n';
       }
@@ -1235,13 +1253,13 @@ async function recall(hookInput, filter = 'all') {
     if (filter === 'all' || filter === 'reminders') {
       const active = db.prepare(`
         SELECT id, summary, due_at, created_at FROM summaries
-        WHERE project_dir = ? AND session_id = 'reminders' AND status = 'active'
+        WHERE project_dir IN (?, '__global__') AND session_id = 'reminders' AND status = 'active'
         ORDER BY due_at ASC, created_at ASC
       `).all(cwd);
 
       const done = db.prepare(`
         SELECT id, summary, due_at, created_at FROM summaries
-        WHERE project_dir = ? AND session_id = 'reminders' AND status = 'done'
+        WHERE project_dir IN (?, '__global__') AND session_id = 'reminders' AND status = 'done'
         ORDER BY created_at DESC LIMIT 10
       `).all(cwd);
 

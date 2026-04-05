@@ -65,13 +65,29 @@ echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/summarizer/summarize.mjs recall-remin
 
 **When user asks "qué recuerdas?", "muestra mis notas", "show my reminders", etc.** — run the appropriate `recall` command and show the output as your response.
 
+### Global scope ("global" modifier)
+By default, memories, notes, and reminders are **per-project** (scoped to the current working directory). Add "global" to make them visible across ALL projects:
+
+**Global notes:**
+- "Anota global que..." / "Nota global: ..." / "Take note global: ..."
+
+**Global memories:**
+- "Recuerda global que..." / "Remember global that..."
+
+**Global reminders:**
+- "Avísame global que..." / "Remind me global..."
+
+Global items are shown alongside project-specific items in every session, tagged with `[global]`. Deletion commands (`borra la nota de...`) search both project and global items.
+
 ### Important behaviors
+- **DO NOT use Claude's built-in memory/context system** — all context persistence is handled exclusively by The Secretary (summarizer hooks + SQLite). Never rely on or reference Claude's native memory features.
+- **When the user asks about previous sessions** (e.g. "qué hicimos?", "última sesión") — if the context from The Secretary is already loaded in the conversation, respond directly from it WITHOUT searching files or running commands. Only search if the context hasn't been injected yet.
 - The secretary is **automatic** — it runs in the background via hooks
 - All orders (remember, forget, note, reminder) are detected via regex on every tool call
 - Deletion/completion actions use the local LLM for flexible matching (understands variations and bilingual phrasing)
 - After `/clear`, previous context appears as injected sections — trust and use this context
 - User memories appear as `## User Memories (NEVER ignore these)` — always respect these
-- Data is per-project (stored in SQLite with `session_id` and `project_dir`)
+- Data is per-project by default (stored in SQLite with `session_id` and `project_dir`), use "global" modifier for cross-project items
 
 ### Checking status
 ```bash
