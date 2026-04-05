@@ -62,10 +62,33 @@ src/
 
 ## Installation
 
+### 1. Project skill (per-project)
+
 ```bash
 mkdir -p .claude/skills/ascii-art-diagrams
 cp SKILL.md README.md /path/to/project/.claude/skills/ascii-art-diagrams/
 ```
+
+### 2. Global verification rule (recommended)
+
+Add this to `~/.claude/CLAUDE.md` so the agent **always** verifies ASCII art in every project:
+
+```markdown
+## ASCII Art Diagrams — MANDATORY Verification
+
+**ALWAYS** after editing, creating, or modifying ANY ASCII box-drawing content
+(diagrams, tables, boxes using │, ┌, ┐, └, ┘, ├, ┤, ─):
+
+1. Run `wc -m` on every line of the diagram to verify all lines have the same character count
+2. If any line differs, fix it BEFORE committing
+3. Do NOT skip this step. Do NOT assume it's correct. ALWAYS verify with `wc -m`.
+4. NEVER use tree-drawing characters (├──, └──, │) mixed with text inside box borders —
+   they cause visual misalignment in GitHub monospace fonts even when `wc -m` matches
+
+This applies to ALL files: READMEs, INSTALL.md, SKILL.md, any markdown with ASCII art.
+```
+
+Without the global rule, the agent only applies ASCII formatting when the skill is installed in the current project. With it, verification happens everywhere.
 
 ## Requirements
 
