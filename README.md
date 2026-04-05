@@ -19,7 +19,7 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 │    - microbrain/             Persistent SQLite memory system    │
 │                                                                 │
 │  tools/                                                         │
-│    - microlocalhostproxy/    Smart port + subdomain routing     │
+│    - microlocalhostproxy/    Zero-config subdomain + auto-start │
 │                                                                 │
 │  TheSecretary/               Local LLM context summarizer       │
 │                                                                 │
@@ -221,35 +221,32 @@ Standalone utilities for development workflows. Not tied to the agent's skill sy
 
 > [`tools/microlocalhostproxy/`](tools/microlocalhostproxy/)
 
-Smart port resolution and local subdomain routing for Node.js dev servers on macOS.
+Zero-config local subdomain routing with auto-start for any project type (PHP, Node, Python, static).
 
 ```
 ┌───────────────────────────────────────────────────────────┐
 │                                                           │
-│  MICROLOCALHOSTPROXY                                      │
+│  DEVPROXY                                                 │
 │                                                           │
 │  Browser -> myapp.localhost:80                            │
-│          -> devproxy (listens directly on port 80)        │
+│          -> devproxy (port 80 LaunchDaemon)               │
 │          -> routes by Host header                         │
-│          -> 127.0.0.1:3001 (your dev server)              │
+│          -> auto-starts server if not running             │
+│          -> 127.0.0.1:PORT (your dev server)              │
 │                                                           │
 ├───────────────────────────────────────────────────────────┤
 │                                                           │
 │  FEATURES                                                 │
-│  - LaunchDaemon on port 80 (no pfctl needed)              │
-│  - Retry with backoff on upstream errors                  │
-│  - Styled error page when server is unreachable           │
-│  - Named routes (shown in devproxy list)                  │
-│                                                           │
-│  PORT RESOLUTION                                          │
-│  - Port free          use it directly                     │
-│  - Occupied by US     kill old process, reuse port        │
-│  - Occupied by OTHER  find next free port (up to +20)     │
+│  - Auto-detect project type (PHP, Node, Python, static)   │
+│  - Auto-start servers on first request                    │
+│  - Persistent registry survives reboots                   │
+│  - Idle cleanup after 15min inactivity                    │
+│  - CLI tool: devproxy list/start/stop/remove              │
 │                                                           │
 └───────────────────────────────────────────────────────────┘
 ```
 
-**Includes:** `central/proxy.js`, `client/devproxy.js`, `INSTALL.md`, `README.md`
+**Includes:** `central/proxy.js`, `client/devproxy.js`, `central/install.sh`, `INSTALL.md`, `README.md`
 
 **Requirements:** macOS, Node.js 18+
 
@@ -289,6 +286,7 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 - Automatic summarization every N tool calls (default: 15) via PostToolUse hook
 - PreCompact hook warns before context compaction, suggests `/clear` for local summaries
 - SessionStart hook injects saved summaries on `/clear`, `startup`, or `resume`
+- Global scope: memories, notes, and reminders can be shared across all projects
 - SQLite storage for persistent summaries across sessions
 - Configurable: model, summarization frequency, token limits, remote LLM support
 
@@ -411,6 +409,8 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-04-05 | devproxy: auto-start servers, persistent project registry, CLI tool, multi-language support  |
+| 2026-04-05 | TheSecretary: global scope for memories, notes, and reminders across all projects            |
 | 2026-04-01 | Add OpenCode MLX: local AI coding assistant with TurboQuant on Apple Silicon                  |
 | 2026-03-30 | Add TheSecretary: local LLM context summarizer for Claude Code                               |
 | 2026-03-18 | devproxy: retry with backoff, styled error page, route naming support                       |
