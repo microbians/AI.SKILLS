@@ -65,11 +65,19 @@ Supports bilingual date parsing (English and Spanish): "tomorrow", "next friday"
 2. **PreCompact hook** — Forces a final summary before Claude's compaction, then blocks it and suggests `/clear`.
 3. **SessionStart hook** — On `/clear`, `startup`, or `resume`, restores context:
    - **Overdue reminders** shown first (highest priority)
-   - Consolidated conversation summary
+   - Consolidated conversation summary (loaded from per-project cache — see below)
    - User memories
    - Active notes
    - Upcoming reminders
 4. **Stop hook** — Forces a final summary, then shuts down the LLM server.
+
+### Pre-generated per-project cache
+
+To keep SessionStart fast, each background summarization also writes a consolidated `.md` to `~/.claude/summarizer/cache/<project>/<YYYY-MM-DDTHHmm>.md`. SessionStart reads the latest cache when it is newer than all SQLite chunks and skips the LLM consolidation that previously ran on every restore.
+
+- **Invalidation:** if any chunk is newer than the cache's `generated_at`, it is regenerated.
+- **Retention:** max 10 files per project, 30 days.
+- **Per-project isolation:** each project has its own folder (`<basename>-<hash8>`), so projects with the same basename never collide.
 
 ### Flexible matching via LLM
 

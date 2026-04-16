@@ -409,6 +409,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-04-16 | TheSecretary: per-project pre-generated cache to speed up SessionStart restores              |
 | 2026-04-05 | devproxy: auto-start servers, persistent project registry, CLI tool, multi-language support  |
 | 2026-04-05 | TheSecretary: global scope for memories, notes, and reminders across all projects            |
 | 2026-04-01 | Add OpenCode MLX: local AI coding assistant with TurboQuant on Apple Silicon                  |
