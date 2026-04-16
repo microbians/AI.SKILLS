@@ -23,9 +23,10 @@
  * Reads hook JSON from stdin.
  */
 
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'fs';
+import { join, basename } from 'path';
 import { homedir } from 'os';
+import { createHash } from 'crypto';
 import { createRequire } from 'module';
 import { execSync } from 'child_process';
 import http from 'http';
@@ -55,6 +56,109 @@ function loadConfig() {
 }
 
 const config = loadConfig();
+
+// ═══════════════════ CACHE (per-project pre-generated summaries) ═══════════════════
+
+const CACHE_DIR = join(SUMMARIZER_DIR, 'cache');
+const CACHE_MAX_AGE_DAYS = 30;
+const CACHE_MAX_FILES_PER_PROJECT = 10;
+
+function projectFolderName(cwd) {
+  if (!cwd) return '__unknown__';
+  const base = basename(cwd).replace(/[^a-zA-Z0-9._-]/g, '_') || '_';
+  const hash = createHash('sha1').update(cwd).digest('hex').slice(0, 8);
+  return `${base}-${hash}`;
+}
+
+function cacheDirForProject(cwd) {
+  return join(CACHE_DIR, projectFolderName(cwd));
+}
+
+function ensureCacheDir(cwd) {
+  const dir = cacheDirForProject(cwd);
+  try { mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
+  return dir;
+}
+
+function isoStampForFile() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+
+function writeCacheFile(cwd, content, metadata = {}) {
+  try {
+    const dir = ensureCacheDir(cwd);
+    const stamp = isoStampForFile();
+    const file = join(dir, `${stamp}.md`);
+    const header =
+      `---\n` +
+      `generated_at: ${new Date().toISOString()}\n` +
+      `project_dir: ${cwd || ''}\n` +
+      (metadata.session_id ? `session_id: ${metadata.session_id}\n` : '') +
+      (metadata.chunks_included != null ? `chunks_included: ${metadata.chunks_included}\n` : '') +
+      `---\n\n`;
+    writeFileSync(file, header + content, 'utf-8');
+    pruneOldCaches(cwd);
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+function listCacheFiles(cwd) {
+  const dir = cacheDirForProject(cwd);
+  if (!existsSync(dir)) return [];
+  try {
+    return readdirSync(dir)
+      .filter(f => f.endsWith('.md'))
+      .map(f => {
+        const full = join(dir, f);
+        const st = statSync(full);
+        return { file: full, name: f, mtimeMs: st.mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch {
+    return [];
+  }
+}
+
+function readLatestCacheFile(cwd) {
+  const files = listCacheFiles(cwd);
+  if (files.length === 0) return null;
+  const latest = files[0];
+  try {
+    const raw = readFileSync(latest.file, 'utf-8');
+    let meta = {};
+    let body = raw;
+    const m = raw.match(/^---\n([\s\S]*?)\n---\n\n?/);
+    if (m) {
+      for (const line of m[1].split('\n')) {
+        const kv = line.match(/^(\w+):\s*(.*)$/);
+        if (kv) meta[kv[1]] = kv[2];
+      }
+      body = raw.slice(m[0].length);
+    }
+    return { file: latest.file, mtimeMs: latest.mtimeMs, meta, body };
+  } catch {
+    return null;
+  }
+}
+
+function pruneOldCaches(cwd) {
+  try {
+    const files = listCacheFiles(cwd);
+    const now = Date.now();
+    const maxAgeMs = CACHE_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+    for (let i = 0; i < files.length; i++) {
+      const tooOld = (now - files[i].mtimeMs) > maxAgeMs;
+      const overLimit = i >= CACHE_MAX_FILES_PER_PROJECT;
+      if (tooOld || overLimit) {
+        try { unlinkSync(files[i].file); } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
+}
 
 // ═══════════════════ DATABASE ═══════════════════
 
@@ -795,6 +899,94 @@ async function incremental(hookInput) {
 }
 
 /**
+ * Build a consolidated summary of all chunks for a project and write it
+ * to the per-project cache as a dated .md. Called after every background
+ * summarization so SessionStart can read the cache instead of calling the LLM.
+ */
+async function regenerateProjectCache(db, cwd, sessionId) {
+  if (!cwd || !db) return;
+
+  const lastSessionRow = db.prepare(`
+    SELECT session_id FROM summaries
+    WHERE project_dir = ? AND session_id NOT IN ('manual', 'notes', 'reminders')
+    ORDER BY created_at DESC LIMIT 1
+  `).get(cwd);
+  const lastSessionId = lastSessionRow?.session_id || sessionId;
+  if (!lastSessionId) return;
+
+  let summaries = db.prepare(`
+    SELECT summary, chunk_index, created_at, session_id FROM summaries
+    WHERE session_id = ? ORDER BY chunk_index ASC
+  `).all(lastSessionId);
+
+  const MIN_CHUNKS = 10;
+  if (summaries.length < MIN_CHUNKS) {
+    const needed = MIN_CHUNKS - summaries.length;
+    const backfill = db.prepare(`
+      SELECT summary, chunk_index, created_at, session_id FROM summaries
+      WHERE project_dir = ? AND session_id != ? AND session_id NOT IN ('manual', 'notes', 'reminders')
+      ORDER BY created_at DESC LIMIT ?
+    `).all(cwd, lastSessionId, needed);
+    backfill.reverse();
+    summaries = [...backfill, ...summaries];
+  }
+
+  if (summaries.length === 0) return;
+
+  let finalSummary = '';
+  if (await isLLMAvailable()) {
+    const allSummaries = summaries.map((s, i) => `--- Chunk ${i + 1} (${s.created_at}) ---\n${s.summary}`).join('\n\n');
+    const prompt = `Merge these ${summaries.length} incremental conversation summaries into ONE consolidated summary. This will be injected into a NEW conversation so the AI can continue where it left off.
+
+CRITICAL PRIORITIES (in order):
+1. CURRENT STATE: What task is in progress? What are the immediate next steps?
+2. KEY DECISIONS: Architectural choices, design patterns chosen, constraints agreed upon
+3. IMPORTANT CHANGES: Files modified with specific paths and what changed
+4. UNRESOLVED PROBLEMS: Bugs, errors, or blockers still pending
+5. ERROR SOLUTIONS: How specific errors were fixed (exact fix, not just "fixed it")
+
+RULES:
+- Remove duplicates and superseded information
+- Most recent chunks are MORE important than older ones
+- Include specific file paths, function names, variable names
+- Keep it under 2000 tokens. Be specific and actionable.
+- Format with clear **SECTION** headers
+
+SUMMARIES (oldest to newest):
+${allSummaries}`;
+
+    try {
+      finalSummary = await callLLM(prompt, 2000);
+    } catch {
+      finalSummary = summaries.map(s => s.summary).join('\n\n---\n\n');
+    }
+  } else {
+    finalSummary = summaries.map(s => s.summary).join('\n\n---\n\n');
+  }
+
+  if (finalSummary.length > 4000) {
+    if (await isLLMAvailable()) {
+      try {
+        const compactPrompt = `This summary is too long (${finalSummary.length} chars). Compress it to under 3500 characters while keeping all critical information.\n\nSUMMARY:\n${finalSummary}`;
+        const compressed = await callLLM(compactPrompt, 1500);
+        if (compressed && compressed.length >= 50) finalSummary = compressed;
+      } catch { /* keep original */ }
+    }
+    if (finalSummary.length > 4000) {
+      finalSummary = finalSummary.slice(0, 3950) + '\n\n[...truncated]';
+    }
+  }
+
+  if (!finalSummary || finalSummary.length < 50) return;
+
+  const file = writeCacheFile(cwd, finalSummary, {
+    session_id: lastSessionId,
+    chunks_included: summaries.length,
+  });
+  if (file) process.stderr.write(`[secretary] Cache written: ${file}\n`);
+}
+
+/**
  * Background summarization worker — called as a forked child process.
  * Args: _bg_summarize <session_id> <cwd> <message_count> <tmpFile>
  */
@@ -841,6 +1033,8 @@ ${text}`;
     db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)').run(
       sessionId, cwd, chunkIndex, summary, parseInt(messageCount, 10)
     );
+
+    try { await regenerateProjectCache(db, cwd, sessionId); } catch { /* cache failure must not break summarization */ }
   } finally {
     db.close();
   }
@@ -1017,12 +1211,32 @@ async function restore(hookInput) {
     }
 
     // 2. Consolidated conversation summary
+    //    Fast path: try to read a pre-generated cache file for this project.
+    //    The cache is invalidated if any chunk in SQLite is newer than the cache.
     let finalSummary = '';
+    let cacheHit = false;
+    let cacheGeneratedAt = null;
+
+    if (cwd && summaries.length > 0) {
+      const cached = readLatestCacheFile(cwd);
+      if (cached && cached.body && cached.body.trim().length > 50) {
+        const cacheTime = cached.meta.generated_at ? Date.parse(cached.meta.generated_at) : cached.mtimeMs;
+        const newestChunkTime = Math.max(...summaries.map(s => Date.parse((s.created_at || '') + 'Z') || 0));
+        if (cacheTime && newestChunkTime && cacheTime >= newestChunkTime) {
+          finalSummary = cached.body.trim();
+          cacheHit = true;
+          cacheGeneratedAt = cached.meta.generated_at || new Date(cached.mtimeMs).toISOString();
+          process.stderr.write(`[secretary] Cache hit: ${cached.file}\n`);
+        }
+      }
+    }
+
     if (summaries.length === 0) {
       finalSummary = '(No conversation summaries available)';
-    } else if (await isLLMAvailable()) {
-      const allSummaries = summaries.map((s, i) => `--- Chunk ${i + 1} (${s.created_at}) ---\n${s.summary}`).join('\n\n');
-      const prompt = `Merge these ${summaries.length} incremental conversation summaries into ONE consolidated summary. This will be injected into a NEW conversation so the AI can continue where it left off.
+    } else if (!cacheHit) {
+      if (await isLLMAvailable()) {
+        const allSummaries = summaries.map((s, i) => `--- Chunk ${i + 1} (${s.created_at}) ---\n${s.summary}`).join('\n\n');
+        const prompt = `Merge these ${summaries.length} incremental conversation summaries into ONE consolidated summary. This will be injected into a NEW conversation so the AI can continue where it left off.
 
 CRITICAL PRIORITIES (in order):
 1. CURRENT STATE: What task is in progress? What are the immediate next steps?
@@ -1041,30 +1255,44 @@ RULES:
 SUMMARIES (oldest to newest):
 ${allSummaries}`;
 
-      try {
-        finalSummary = await callLLM(prompt, 2000);
-      } catch {
+        try {
+          finalSummary = await callLLM(prompt, 2000);
+        } catch {
+          finalSummary = summaries.map(s => s.summary).join('\n\n---\n\n');
+        }
+      } else {
         finalSummary = summaries.map(s => s.summary).join('\n\n---\n\n');
       }
-    } else {
-      finalSummary = summaries.map(s => s.summary).join('\n\n---\n\n');
-    }
 
-    // Compress if too long
-    if (finalSummary.length > 4000) {
-      if (await isLLMAvailable()) {
-        try {
-          const compactPrompt = `This summary is too long (${finalSummary.length} chars). Compress it to under 3500 characters while keeping all critical information.\n\nSUMMARY:\n${finalSummary}`;
-          const compressed = await callLLM(compactPrompt, 1500);
-          if (compressed && compressed.length >= 50) finalSummary = compressed;
-        } catch { /* keep original */ }
-      }
+      // Compress if too long
       if (finalSummary.length > 4000) {
-        finalSummary = finalSummary.slice(0, 3950) + '\n\n[...truncated]';
+        if (await isLLMAvailable()) {
+          try {
+            const compactPrompt = `This summary is too long (${finalSummary.length} chars). Compress it to under 3500 characters while keeping all critical information.\n\nSUMMARY:\n${finalSummary}`;
+            const compressed = await callLLM(compactPrompt, 1500);
+            if (compressed && compressed.length >= 50) finalSummary = compressed;
+          } catch { /* keep original */ }
+        }
+        if (finalSummary.length > 4000) {
+          finalSummary = finalSummary.slice(0, 3950) + '\n\n[...truncated]';
+        }
+      }
+
+      // Persist freshly generated consolidation to cache for next SessionStart
+      if (finalSummary && finalSummary.length >= 50 && cwd) {
+        try {
+          writeCacheFile(cwd, finalSummary, {
+            session_id: lastSessionId || '',
+            chunks_included: summaries.length,
+          });
+        } catch { /* cache failure must not break restore */ }
       }
     }
 
-    output += `## Context from Previous Conversation (auto-injected by The Secretary)\n\n${finalSummary}\n`;
+    const cacheLabel = cacheHit && cacheGeneratedAt
+      ? ` _(cached ${new Date(cacheGeneratedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })})_`
+      : '';
+    output += `## Context from Previous Conversation (auto-injected by The Secretary)${cacheLabel}\n\n${finalSummary}\n`;
 
     // 3. User Memories
     if (manualEntries.length > 0) {
