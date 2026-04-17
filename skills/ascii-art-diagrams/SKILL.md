@@ -440,9 +440,18 @@ CORRECT (bullet lists)
 
 Write the diagram as you normally would following Rules 1-8.
 
-### Step 2: Verify with bash
+### Step 2: Verify with a REAL character count (NOT bytes)
 
-Run this command, pasting your diagram between the quotes:
+**CRITICAL:** you MUST count REAL Unicode characters, never bytes. Unicode chars like `─ │ ┌ ┐ └ ┘ ├ ┤ ──▶ ◀──` take multiple bytes but ONE visual column. Counting bytes gives false mismatches and leads to breaking correctly-aligned boxes.
+
+**DO NOT use these** (they count bytes, not characters):
+- `wc -c` — counts bytes
+- `awk '{print length}'` — counts bytes on most systems
+- `${#var}` in bash without `LC_ALL=en_US.UTF-8` and locale-aware tooling
+
+**USE ONE of these** (real character counting):
+
+**Option A — `wc -m` (bash, simplest):**
 
 ```bash
 echo '┌─────────────────────────┐
@@ -451,7 +460,33 @@ echo '┌───────────────────────�
 └─────────────────────────┘' | while IFS= read -r line; do printf "%d: %s\n" "$(echo -n "$line" | wc -m)" "$line"; done
 ```
 
-All lines MUST show the **same number**. Example output:
+**Option B — Python (MOST RELIABLE, use when in doubt):**
+
+```bash
+python3 -c "
+import sys
+for ln in sys.stdin:
+    ln = ln.rstrip('\n')
+    print(f'{len(ln):3d}: {ln}')
+" <<'EOF'
+┌─────────────────────────┐
+│  your content here      │
+│  more content           │
+└─────────────────────────┘
+EOF
+```
+
+Or directly on a file range:
+
+```bash
+python3 -c "
+with open('/path/to/file.md') as f:
+    for i, ln in enumerate(f.readlines()[START:END], START+1):
+        ln = ln.rstrip('\n')
+        print(f'L{i} chars={len(ln):3d} |{ln}|')"
+```
+
+All lines of a box MUST show the **same number**. Example output:
 
 ```
 27: ┌─────────────────────────┐
@@ -477,9 +512,11 @@ If any line shows a different count:
 
 ### Notes
 
-- The command uses `wc -m` which counts Unicode characters correctly (not bytes)
-- Each `█ ░ ▒ ▓ ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ▼ ▲ ◀ ▶` counts as 1 character
-- This check costs one tool call but eliminates all retry loops
+- **Always count REAL characters, never bytes.** `wc -c`, `awk '{print length}'`, and `${#var}` (without proper locale) count bytes and will give you wrong results on Unicode diagrams.
+- Use `wc -m` (bash) or `len()` in Python — both count Unicode characters correctly.
+- Each `█ ░ ▒ ▓ ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ▼ ▲ ◀ ▶` counts as 1 character.
+- Multi-byte arrows like `──▶` count as 3 characters (two `─` + one `▶`), not 5 or 6 bytes.
+- This check costs one tool call but eliminates all retry loops.
 
 ---
 

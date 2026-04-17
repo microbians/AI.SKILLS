@@ -9,6 +9,9 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 │                                                                 │
 │  AI.SKILLS                                                      │
 │                                                                 │
+│  TheSecretary/               Local LLM context summarizer       │
+│                              + recall-on-demand ("remember?")   │
+│                                                                 │
 │  skills/                                                        │
 │    - ascii-art-diagrams/     Unicode diagram formatting rules   │
 │    - defensive-development/  Verify-first coding practices      │
@@ -21,8 +24,8 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 │                                                                 │
 │  tools/                                                         │
 │    - microlocalhostproxy/    Zero-config subdomain + auto-start │
-│                                                                 │
-│  TheSecretary/               Local LLM context summarizer       │
+│    - claude-launcher/        VS Code extension (Activity Bar +  │
+│                              Status Bar launcher for Claude)    │
 │                                                                 │
 │  opencodemlx/                Local AI coding assistant (MLX)    │
 │                                                                 │
@@ -35,6 +38,7 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 
 ## Table of Contents
 
+- [TheSecretary](#thesecretary) ⭐
 - [Skills](#skills)
   - [Defensive Development](#defensive-development)
   - [ASCII Art Diagrams](#ascii-art-diagrams)
@@ -45,13 +49,58 @@ A collection of drop-in components that give AI agents persistent memory, safer 
   - [Block Destructive](#block-destructive)
 - [Tools](#tools)
   - [Microlocalhostproxy](#microlocalhostproxy)
-- [TheSecretary](#thesecretary)
+  - [Claude Launcher](#claude-launcher)
 - [OpenCode MLX](#opencode-mlx)
 - [Boilerplate](#boilerplate)
 - [Installation](#installation)
 - [Compatibility](#compatibility)
 - [Changelog](#changelog)
 - [License](#license)
+
+---
+
+## TheSecretary
+
+> [`TheSecretary/`](TheSecretary/)
+
+Local LLM-powered conversation summarizer for Claude Code. Preserves context across `/clear` and session restarts using a small local model (Qwen 2.5 3B), and auto-injects relevant past context when you ask "do you remember...?" (also "¿recuerdas...?" in Spanish).
+
+```
+┌───────────────────────────────────────────────────────┐
+│                                                       │
+│  TheSecretary                                         │
+│                                                       │
+│  Claude Code ──▶ Hooks ──▶ Local LLM + regex          │
+│                                  │                    │
+│                                  ▼                    │
+│                            ┌───────────┐              │
+│                            │ SQLite DB │              │
+│                            │ summaries │              │
+│                            │ memories  │              │
+│                            │ notes     │              │
+│                            │ reminders │              │
+│                            └─────┬─────┘              │
+│                                  │                    │
+│  "do you remember X?" ───────────▶ search & inject    │
+│  /clear               ───────────▶ restore context    │
+│                                                       │
+└───────────────────────────────────────────────────────┘
+```
+
+**Key features:**
+- **Recall-on-demand** — detects recall-style prompts (`do you remember`, `do you recall`, `remember when`, plus `¿recuerdas?` / `te acuerdas?` in Spanish) via UserPromptSubmit hook and auto-injects matching snippets from cache + DB before Claude replies
+- Automatic summarization every N tool calls (default: 15) via PostToolUse hook
+- Per-project pre-generated cache `.md` files for fast SessionStart restores
+- PreCompact hook warns before context compaction, suggests `/clear` for local summaries
+- SessionStart hook injects saved summaries on `/clear`, `startup`, or `resume`
+- Memories, notes, reminders with regex detection + bilingual date parsing (EN/ES)
+- Global scope: memories, notes, and reminders can be shared across all projects
+- SQLite storage for persistent summaries across sessions
+- Configurable: model, summarization frequency, token limits, remote LLM support
+
+**Includes:** `summarize.mjs`, `start-llm.sh`, `config.json`, `hooks.json`, `install.sh`, `claude-md-snippet.md`
+
+**Requirements:** macOS/Linux, Node.js 18+, llama-server (llama.cpp) or MLX in PATH, ~2GB disk for the GGUF model
 
 ---
 
@@ -294,47 +343,32 @@ Zero-config local subdomain routing with auto-start for any project type (PHP, N
 
 ---
 
-## TheSecretary
+### Claude Launcher
 
-> [`TheSecretary/`](TheSecretary/)
+> [`tools/claude-launcher/`](tools/claude-launcher/)
 
-Local LLM-powered conversation summarizer for Claude Code. Preserves context across `/clear` and session restarts using a small local model (Qwen 2.5 3B).
+VS Code extension that adds one-click launchers for Claude Code in the Activity Bar (left) and the Status Bar (bottom). Opens Claude as an editor tab (not the terminal panel) with an optional `--dangerously-skip-permissions` flag, and keeps a live counter of open sessions.
 
 ```
-┌───────────────────────────────────────────────────────┐
-│                                                       │
-│  TheSecretary                                         │
-│                                                       │
-│  Claude Code ──▶ Hooks ──▶ Local LLM + regex          │
-│                                  │                    │
-│                                  ▼                    │
-│                            ┌───────────┐              │
-│                            │ SQLite DB │              │
-│                            │ summaries │              │
-│                            │ memories  │              │
-│                            │ notes     │              │
-│                            │ reminders │              │
-│                            └─────┬─────┘              │
-│                                  │                    │
-│             /clear ─────────────▶│                    │
-│                                  ▼                    │
-│                          Context injected             │
-│                          into new session             │
-│                                                       │
-└───────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                                                         │
+│  CLAUDE LAUNCHER (VS Code extension)                    │
+│                                                         │
+│  Activity Bar  ──▶  icon     ──▶  opens Claude tab      │
+│  Status Bar    ──▶  Claude   ──▶  opens Claude tab      │
+│                                                         │
+│  Internally uses vscode.window.createTerminal with      │
+│    location = TerminalLocation.Editor                   │
+│    shellArgs = claude --dangerously-skip-permissions    │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
 ```
 
-**Key features:**
-- Automatic summarization every N tool calls (default: 15) via PostToolUse hook
-- PreCompact hook warns before context compaction, suggests `/clear` for local summaries
-- SessionStart hook injects saved summaries on `/clear`, `startup`, or `resume`
-- Global scope: memories, notes, and reminders can be shared across all projects
-- SQLite storage for persistent summaries across sessions
-- Configurable: model, summarization frequency, token limits, remote LLM support
+**Includes:** `extension.js`, `package.json`, `icon.svg`, `claude-terminal-launcher-0.1.0.vsix`, `INSTALL.md`, `README.md`, `LICENSE`
 
-**Includes:** `summarize.mjs`, `start-llm.sh`, `config.json`, `hooks.json`, `install.sh`
+**Install:** `code --install-extension claude-terminal-launcher-0.1.0.vsix`
 
-**Requirements:** macOS/Linux, Node.js 18+, llama-server (llama.cpp) in PATH, ~2GB disk for the GGUF model
+**Requirements:** VS Code 1.85+, Claude Code CLI (`claude`) in PATH
 
 ---
 
@@ -451,6 +485,8 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-04-17 | TheSecretary: recall-on-demand — UserPromptSubmit hook auto-injects context when user asks "do you remember?" (EN) or "¿recuerdas?" (ES), with cache-first + DB fallback search |
+| 2026-04-17 | Add claude-launcher tool: VS Code extension with Activity Bar + Status Bar launchers for Claude Code |
 | 2026-04-17 | Add block-destructive plugin: PreToolUse hook to block dangerous Bash commands with `# approved` escape hatch |
 | 2026-04-16 | TheSecretary: per-project pre-generated cache to speed up SessionStart restores              |
 | 2026-04-05 | devproxy: auto-start servers, persistent project registry, CLI tool, multi-language support  |
