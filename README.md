@@ -17,6 +17,7 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 │                                                                 │
 │  plugins/                                                       │
 │    - microbrain/             Persistent SQLite memory system    │
+│    - block-destructive/      Block destructive Bash commands    │
 │                                                                 │
 │  tools/                                                         │
 │    - microlocalhostproxy/    Zero-config subdomain + auto-start │
@@ -41,6 +42,7 @@ A collection of drop-in components that give AI agents persistent memory, safer 
   - [Project API](#project-api)
 - [Plugins](#plugins)
   - [Microbrain](#microbrain)
+  - [Block Destructive](#block-destructive)
 - [Tools](#tools)
   - [Microlocalhostproxy](#microlocalhostproxy)
 - [TheSecretary](#thesecretary)
@@ -209,6 +211,46 @@ Persistent SQLite memory system for OpenCode. A single TypeScript file that regi
 **Includes:** `plugins/microbrain.ts`, `plugins/README.md`, `INSTALL.md`, `package.json.example`
 
 **Requirements:** OpenCode with plugin support, Bun runtime, optionally Node.js >= 18 for LLM extraction
+
+---
+
+### Block Destructive
+
+> [`plugins/block-destructive/`](plugins/block-destructive/)
+
+A Claude Code `PreToolUse` hook that blocks destructive Bash commands — `rm -rf`, `git reset --hard`, `DROP TABLE`, `--no-verify`, and more — even in auto / bypass-permissions mode. Includes an `# approved` escape hatch for intentional destructive operations.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  BLOCK-DESTRUCTIVE                                               │
+│                                                                  │
+│  Claude runs:     rm -rf /path/to/something                      │
+│        │                                                         │
+│        ▼                                                         │
+│  Hook inspects:   matches "rm -rf" pattern                       │
+│        │                                                         │
+│        ▼                                                         │
+│  Decision:        deny  →  Claude must re-plan or ask the user   │
+│                                                                  │
+│  Escape hatch:    rm -rf /path # approved    →  allowed          │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**What it blocks:**
+- Filesystem: `rm -rf`, `mkfs`, `dd if=…`, writes to `/dev/sd*|disk*|nvme*`
+- Git: `reset --hard`, `push --force`, `clean -f`, `branch -D`, `checkout .`, `stash drop/clear`, any `--no-verify`
+- SQL: `DROP TABLE/DATABASE/SCHEMA`, `TRUNCATE`, `DELETE`/`UPDATE` without `WHERE`
+- DB CLIs: `dropdb`, mongo `dropDatabase()`/`deleteMany({})`, redis `FLUSHDB`/`FLUSHALL`
+
+**Escape hatch:** append `# approved` to any command to skip all checks.
+
+**Install:** `bash install.sh` (auto-merges hook into `~/.claude/settings.json`)
+
+**Includes:** `src/block-destructive.sh`, `src/hooks.json`, `install.sh`, `INSTALL.md`, `README.md`
+
+**Requirements:** `jq`, `node` (for installer), Claude Code
 
 ---
 
@@ -409,6 +451,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-04-17 | Add block-destructive plugin: PreToolUse hook to block dangerous Bash commands with `# approved` escape hatch |
 | 2026-04-16 | TheSecretary: per-project pre-generated cache to speed up SessionStart restores              |
 | 2026-04-05 | devproxy: auto-start servers, persistent project registry, CLI tool, multi-language support  |
 | 2026-04-05 | TheSecretary: global scope for memories, notes, and reminders across all projects            |
