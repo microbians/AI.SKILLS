@@ -1,0 +1,55 @@
+{
+  "name": "claude-terminal-launcher",
+  "displayName": "Claude Terminal Launcher",
+  "description": "Activity Bar + Status Bar launcher that opens Claude Code in an editor tab",
+  "version": "0.1.0",
+  "publisher": "microbians",
+  "license": "MIT",
+  "engines": { "vscode": "^1.85.0" },
+  "main": "./extension.js",
+  "activationEvents": ["*"],
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeLauncher.open",
+        "title": "Open Claude Code",
+        "icon": "$(sparkle)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudeLauncher",
+          "title": "Claude",
+          "icon": "icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudeLauncher": [
+        {
+          "type": "webview",
+          "id": "claudeLauncher.view",
+          "name": "Claude",
+          "icon": "icon.svg",
+          "contextualTitle": "Claude"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Claude Terminal Launcher",
+      "properties": {
+        "claudeLauncher.skipPermissions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Launch Claude with --dangerously-skip-permissions"
+        },
+        "claudeLauncher.shellPath": {
+          "type": "string",
+          "default": "/bin/bash",
+          "description": "Shell used to run Claude"
+        }
+      }
+    }
+  }
+}
