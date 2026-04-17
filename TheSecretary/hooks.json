@@ -1,4 +1,16 @@
 {
+  "UserPromptSubmit": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node ~/.claude/summarizer/summarize.mjs user-prompt",
+          "timeout": 10
+        }
+      ]
+    }
+  ],
   "PostToolUse": [
     {
       "matcher": ".*",

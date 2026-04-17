@@ -4,6 +4,7 @@ A local LLM-powered secretary that runs via Claude Code hooks to preserve conver
 
 ### How it works
 - **PostToolUse hook** runs on every tool call — detects secretary orders (remember/forget/note/reminder) via regex, and summarizes conversation every 15 calls via local LLM
+- **UserPromptSubmit hook** runs on every user prompt — detects recall-style questions (`¿recuerdas?`, `te acuerdas?`, `do you remember`, `do you recall`, `remember when`) and auto-injects matching snippets from cache + DB before Claude replies
 - **SessionStart hook** (on `/clear`, `startup`, `resume`) — injects saved context, memories, notes, and pending reminders
 - **PreCompact hook** — blocks compaction and suggests `/clear` so local summaries are used instead
 - **Stop hook** — forces a final summary of unsummarized conversation, then shuts down the local LLM server
@@ -38,6 +39,20 @@ A local LLM-powered secretary that runs via Claude Code hooks to preserve conver
 
 Reminders support natural date parsing: "mañana", "el viernes", "en 3 días", "el 15 de abril", ISO dates. Reminders without dates are shown as "undated". Overdue reminders are shown prominently at session start.
 
+### Recall-on-demand ("¿Recuerdas...?" / "Do you remember...?")
+When the user asks a recall-style question, The Secretary automatically searches per-project cache `.md` files first (fast), falls back to the SQLite `summaries` table, and injects the top 5 matching snippets into the conversation before Claude responds.
+
+**Triggers (EN + ES):**
+- "¿Recuerdas X?" / "Te acuerdas de X?"
+- "Do you remember X?" / "Do you recall X?" / "Remember when X?"
+
+**Manual search:**
+```bash
+node ~/.claude/summarizer/summarize.mjs search "template 691"
+```
+
+**Important:** triggers are narrow on purpose — words like "buscame", "search", "find" do NOT activate auto-recall, since the user may mean searching the project files instead.
+
 ### How context is restored (on `/clear`, `startup`, `resume`)
 1. **Overdue/today reminders** shown first (highest priority)
 2. Consolidated conversation summary from recent sessions
@@ -61,6 +76,9 @@ echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/summarizer/summarize.mjs recall-notes
 
 # Show only reminders
 echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/summarizer/summarize.mjs recall-reminders
+
+# Search cache + DB for any query (on-demand)
+node ~/.claude/summarizer/summarize.mjs search "template 691"
 ```
 
 **When user asks "qué recuerdas?", "muestra mis notas", "show my reminders", etc.** — run the appropriate `recall` command and show the output as your response.

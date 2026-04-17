@@ -1561,6 +1561,190 @@ async function recall(hookInput, filter = 'all') {
   }
 }
 
+// ═══════════════════ SEARCH / RECALL-ON-DEMAND ═══════════════════
+
+/**
+ * Extract keywords from a user query. Strips common Spanish/English
+ * interrogatives and stop-words so we can match substrings against
+ * cache and DB content.
+ */
+function extractSearchQuery(prompt) {
+  if (!prompt) return '';
+  let q = prompt.toLowerCase();
+  q = q.replace(/[¿?¡!.,:;]/g, ' ');
+  const stripPatterns = [
+    /\brecuerdas?\b/g, /\bte acuerdas?\b/g,
+    /\bdo you remember\b/g, /\bdo you recall\b/g, /\bremember when\b/g,
+    /\b(el|la|los|las|un|una|unos|unas|the|a|an|that)\b/g,
+    /\b(de|del|sobre|about|on|para|for|que|qué|what|cuando|when|donde|where|como|how)\b/g,
+    /\b(si|no|yes|please|por favor|me|te|se|le|mi|tu|su)\b/g,
+  ];
+  for (const p of stripPatterns) q = q.replace(p, ' ');
+  return q.replace(/\s+/g, ' ').trim();
+}
+
+const RECALL_TRIGGERS = [
+  /\brecuerdas?\b/i,
+  /\bte acuerdas?\b/i,
+  /\bdo you remember\b/i,
+  /\bdo you recall\b/i,
+  /\bremember when\b/i,
+];
+
+function isRecallQuery(prompt) {
+  if (!prompt || prompt.length > 500) return false;
+  return RECALL_TRIGGERS.some((rx) => rx.test(prompt));
+}
+
+/**
+ * Search for `query` across cache .md files (fast) and DB summaries (fallback).
+ * Returns an array of hits: { source, project, date, snippet }.
+ */
+async function searchContext(query, { maxHits = 5, snippetChars = 400 } = {}) {
+  const q = (query || '').trim();
+  if (q.length < 3) return [];
+
+  const terms = q.split(/\s+/).filter((t) => t.length >= 3).slice(0, 5);
+  if (terms.length === 0) return [];
+
+  const hits = [];
+
+  // ── 1. Cache .md files ──
+  try {
+    const { readdirSync, readFileSync, statSync } = await import('fs');
+    const projectDirs = readdirSync(CACHE_DIR, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+
+    for (const proj of projectDirs) {
+      const projPath = join(CACHE_DIR, proj);
+      let files = [];
+      try {
+        files = readdirSync(projPath).filter((f) => f.endsWith('.md'));
+      } catch { continue; }
+
+      for (const f of files) {
+        const full = join(projPath, f);
+        let content = '';
+        try { content = readFileSync(full, 'utf-8'); } catch { continue; }
+        const lower = content.toLowerCase();
+        const matchCount = terms.filter((t) => lower.includes(t.toLowerCase())).length;
+        if (matchCount === 0) continue;
+
+        // Extract snippet around the first matching term
+        const firstTerm = terms.find((t) => lower.includes(t.toLowerCase()));
+        const idx = lower.indexOf(firstTerm.toLowerCase());
+        const start = Math.max(0, idx - 120);
+        const end = Math.min(content.length, idx + snippetChars);
+        const snippet = (start > 0 ? '…' : '') + content.slice(start, end) + (end < content.length ? '…' : '');
+
+        let mtime = '';
+        try { mtime = statSync(full).mtime.toISOString().split('T')[0]; } catch {}
+
+        hits.push({
+          source: 'cache',
+          project: proj,
+          date: mtime || f.replace('.md', ''),
+          score: matchCount,
+          snippet: snippet.trim(),
+        });
+      }
+    }
+  } catch (err) {
+    process.stderr.write(`[secretary] cache search error: ${err.message}\n`);
+  }
+
+  // Sort by match score desc, then date desc
+  hits.sort((a, b) => (b.score - a.score) || b.date.localeCompare(a.date));
+
+  if (hits.length >= maxHits) return hits.slice(0, maxHits);
+
+  // ── 2. DB fallback (summaries table) ──
+  try {
+    const db = openDb();
+    if (db) {
+      try {
+        const likeClauses = terms.map(() => 'summary LIKE ?').join(' AND ');
+        const params = terms.map((t) => `%${t}%`);
+        const rows = db.prepare(`
+          SELECT project_dir, summary, created_at
+          FROM summaries
+          WHERE session_id NOT IN ('manual', 'notes', 'reminders')
+            AND ${likeClauses}
+          ORDER BY created_at DESC
+          LIMIT ?
+        `).all(...params, maxHits - hits.length);
+
+        for (const row of rows) {
+          const lower = row.summary.toLowerCase();
+          const firstTerm = terms.find((t) => lower.includes(t.toLowerCase())) || terms[0];
+          const idx = lower.indexOf(firstTerm.toLowerCase());
+          const start = Math.max(0, idx - 120);
+          const end = Math.min(row.summary.length, idx + snippetChars);
+          const snippet = (start > 0 ? '…' : '') + row.summary.slice(start, end) + (end < row.summary.length ? '…' : '');
+          hits.push({
+            source: 'db',
+            project: basename(row.project_dir || '') || 'unknown',
+            date: (row.created_at || '').split(' ')[0],
+            score: 0,
+            snippet: snippet.trim(),
+          });
+        }
+      } finally {
+        db.close();
+      }
+    }
+  } catch (err) {
+    process.stderr.write(`[secretary] db search error: ${err.message}\n`);
+  }
+
+  return hits.slice(0, maxHits);
+}
+
+/**
+ * CLI command: search <query…> — prints matching context to stdout.
+ */
+async function cmdSearch() {
+  const query = process.argv.slice(3).join(' ');
+  if (!query) {
+    process.stderr.write('Usage: summarize.mjs search <query>\n');
+    return;
+  }
+  const hits = await searchContext(query);
+  if (hits.length === 0) {
+    process.stdout.write(`No se encontró contexto para: "${query}"\n`);
+    return;
+  }
+  process.stdout.write(`# Resultados para "${query}" (${hits.length})\n\n`);
+  for (const h of hits) {
+    process.stdout.write(`## [${h.source}] ${h.project} · ${h.date}\n\n${h.snippet}\n\n---\n\n`);
+  }
+}
+
+/**
+ * UserPromptSubmit hook: if the user's prompt looks like a recall question,
+ * inject matching context so Claude sees it before answering.
+ *
+ * Input: JSON on stdin with { prompt, cwd, session_id }
+ * Output to stdout is added to the conversation as additional context.
+ */
+async function userPromptHook(hookInput) {
+  const prompt = hookInput.prompt || hookInput.user_prompt || '';
+  if (!isRecallQuery(prompt)) return;
+
+  const query = extractSearchQuery(prompt);
+  if (query.length < 3) return;
+
+  const hits = await searchContext(query, { maxHits: 5, snippetChars: 500 });
+  if (hits.length === 0) return;
+
+  process.stdout.write(`## 🧠 The Secretary: contexto encontrado para "${query}"\n\n`);
+  process.stdout.write(`_(${hits.length} coincidencia${hits.length > 1 ? 's' : ''} en sesiones previas — usa esto para responder antes de buscar más)_\n\n`);
+  for (const h of hits) {
+    process.stdout.write(`### [${h.source}] ${h.project} · ${h.date}\n\n${h.snippet}\n\n---\n\n`);
+  }
+}
+
 // ═══════════════════ MAIN ═══════════════════
 
 async function main() {
@@ -1614,7 +1798,12 @@ async function main() {
     process.exit(0);
   }
 
-  const validCommands = ['incremental', 'compact', 'restore', 'force', 'inject', 'recall', 'recall-notes', 'recall-reminders'];
+  const validCommands = ['incremental', 'compact', 'restore', 'force', 'inject', 'recall', 'recall-notes', 'recall-reminders', 'search', 'user-prompt'];
+
+  if (command === 'search') {
+    await cmdSearch();
+    return;
+  }
 
   if (!command || !validCommands.includes(command)) {
     process.stderr.write('The Secretary — AI-powered context persistence for Claude Code\n\n');
@@ -1627,6 +1816,8 @@ async function main() {
     process.stderr.write('  recall            Show all: memories, notes, reminders, context\n');
     process.stderr.write('  recall-notes      Show only notes\n');
     process.stderr.write('  recall-reminders  Show only reminders\n');
+    process.stderr.write('  search <query>    Search cache + DB for a query\n');
+    process.stderr.write('  user-prompt       UserPromptSubmit hook: auto-inject context on recall-style prompts\n');
     process.exit(1);
   }
 
@@ -1650,6 +1841,7 @@ async function main() {
       case 'recall': await recall(hookInput, 'all'); break;
       case 'recall-notes': await recall(hookInput, 'notes'); break;
       case 'recall-reminders': await recall(hookInput, 'reminders'); break;
+      case 'user-prompt': await userPromptHook(hookInput); break;
     }
   } catch (err) {
     process.stderr.write(`[secretary] ${err.message}\n`);

@@ -59,17 +59,43 @@ Time-sensitive items with natural date parsing.
 
 Supports bilingual date parsing (English and Spanish): "tomorrow", "next friday", "in 3 days", "in 2 weeks", "april 15", ISO dates, "mañana", "el viernes", etc.
 
+### Recall-on-demand (automatic)
+
+When your prompt looks like a recall question, the Secretary automatically searches cached summaries and the SQLite history, and injects matching snippets as extra context before Claude replies. No need to run a command.
+
+```
+"¿Recuerdas el template 691?"          →  auto-search + inject
+"Te acuerdas del bug del login?"       →  auto-search + inject
+"Do you remember the aspect ratio fix?" →  auto-search + inject
+"Do you recall that CSS issue?"         →  auto-search + inject
+```
+
+Triggers: `¿recuerdas?`, `te acuerdas?`, `do you remember`, `do you recall`, `remember when`.
+
+How it works:
+1. **UserPromptSubmit hook** detects a recall-style question.
+2. Keywords are extracted from the prompt (stopwords stripped, EN + ES).
+3. Search runs first against per-project cache `.md` files (fast file-level grep), then falls back to the `summaries` table if fewer than 5 hits.
+4. Top matches are printed to stdout and appear as injected context in Claude's next turn.
+
+For manual searches:
+
+```bash
+node ~/.claude/summarizer/summarize.mjs search "template 691"
+```
+
 ## How it works
 
 1. **PostToolUse hook** — On every tool call, scans user messages for secretary orders (remember/forget/note/reminder) via regex. Every N calls (default: 15), summarizes conversation via local LLM.
-2. **PreCompact hook** — Forces a final summary before Claude's compaction, then blocks it and suggests `/clear`.
-3. **SessionStart hook** — On `/clear`, `startup`, or `resume`, restores context:
+2. **UserPromptSubmit hook** — On every user prompt, detects recall-style questions (`¿recuerdas?`, `do you remember`, etc.) and auto-injects matching snippets from cache + DB.
+3. **PreCompact hook** — Forces a final summary before Claude's compaction, then blocks it and suggests `/clear`.
+4. **SessionStart hook** — On `/clear`, `startup`, or `resume`, restores context:
    - **Overdue reminders** shown first (highest priority)
    - Consolidated conversation summary (loaded from per-project cache — see below)
    - User memories
    - Active notes
    - Upcoming reminders
-4. **Stop hook** — Forces a final summary, then shuts down the LLM server.
+5. **Stop hook** — Forces a final summary, then shuts down the LLM server.
 
 ### Pre-generated per-project cache
 
@@ -148,6 +174,9 @@ echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/summarizer/summarize.mjs recall-notes
 
 # Show only reminders
 echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/summarizer/summarize.mjs recall-reminders
+
+# Search cache + DB for any query (on-demand)
+node ~/.claude/summarizer/summarize.mjs search "template 691"
 ```
 
 ## Configuration
