@@ -53,7 +53,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node ~/.claude/summarizer/summarize.mjs force --stop-llm; osascript -e 'display notification \"Sesión guardada\" with title \"Claude Code\"'",
+          "command": "node ~/.claude/summarizer/summarize.mjs force --stop-llm --notify",
           "timeout": 15
         }
       ]

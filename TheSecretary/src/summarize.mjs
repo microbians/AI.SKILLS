@@ -990,7 +990,7 @@ ${allSummaries}`;
  * Background summarization worker — called as a forked child process.
  * Args: _bg_summarize <session_id> <cwd> <message_count> <tmpFile>
  */
-async function bgSummarize(sessionId, cwd, messageCount, tmpFile) {
+async function bgSummarize(sessionId, cwd, messageCount, tmpFile, { notify: shouldNotify = false } = {}) {
   let text;
   try {
     text = readFileSync(tmpFile, 'utf-8');
@@ -1037,6 +1037,17 @@ ${text}`;
     try { await regenerateProjectCache(db, cwd, sessionId); } catch { /* cache failure must not break summarization */ }
   } finally {
     db.close();
+  }
+
+  if (shouldNotify) {
+    let blurb = '';
+    try {
+      const blurbPrompt = `From this coding session summary, write ONE short sentence in ENGLISH (max 90 characters, no quotes, no markdown) describing what was accomplished or the current state. Be concrete — mention the main thing done. Output only the sentence, nothing else.\n\nSUMMARY:\n${summary}`;
+      const raw = await callLLM(blurbPrompt, 60);
+      blurb = (raw || '').replace(/^["'`]+|["'`]+$/g, '').replace(/\s+/g, ' ').trim();
+      if (blurb.length > 120) blurb = blurb.slice(0, 117) + '...';
+    } catch { /* notify without blurb */ }
+    notify('Claude Code — Session saved', blurb || 'Context stored by The Secretary');
   }
 }
 
@@ -1344,7 +1355,7 @@ ${allSummaries}`;
   }
 }
 
-async function force(hookInput, { stopLlm = false } = {}) {
+async function force(hookInput, { stopLlm = false, notify: shouldNotify = false } = {}) {
   const { session_id, transcript_path, cwd } = hookInput;
   if (!session_id || !transcript_path) return;
 
@@ -1379,6 +1390,7 @@ async function force(hookInput, { stopLlm = false } = {}) {
     const { spawn } = await import('child_process');
     const spawnArgs = [new URL(import.meta.url).pathname, '_bg_summarize', session_id, cwd || '', String(messages.length), tmpFile];
     if (stopLlm) spawnArgs.push('--stop-llm');
+    if (shouldNotify) spawnArgs.push('--notify');
     const child = spawn('node', spawnArgs, {
       detached: true,
       stdio: 'ignore',
@@ -1754,7 +1766,7 @@ async function main() {
   if (command === '_bg_summarize') {
     const [, , , sessionId, cwd, messageCount, tmpFile, ...flags] = process.argv;
     try {
-      await bgSummarize(sessionId, cwd, messageCount, tmpFile);
+      await bgSummarize(sessionId, cwd, messageCount, tmpFile, { notify: flags.includes('--notify') });
     } catch (err) {
       process.stderr.write(`[secretary-bg] ${err.message}\n`);
     }
@@ -1836,7 +1848,7 @@ async function main() {
       case 'incremental': await incremental(hookInput); break;
       case 'compact': await compact(hookInput); break;
       case 'restore': await restore(hookInput); break;
-      case 'force': await force(hookInput, { stopLlm: process.argv.includes('--stop-llm') }); break;
+      case 'force': await force(hookInput, { stopLlm: process.argv.includes('--stop-llm'), notify: process.argv.includes('--notify') }); break;
       case 'inject': await inject(hookInput); break;
       case 'recall': await recall(hookInput, 'all'); break;
       case 'recall-notes': await recall(hookInput, 'notes'); break;
