@@ -7,18 +7,9 @@ PORT=8922
 LOG="/tmp/llama-summarizer.log"
 PID_FILE="/tmp/llama-summarizer.pid"
 
-# Auto-select model by chip. Base M1/M2 are too slow for 3B — use 1.5B.
-# Everything else gets Llama-3.2-3B-Instruct-4bit: ~2× tok/s vs Qwen2.5-3B
-# with similar RAM and more faithful summaries. Override with SECRETARY_MLX_MODEL.
-CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)
-if [ -n "$SECRETARY_MLX_MODEL" ]; then
-  MLX_MODEL="$SECRETARY_MLX_MODEL"
-elif echo "$CHIP" | grep -Eq "Apple M1(\s|$)|Apple M2(\s|$)"; then
-  # Base M1 / M2 (no Pro/Max/Ultra suffix) — use lighter 1.5B model
-  MLX_MODEL="mlx-community/Qwen2.5-1.5B-Instruct-4bit"
-else
-  MLX_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
-fi
+# Llama-3.2-3B-Instruct-4bit: best speed/quality/RAM tradeoff across
+# Apple Silicon in our benchmarks. Override with SECRETARY_MLX_MODEL if needed.
+MLX_MODEL="${SECRETARY_MLX_MODEL:-mlx-community/Llama-3.2-3B-Instruct-4bit}"
 GGUF_MODEL="$HOME/.claude/summarizer/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 
 # Detect backend: prefer MLX on Apple Silicon, fallback to llama.cpp
