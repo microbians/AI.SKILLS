@@ -25,7 +25,7 @@
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { join, basename } from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { createHash } from 'crypto';
 import { createRequire } from 'module';
 import { execSync } from 'child_process';
@@ -290,6 +290,48 @@ async function ensureLLMRunning() {
   } catch {
     return false;
   }
+}
+
+// ═══════════════════ BG WORKER LOCK + DEBOUNCE ═══════════════════
+//
+// Prevents a flood of concurrent _bg_summarize processes from queuing up on
+// slower machines. If a worker is still alive, skip spawning a new one.
+// Also enforces a minimum gap between launches (debounce).
+
+const BG_DEBOUNCE_MS = 30_000;
+
+function bgLockPath(sessionId) {
+  const safe = String(sessionId || 'default').replace(/[^a-zA-Z0-9._-]/g, '_');
+  return join(tmpdir(), `secretary-bg-${safe}.lock`);
+}
+
+function canSpawnBgWorker(sessionId) {
+  const lockFile = bgLockPath(sessionId);
+  if (!existsSync(lockFile)) return true;
+  try {
+    const raw = readFileSync(lockFile, 'utf-8').trim();
+    const [pidStr, tsStr] = raw.split('|');
+    const pid = parseInt(pidStr, 10);
+    const ts = parseInt(tsStr, 10) || 0;
+
+    // Worker still alive → skip
+    if (pid > 0) {
+      try { process.kill(pid, 0); return false; } catch { /* dead */ }
+    }
+    // Debounce window not elapsed → skip even if previous worker is dead
+    if (Date.now() - ts < BG_DEBOUNCE_MS) return false;
+  } catch { /* malformed lock, fall through */ }
+  return true;
+}
+
+function registerBgWorker(sessionId, pid) {
+  try {
+    writeFileSync(bgLockPath(sessionId), `${pid}|${Date.now()}`, 'utf-8');
+  } catch { /* ignore */ }
+}
+
+function clearBgWorker(sessionId) {
+  try { unlinkSync(bgLockPath(sessionId)); } catch { /* ignore */ }
 }
 
 // ═══════════════════ NOTIFICATIONS ═══════════════════
@@ -882,6 +924,14 @@ async function incremental(hookInput) {
     const tmpFile = join(tmpdir(), `secretary-bg-${session_id}-${Date.now()}.txt`);
     writeFileSync(tmpFile, text, 'utf-8');
 
+    // Skip if a previous worker is still running or ran very recently.
+    // Avoids a queue of heavy LLM jobs piling up on slower machines.
+    if (!canSpawnBgWorker(session_id)) {
+      process.stderr.write(`[secretary] Skipping bg summary (worker busy/debounced)\n`);
+      try { unlinkSync(tmpFile); } catch {}
+      return;
+    }
+
     // Launch LLM summarization in background — don't block Claude
     const { spawn } = await import('child_process');
     const child = spawn('node', [new URL(import.meta.url).pathname,
@@ -891,6 +941,7 @@ async function incremental(hookInput) {
       stdio: 'ignore',
     });
     child.unref();
+    registerBgWorker(session_id, child.pid);
     process.stderr.write(`[secretary] Summarization launched in background (counter=${counter})\n`);
 
   } finally {
@@ -1245,58 +1296,25 @@ async function restore(hookInput) {
     if (summaries.length === 0) {
       finalSummary = '(No conversation summaries available)';
     } else if (!cacheHit) {
-      if (await isLLMAvailable()) {
-        const allSummaries = summaries.map((s, i) => `--- Chunk ${i + 1} (${s.created_at}) ---\n${s.summary}`).join('\n\n');
-        const prompt = `Merge these ${summaries.length} incremental conversation summaries into ONE consolidated summary. This will be injected into a NEW conversation so the AI can continue where it left off.
-
-CRITICAL PRIORITIES (in order):
-1. CURRENT STATE: What task is in progress? What are the immediate next steps?
-2. KEY DECISIONS: Architectural choices, design patterns chosen, constraints agreed upon
-3. IMPORTANT CHANGES: Files modified with specific paths and what changed
-4. UNRESOLVED PROBLEMS: Bugs, errors, or blockers still pending
-5. ERROR SOLUTIONS: How specific errors were fixed (exact fix, not just "fixed it")
-
-RULES:
-- Remove duplicates and superseded information
-- Most recent chunks are MORE important than older ones
-- Include specific file paths, function names, variable names
-- Keep it under 2000 tokens. Be specific and actionable.
-- Format with clear **SECTION** headers
-
-SUMMARIES (oldest to newest):
-${allSummaries}`;
-
-        try {
-          finalSummary = await callLLM(prompt, 2000);
-        } catch {
-          finalSummary = summaries.map(s => s.summary).join('\n\n---\n\n');
-        }
-      } else {
-        finalSummary = summaries.map(s => s.summary).join('\n\n---\n\n');
-      }
-
-      // Compress if too long
+      // Never block SessionStart on the LLM — it can take 20s+ on small
+      // machines and the hook will time out. Fall back to raw concatenation
+      // of chunks (recent last) and fire a background regenerator so the
+      // next session gets a proper LLM-merged cache.
+      const ordered = [...summaries].sort((a, b) => (a.chunk_index || 0) - (b.chunk_index || 0));
+      finalSummary = ordered.map(s => s.summary).join('\n\n---\n\n');
       if (finalSummary.length > 4000) {
-        if (await isLLMAvailable()) {
-          try {
-            const compactPrompt = `This summary is too long (${finalSummary.length} chars). Compress it to under 3500 characters while keeping all critical information.\n\nSUMMARY:\n${finalSummary}`;
-            const compressed = await callLLM(compactPrompt, 1500);
-            if (compressed && compressed.length >= 50) finalSummary = compressed;
-          } catch { /* keep original */ }
-        }
-        if (finalSummary.length > 4000) {
-          finalSummary = finalSummary.slice(0, 3950) + '\n\n[...truncated]';
-        }
+        finalSummary = finalSummary.slice(-3950) + '\n\n[...older chunks truncated]';
       }
 
-      // Persist freshly generated consolidation to cache for next SessionStart
-      if (finalSummary && finalSummary.length >= 50 && cwd) {
+      if (cwd && lastSessionId) {
         try {
-          writeCacheFile(cwd, finalSummary, {
-            session_id: lastSessionId || '',
-            chunks_included: summaries.length,
-          });
-        } catch { /* cache failure must not break restore */ }
+          const { spawn } = await import('child_process');
+          const child = spawn('node', [
+            new URL(import.meta.url).pathname, '_bg_regenerate', cwd, lastSessionId,
+          ], { detached: true, stdio: 'ignore' });
+          child.unref();
+          process.stderr.write('[secretary] Cache regeneration spawned in background\n');
+        } catch { /* best effort */ }
       }
     }
 
@@ -1386,6 +1404,15 @@ async function force(hookInput, { stopLlm = false, notify: shouldNotify = false 
     const { tmpdir } = await import('os');
     const tmpFile = join(tmpdir(), `secretary-bg-${session_id}-${Date.now()}.txt`);
     writeFileSync(tmpFile, text, 'utf-8');
+
+    // Respect the same lock/debounce used by incremental(), unless --stop-llm
+    // was passed (Stop hook — final summary at session end should always run).
+    if (!stopLlm && !canSpawnBgWorker(session_id)) {
+      process.stderr.write('[secretary] Skipping forced summary (worker busy/debounced)\n');
+      try { unlinkSync(tmpFile); } catch {}
+      return;
+    }
+
     // Launch LLM summarization in background using spawn (faster than fork)
     const { spawn } = await import('child_process');
     const spawnArgs = [new URL(import.meta.url).pathname, '_bg_summarize', session_id, cwd || '', String(messages.length), tmpFile];
@@ -1396,6 +1423,7 @@ async function force(hookInput, { stopLlm = false, notify: shouldNotify = false 
       stdio: 'ignore',
     });
     child.unref();
+    registerBgWorker(session_id, child.pid);
     process.stderr.write(`☑ Session memory: summarization launched in background\n`);
   } finally {
     db.close();
@@ -1770,11 +1798,32 @@ async function main() {
     } catch (err) {
       process.stderr.write(`[secretary-bg] ${err.message}\n`);
     }
+    // Release lock so the next incremental() can spawn
+    clearBgWorker(sessionId);
     // If called with --stop-llm, shut down the LLM server after summarizing
     if (flags.includes('--stop-llm')) {
       try {
         execSync('bash ~/.claude/summarizer/start-llm.sh stop > /dev/null 2>&1');
       } catch { /* ignore */ }
+    }
+    process.exit(0);
+  }
+
+  // Background cache regenerator — rebuilds the consolidated project cache
+  // so the next SessionStart gets an LLM-quality summary without blocking.
+  if (command === '_bg_regenerate') {
+    const [, , , cwd, sessionId] = process.argv;
+    try {
+      if (!(await ensureLLMRunning())) process.exit(0);
+      const db = openDb();
+      if (!db) process.exit(0);
+      try {
+        await regenerateProjectCache(db, cwd, sessionId);
+      } finally {
+        db.close();
+      }
+    } catch (err) {
+      process.stderr.write(`[secretary-bg-regen] ${err.message}\n`);
     }
     process.exit(0);
   }

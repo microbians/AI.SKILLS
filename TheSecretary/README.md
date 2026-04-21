@@ -104,6 +104,22 @@ To keep SessionStart fast, each background summarization also writes a consolida
 - **Invalidation:** if any chunk is newer than the cache's `generated_at`, it is regenerated.
 - **Retention:** max 10 files per project, 30 days.
 - **Per-project isolation:** each project has its own folder (`<basename>-<hash8>`), so projects with the same basename never collide.
+- **Non-blocking restore:** SessionStart never calls the LLM inline. On cache miss it falls back to raw chunk concatenation and spawns a background `_bg_regenerate` worker so the next session gets a proper LLM-merged cache.
+
+### Background worker lock + debounce
+
+PostToolUse fires on every tool call, which on slower machines (e.g. base M1) caused multiple `_bg_summarize` workers to pile up and saturate the neural engine. A lockfile at `/tmp/secretary-bg-<session>.lock` (PID + timestamp) ensures only one worker runs per session, and a 30s debounce window prevents back-to-back spawns even after the previous worker exits. The `--stop-llm` (Stop hook) path bypasses the debounce so the final summary always runs.
+
+### Model auto-selection by chip
+
+`start-llm.sh` picks the MLX model based on `sysctl machdep.cpu.brand_string`:
+
+| Chip | Model |
+|------|-------|
+| Apple M1 / M2 (base, no Pro/Max/Ultra) | `mlx-community/Qwen2.5-1.5B-Instruct-4bit` |
+| M1/M2 Pro/Max/Ultra, M3+, Intel | `mlx-community/Qwen2.5-3B-Instruct-4bit` |
+
+Override with env var `SECRETARY_MLX_MODEL=<repo>`.
 
 ### Flexible matching via LLM
 

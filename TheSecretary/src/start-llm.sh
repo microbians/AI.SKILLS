@@ -4,10 +4,22 @@
 # Usage: bash start-llm.sh [start|stop|status]
 
 PORT=8922
-GGUF_MODEL="$HOME/.claude/summarizer/models/qwen2.5-3b-instruct-q4_k_m.gguf"
-MLX_MODEL="mlx-community/Qwen2.5-3B-Instruct-4bit"
 LOG="/tmp/llama-summarizer.log"
 PID_FILE="/tmp/llama-summarizer.pid"
+
+# Auto-select model by chip. Base M1/M2 are too slow for the 3B model —
+# they queue jobs and pin the neural engine. Pro/Max/Ultra variants and
+# M3+ can handle 3B fine. Override with SECRETARY_MLX_MODEL in env.
+CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)
+if [ -n "$SECRETARY_MLX_MODEL" ]; then
+  MLX_MODEL="$SECRETARY_MLX_MODEL"
+elif echo "$CHIP" | grep -Eq "Apple M1(\s|$)|Apple M2(\s|$)"; then
+  # Base M1 / M2 (no Pro/Max/Ultra suffix) — use lighter 1.5B model
+  MLX_MODEL="mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+else
+  MLX_MODEL="mlx-community/Qwen2.5-3B-Instruct-4bit"
+fi
+GGUF_MODEL="$HOME/.claude/summarizer/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 
 # Detect backend: prefer MLX on Apple Silicon, fallback to llama.cpp
 detect_backend() {
