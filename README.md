@@ -63,7 +63,7 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 
 > [`TheSecretary/`](TheSecretary/)
 
-Local LLM-powered conversation summarizer for Claude Code. Preserves context across `/clear` and session restarts using a small local model (Qwen 2.5 3B), and auto-injects relevant past context when you ask "do you remember...?" (also "¿recuerdas...?" in Spanish).
+Local LLM-powered conversation summarizer for Claude Code. Preserves context across `/clear` and session restarts using a small local model (Llama-3.2-3B-4bit, MLX), and auto-injects relevant past context when you ask "do you remember...?" (also "¿recuerdas...?" in Spanish).
 
 ```
 ┌───────────────────────────────────────────────────────┐
@@ -89,14 +89,15 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 
 **Key features:**
 - **Recall-on-demand** — detects recall-style prompts (`do you remember`, `do you recall`, `remember when`, plus `¿recuerdas?` / `te acuerdas?` in Spanish) via UserPromptSubmit hook and auto-injects matching snippets from cache + DB before Claude replies
-- Automatic summarization every N tool calls (default: 15) via PostToolUse hook
+- **Chunked summarization + immediate LLM call** — conversation is broken into bounded chunks (every `summarize_every_n` tool calls, minimum `min_new_chars` of new content), each chunk is sent to the local LLM right away for a fresh summary, then stored with an incremental `chunk_index` in SQLite and appended to the per-project `.md` cache. This keeps every LLM call small and fast, prevents context blow-up, and ensures no long conversation is ever summarized in a single oversized request
+- **Consolidation + compaction pass** — on session end / restore, chunks are consolidated into a single summary; if the merged summary exceeds the size budget, a second LLM pass compacts it under 3500 chars while preserving critical info
 - Per-project pre-generated cache `.md` files for fast SessionStart restores
-- PreCompact hook warns before context compaction, suggests `/clear` for local summaries
+- PreCompact hook warns before Claude Code's native compaction, suggests `/clear` to use local summaries instead
 - SessionStart hook injects saved summaries on `/clear`, `startup`, or `resume`
 - Memories, notes, reminders with regex detection + bilingual date parsing (EN/ES)
 - Global scope: memories, notes, and reminders can be shared across all projects
 - SQLite storage for persistent summaries across sessions
-- Configurable: model, summarization frequency, token limits, remote LLM support
+- Configurable: model, summarization frequency (`summarize_every_n`), min content threshold (`min_new_chars`), token limits, remote LLM support
 
 **Includes:** `summarize.mjs`, `start-llm.sh`, `config.json`, `hooks.json`, `install.sh`, `claude-md-snippet.md`
 
@@ -485,6 +486,10 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-04-22 | TheSecretary: chunked LLM summarization — conversation split into bounded chunks (every N tool calls / min M chars), each chunk sent to the local LLM immediately for a fresh summary, stored with incremental `chunk_index` in SQLite + per-project `.md` cache. Consolidation pass merges chunks on session end; second LLM pass compacts if merged summary exceeds size budget. Keeps every call small, prevents context blow-up, no oversized single-shot summaries |
+| 2026-04-22 | TheSecretary: use Llama-3.2-3B-4bit (MLX) on all chips, drop chip-based model gating         |
+| 2026-04-22 | TheSecretary: optimize startup for low-power machines (M1 base)                              |
+| 2026-04-20 | TheSecretary: English context blurb in session-end notification                              |
 | 2026-04-17 | TheSecretary: recall-on-demand — UserPromptSubmit hook auto-injects context when user asks "do you remember?" (EN) or "¿recuerdas?" (ES), with cache-first + DB fallback search |
 | 2026-04-17 | Add claude-launcher tool: VS Code extension with Activity Bar + Status Bar launchers for Claude Code |
 | 2026-04-17 | Add block-destructive plugin: PreToolUse hook to block dangerous Bash commands with `# approved` escape hatch |
