@@ -84,6 +84,18 @@ For manual searches:
 node ~/.claude/summarizer/summarize.mjs search "template 691"
 ```
 
+### Fresh-context notice (late summaries after `/clear`)
+
+If you hit `/clear` while the local LLM is still summarizing the previous session's tail, those new summaries land in the DB **after** SessionStart has already injected context — so Claude doesn't see them and the user has to prompt them manually.
+
+The Secretary handles this automatically:
+
+1. On restore, a watermark file is written to `~/.claude/summarizer/watermarks/<session_id>.json` with `max(created_at)` of summaries visible at that moment.
+2. On every user prompt, `UserPromptSubmit` checks if any summaries with `created_at > watermark` have appeared for the current project.
+3. If so, a `📥 The Secretary: contexto nuevo disponible` block is injected into the conversation with the new content, and the watermark is advanced so the notice doesn't repeat.
+
+The check is cheap (a single SQLite query per prompt) and fires only when there is genuinely new content to show. No-op for sessions that had nothing pending.
+
 ## How it works
 
 1. **PostToolUse hook** — On every tool call, scans user messages for secretary orders (remember/forget/note/reminder) via regex. Every N calls (default: 15), summarizes conversation via local LLM.
@@ -97,14 +109,18 @@ node ~/.claude/summarizer/summarize.mjs search "template 691"
    - Upcoming reminders
 5. **Stop hook** — Forces a final summary, then shuts down the LLM server.
 
-### Pre-generated per-project cache
+### Incremental bullets cache (per-project)
 
-To keep SessionStart fast, each background summarization also writes a consolidated `.md` to `~/.claude/summarizer/cache/<project>/<YYYY-MM-DDTHHmm>.md`. SessionStart reads the latest cache when it is newer than all SQLite chunks and skips the LLM consolidation that previously ran on every restore.
+To keep SessionStart instant and avoid racing with still-running summarizers after `/clear`, each background summarization distills **3 terse one-line bullets** from the latest chunk summary and appends them to a per-project `bullets.md`. SessionStart just reads that file — no LLM call, no waiting.
 
-- **Invalidation:** if any chunk is newer than the cache's `generated_at`, it is regenerated.
-- **Retention:** max 10 files per project, 30 days.
-- **Per-project isolation:** each project has its own folder (`<basename>-<hash8>`), so projects with the same basename never collide.
-- **Non-blocking restore:** SessionStart never calls the LLM inline. On cache miss it falls back to raw chunk concatenation and spawns a background `_bg_regenerate` worker so the next session gets a proper LLM-merged cache.
+- **Location:** `~/.claude/summarizer/cache/<project>-<hash8>/bullets.md`.
+- **Structure:** sections by session. Each section header is `## Session <id> (started <iso>)`, followed by bullets.
+- **Per-session caps:** max **20 bullets** or **4000 chars**, FIFO when exceeded (oldest bullets drop first).
+- **Global caps:** last **2 sessions** kept (current + previous); older sessions are discarded when a new one starts.
+- **Dedup:** the LLM is told the existing bullets of the current session and asked to output only genuinely new info; exact duplicates are filtered on append.
+- **Strictly per-project:** each `cwd` has its own `bullets.md`; content is never mixed across projects. Only the explicit `global` memories/notes/reminders cross project boundaries.
+- **Bootstrap:** if `bullets.md` is missing but the DB has chunks, `SessionStart` falls back to raw concatenation for that one turn and spawns a background `_bg_regenerate` worker that distills the last session's chunks into bullets — so the next SessionStart hits the new format.
+- **Non-blocking restore:** SessionStart never calls the LLM inline. The cache is ready because bullets were appended incrementally during the previous session, not generated at restore time.
 
 ### Background worker lock + debounce
 

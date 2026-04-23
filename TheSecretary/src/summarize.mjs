@@ -60,8 +60,11 @@ const config = loadConfig();
 // ═══════════════════ CACHE (per-project pre-generated summaries) ═══════════════════
 
 const CACHE_DIR = join(SUMMARIZER_DIR, 'cache');
-const CACHE_MAX_AGE_DAYS = 30;
-const CACHE_MAX_FILES_PER_PROJECT = 10;
+const CACHE_MAX_BULLETS_PER_SESSION = 20;
+const CACHE_MAX_CHARS_PER_SESSION = 4000;
+const CACHE_SESSIONS_KEPT = 2;
+const CACHE_BULLETS_PER_CHUNK = 3;
+const BULLETS_FILE = 'bullets.md';
 
 function projectFolderName(cwd) {
   if (!cwd) return '__unknown__';
@@ -80,84 +83,101 @@ function ensureCacheDir(cwd) {
   return dir;
 }
 
-function isoStampForFile() {
-  const d = new Date();
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}`;
+function bulletsFilePath(cwd) {
+  return join(cacheDirForProject(cwd), BULLETS_FILE);
 }
 
-function writeCacheFile(cwd, content, metadata = {}) {
+/**
+ * Read bullets.md and parse into sessions.
+ * Format:
+ *   ## Session <id> (started <iso>)
+ *   - bullet 1
+ *   - bullet 2
+ *
+ *   ## Session <id2> (started <iso>)
+ *   - ...
+ * Returns: [{ sessionId, startedAt, bullets: string[] }, ...]  (oldest first)
+ */
+function readBulletsCache(cwd) {
+  if (!cwd) return [];
+  const file = bulletsFilePath(cwd);
+  if (!existsSync(file)) return [];
   try {
-    const dir = ensureCacheDir(cwd);
-    const stamp = isoStampForFile();
-    const file = join(dir, `${stamp}.md`);
-    const header =
-      `---\n` +
-      `generated_at: ${new Date().toISOString()}\n` +
-      `project_dir: ${cwd || ''}\n` +
-      (metadata.session_id ? `session_id: ${metadata.session_id}\n` : '') +
-      (metadata.chunks_included != null ? `chunks_included: ${metadata.chunks_included}\n` : '') +
-      `---\n\n`;
-    writeFileSync(file, header + content, 'utf-8');
-    pruneOldCaches(cwd);
-    return file;
-  } catch {
-    return null;
-  }
-}
-
-function listCacheFiles(cwd) {
-  const dir = cacheDirForProject(cwd);
-  if (!existsSync(dir)) return [];
-  try {
-    return readdirSync(dir)
-      .filter(f => f.endsWith('.md'))
-      .map(f => {
-        const full = join(dir, f);
-        const st = statSync(full);
-        return { file: full, name: f, mtimeMs: st.mtimeMs };
-      })
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const raw = readFileSync(file, 'utf-8');
+    const sections = [];
+    const headerRe = /^## Session\s+(\S+)(?:\s+\(started\s+([^)]+)\))?\s*$/;
+    let current = null;
+    for (const rawLine of raw.split('\n')) {
+      const line = rawLine.replace(/\r$/, '');
+      const m = line.match(headerRe);
+      if (m) {
+        if (current) sections.push(current);
+        current = { sessionId: m[1], startedAt: m[2] || '', bullets: [] };
+      } else if (current && line.startsWith('- ')) {
+        const b = line.slice(2).trim();
+        if (b) current.bullets.push(b);
+      }
+    }
+    if (current) sections.push(current);
+    return sections;
   } catch {
     return [];
   }
 }
 
-function readLatestCacheFile(cwd) {
-  const files = listCacheFiles(cwd);
-  if (files.length === 0) return null;
-  const latest = files[0];
+function serializeBulletsCache(sections) {
+  return sections
+    .map(s => {
+      const header = `## Session ${s.sessionId}${s.startedAt ? ` (started ${s.startedAt})` : ''}`;
+      const body = s.bullets.map(b => `- ${b}`).join('\n');
+      return `${header}\n${body}`;
+    })
+    .join('\n\n') + (sections.length ? '\n' : '');
+}
+
+function writeBulletsCache(cwd, sections) {
   try {
-    const raw = readFileSync(latest.file, 'utf-8');
-    let meta = {};
-    let body = raw;
-    const m = raw.match(/^---\n([\s\S]*?)\n---\n\n?/);
-    if (m) {
-      for (const line of m[1].split('\n')) {
-        const kv = line.match(/^(\w+):\s*(.*)$/);
-        if (kv) meta[kv[1]] = kv[2];
-      }
-      body = raw.slice(m[0].length);
-    }
-    return { file: latest.file, mtimeMs: latest.mtimeMs, meta, body };
+    ensureCacheDir(cwd);
+    writeFileSync(bulletsFilePath(cwd), serializeBulletsCache(sections), 'utf-8');
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 
-function pruneOldCaches(cwd) {
-  try {
-    const files = listCacheFiles(cwd);
-    const now = Date.now();
-    const maxAgeMs = CACHE_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
-    for (let i = 0; i < files.length; i++) {
-      const tooOld = (now - files[i].mtimeMs) > maxAgeMs;
-      const overLimit = i >= CACHE_MAX_FILES_PER_PROJECT;
-      if (tooOld || overLimit) {
-        try { unlinkSync(files[i].file); } catch { /* ignore */ }
-      }
-    }
-  } catch { /* ignore */ }
+/**
+ * Append new bullets to the current session, enforcing:
+ *   - FIFO within session (max CACHE_MAX_BULLETS_PER_SESSION bullets,
+ *     max CACHE_MAX_CHARS_PER_SESSION chars total)
+ *   - Keep only last CACHE_SESSIONS_KEPT sessions across the file
+ */
+function appendBulletsForSession(cwd, sessionId, newBullets) {
+  if (!cwd || !sessionId || !newBullets?.length) return false;
+  const sections = readBulletsCache(cwd);
+
+  let current = sections.find(s => s.sessionId === sessionId);
+  if (!current) {
+    current = { sessionId, startedAt: new Date().toISOString(), bullets: [] };
+    sections.push(current);
+  }
+
+  for (const b of newBullets) {
+    const clean = String(b).trim();
+    if (!clean) continue;
+    if (current.bullets.includes(clean)) continue;
+    current.bullets.push(clean);
+  }
+
+  while (current.bullets.length > CACHE_MAX_BULLETS_PER_SESSION) current.bullets.shift();
+  let totalChars = current.bullets.reduce((n, b) => n + b.length + 3, 0);
+  while (totalChars > CACHE_MAX_CHARS_PER_SESSION && current.bullets.length > 1) {
+    totalChars -= current.bullets[0].length + 3;
+    current.bullets.shift();
+  }
+
+  while (sections.length > CACHE_SESSIONS_KEPT) sections.shift();
+
+  return writeBulletsCache(cwd, sections);
 }
 
 // ═══════════════════ DATABASE ═══════════════════
@@ -950,91 +970,121 @@ async function incremental(hookInput) {
 }
 
 /**
- * Build a consolidated summary of all chunks for a project and write it
- * to the per-project cache as a dated .md. Called after every background
- * summarization so SessionStart can read the cache instead of calling the LLM.
+ * Distill the latest chunk summary into N short bullets and append them to
+ * the per-project bullets.md. Bullets are 1-line, focused on state/decisions/
+ * changes/bugs. Deduplicates against existing bullets in the session so the
+ * LLM is told what's already known and avoids repeating.
+ *
+ * Scope: STRICTLY per-project (cwd). Never mixes bullets across projects.
  */
-async function regenerateProjectCache(db, cwd, sessionId) {
-  if (!cwd || !db) return;
+async function updateBulletsCache(db, cwd, sessionId, latestSummary) {
+  if (!cwd || !sessionId) return;
+  if (!latestSummary || latestSummary.length < 50) return;
+
+  const existing = readBulletsCache(cwd);
+  const currentSession = existing.find(s => s.sessionId === sessionId);
+  const prevBullets = currentSession ? currentSession.bullets.slice(-15) : [];
+
+  let bullets = [];
+  if (await isLLMAvailable()) {
+    const prevBlock = prevBullets.length
+      ? `\n\nEXISTING BULLETS for this session (do NOT repeat these; only output genuinely NEW info):\n${prevBullets.map(b => `- ${b}`).join('\n')}`
+      : '';
+    const prompt = `Extract the ${CACHE_BULLETS_PER_CHUNK} MOST IMPORTANT facts from the conversation summary below, as terse one-line bullets.
+
+PRIORITIES (in order):
+1. CURRENT STATE / next step
+2. KEY DECISIONS made
+3. FILES CHANGED (with paths)
+4. UNRESOLVED BUGS or blockers
+
+RULES:
+- Output ONLY bullets, one per line, starting with "- "
+- Each bullet ≤ 150 characters, single sentence, no markdown inside
+- Include specific file paths, function names, variable names when relevant
+- Output at most ${CACHE_BULLETS_PER_CHUNK} bullets. Fewer is fine if nothing new.
+- If nothing genuinely new vs existing bullets, output nothing.${prevBlock}
+
+SUMMARY:
+${latestSummary}`;
+
+    try {
+      const raw = await callLLM(prompt, 300);
+      bullets = (raw || '')
+        .split('\n')
+        .map(l => l.trim())
+        .filter(l => l.startsWith('- '))
+        .map(l => l.slice(2).trim())
+        .filter(Boolean)
+        .slice(0, CACHE_BULLETS_PER_CHUNK);
+    } catch {
+      bullets = [];
+    }
+  }
+
+  if (bullets.length === 0) return;
+
+  appendBulletsForSession(cwd, sessionId, bullets);
+  process.stderr.write(`[secretary] Bullets cache updated: +${bullets.length} bullet(s) for session ${sessionId.slice(0, 8)}\n`);
+}
+
+/**
+ * One-time bootstrap: if bullets.md doesn't exist yet for this project but the
+ * DB has summaries, distill the most recent session's chunks into bullets so
+ * the new cache format has content on first use. Strictly per-project (cwd).
+ */
+async function bootstrapBulletsFromDb(db, cwd) {
+  if (!cwd || !db) return false;
+  if (existsSync(bulletsFilePath(cwd))) return false;
 
   const lastSessionRow = db.prepare(`
     SELECT session_id FROM summaries
     WHERE project_dir = ? AND session_id NOT IN ('manual', 'notes', 'reminders')
     ORDER BY created_at DESC LIMIT 1
   `).get(cwd);
-  const lastSessionId = lastSessionRow?.session_id || sessionId;
-  if (!lastSessionId) return;
+  if (!lastSessionRow?.session_id) return false;
 
-  let summaries = db.prepare(`
-    SELECT summary, chunk_index, created_at, session_id FROM summaries
-    WHERE session_id = ? ORDER BY chunk_index ASC
-  `).all(lastSessionId);
+  const lastSessionId = lastSessionRow.session_id;
+  const chunks = db.prepare(`
+    SELECT summary FROM summaries
+    WHERE project_dir = ? AND session_id = ?
+    ORDER BY chunk_index ASC
+  `).all(cwd, lastSessionId);
+  if (chunks.length === 0) return false;
 
-  const MIN_CHUNKS = 10;
-  if (summaries.length < MIN_CHUNKS) {
-    const needed = MIN_CHUNKS - summaries.length;
-    const backfill = db.prepare(`
-      SELECT summary, chunk_index, created_at, session_id FROM summaries
-      WHERE project_dir = ? AND session_id != ? AND session_id NOT IN ('manual', 'notes', 'reminders')
-      ORDER BY created_at DESC LIMIT ?
-    `).all(cwd, lastSessionId, needed);
-    backfill.reverse();
-    summaries = [...backfill, ...summaries];
-  }
+  if (!(await isLLMAvailable())) return false;
 
-  if (summaries.length === 0) return;
-
-  let finalSummary = '';
-  if (await isLLMAvailable()) {
-    const allSummaries = summaries.map((s, i) => `--- Chunk ${i + 1} (${s.created_at}) ---\n${s.summary}`).join('\n\n');
-    const prompt = `Merge these ${summaries.length} incremental conversation summaries into ONE consolidated summary. This will be injected into a NEW conversation so the AI can continue where it left off.
-
-CRITICAL PRIORITIES (in order):
-1. CURRENT STATE: What task is in progress? What are the immediate next steps?
-2. KEY DECISIONS: Architectural choices, design patterns chosen, constraints agreed upon
-3. IMPORTANT CHANGES: Files modified with specific paths and what changed
-4. UNRESOLVED PROBLEMS: Bugs, errors, or blockers still pending
-5. ERROR SOLUTIONS: How specific errors were fixed (exact fix, not just "fixed it")
+  const joined = chunks.map((c, i) => `--- Chunk ${i + 1} ---\n${c.summary}`).join('\n\n');
+  const prompt = `Distill the following conversation summaries into ${CACHE_MAX_BULLETS_PER_SESSION} terse one-line bullets covering current state, key decisions, files changed, and unresolved bugs.
 
 RULES:
-- Remove duplicates and superseded information
-- Most recent chunks are MORE important than older ones
-- Include specific file paths, function names, variable names
-- Keep it under 2000 tokens. Be specific and actionable.
-- Format with clear **SECTION** headers
+- Output ONLY bullets, one per line, starting with "- "
+- Each bullet ≤ 150 characters
+- Most recent info is most important
+- Max ${CACHE_MAX_BULLETS_PER_SESSION} bullets
 
-SUMMARIES (oldest to newest):
-${allSummaries}`;
+SUMMARIES:
+${joined}`;
 
-    try {
-      finalSummary = await callLLM(prompt, 2000);
-    } catch {
-      finalSummary = summaries.map(s => s.summary).join('\n\n---\n\n');
-    }
-  } else {
-    finalSummary = summaries.map(s => s.summary).join('\n\n---\n\n');
+  let bullets = [];
+  try {
+    const raw = await callLLM(prompt, 1200);
+    bullets = (raw || '')
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l.startsWith('- '))
+      .map(l => l.slice(2).trim())
+      .filter(Boolean)
+      .slice(0, CACHE_MAX_BULLETS_PER_SESSION);
+  } catch {
+    return false;
   }
 
-  if (finalSummary.length > 4000) {
-    if (await isLLMAvailable()) {
-      try {
-        const compactPrompt = `This summary is too long (${finalSummary.length} chars). Compress it to under 3500 characters while keeping all critical information.\n\nSUMMARY:\n${finalSummary}`;
-        const compressed = await callLLM(compactPrompt, 1500);
-        if (compressed && compressed.length >= 50) finalSummary = compressed;
-      } catch { /* keep original */ }
-    }
-    if (finalSummary.length > 4000) {
-      finalSummary = finalSummary.slice(0, 3950) + '\n\n[...truncated]';
-    }
-  }
+  if (bullets.length === 0) return false;
 
-  if (!finalSummary || finalSummary.length < 50) return;
-
-  const file = writeCacheFile(cwd, finalSummary, {
-    session_id: lastSessionId,
-    chunks_included: summaries.length,
-  });
-  if (file) process.stderr.write(`[secretary] Cache written: ${file}\n`);
+  appendBulletsForSession(cwd, lastSessionId, bullets);
+  process.stderr.write(`[secretary] Bootstrapped bullets.md from DB: ${bullets.length} bullet(s)\n`);
+  return true;
 }
 
 /**
@@ -1085,7 +1135,7 @@ ${text}`;
       sessionId, cwd, chunkIndex, summary, parseInt(messageCount, 10)
     );
 
-    try { await regenerateProjectCache(db, cwd, sessionId); } catch { /* cache failure must not break summarization */ }
+    try { await updateBulletsCache(db, cwd, sessionId, summary); } catch { /* cache failure must not break summarization */ }
   } finally {
     db.close();
   }
@@ -1272,34 +1322,35 @@ async function restore(hookInput) {
       output += '\n';
     }
 
-    // 2. Consolidated conversation summary
-    //    Fast path: try to read a pre-generated cache file for this project.
-    //    The cache is invalidated if any chunk in SQLite is newer than the cache.
+    // 2. Conversation context from bullets.md (strictly per-project).
+    //    bullets.md is built incrementally by updateBulletsCache() after each
+    //    chunk summary, so SessionStart just reads a small file — no LLM call,
+    //    no blocking, no race with a still-running summarizer.
+    //
+    //    If bullets.md is missing (first run after migration) but DB has
+    //    chunks, fall back to raw concatenation and spawn a background
+    //    bootstrap so the next SessionStart gets real bullets.
     let finalSummary = '';
     let cacheHit = false;
-    let cacheGeneratedAt = null;
 
-    if (cwd && summaries.length > 0) {
-      const cached = readLatestCacheFile(cwd);
-      if (cached && cached.body && cached.body.trim().length > 50) {
-        const cacheTime = cached.meta.generated_at ? Date.parse(cached.meta.generated_at) : cached.mtimeMs;
-        const newestChunkTime = Math.max(...summaries.map(s => Date.parse((s.created_at || '') + 'Z') || 0));
-        if (cacheTime && newestChunkTime && cacheTime >= newestChunkTime) {
-          finalSummary = cached.body.trim();
-          cacheHit = true;
-          cacheGeneratedAt = cached.meta.generated_at || new Date(cached.mtimeMs).toISOString();
-          process.stderr.write(`[secretary] Cache hit: ${cached.file}\n`);
+    if (cwd) {
+      const sections = readBulletsCache(cwd);
+      if (sections.length > 0) {
+        const parts = [];
+        for (let i = 0; i < sections.length; i++) {
+          const s = sections[i];
+          const label = i === sections.length - 1 ? 'Most recent session' : 'Previous session';
+          const when = s.startedAt ? ` _(started ${s.startedAt.slice(0, 16).replace('T', ' ')})_` : '';
+          parts.push(`### ${label}${when}\n${s.bullets.map(b => `- ${b}`).join('\n')}`);
         }
+        finalSummary = parts.join('\n\n');
+        cacheHit = true;
       }
     }
 
-    if (summaries.length === 0) {
+    if (summaries.length === 0 && !cacheHit) {
       finalSummary = '(No conversation summaries available)';
     } else if (!cacheHit) {
-      // Never block SessionStart on the LLM — it can take 20s+ on small
-      // machines and the hook will time out. Fall back to raw concatenation
-      // of chunks (recent last) and fire a background regenerator so the
-      // next session gets a proper LLM-merged cache.
       const ordered = [...summaries].sort((a, b) => (a.chunk_index || 0) - (b.chunk_index || 0));
       finalSummary = ordered.map(s => s.summary).join('\n\n---\n\n');
       if (finalSummary.length > 4000) {
@@ -1313,14 +1364,12 @@ async function restore(hookInput) {
             new URL(import.meta.url).pathname, '_bg_regenerate', cwd, lastSessionId,
           ], { detached: true, stdio: 'ignore' });
           child.unref();
-          process.stderr.write('[secretary] Cache regeneration spawned in background\n');
+          process.stderr.write('[secretary] Bullets bootstrap spawned in background\n');
         } catch { /* best effort */ }
       }
     }
 
-    const cacheLabel = cacheHit && cacheGeneratedAt
-      ? ` _(cached ${new Date(cacheGeneratedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })})_`
-      : '';
+    const cacheLabel = cacheHit ? ` _(bullets cache)_` : '';
     output += `## Context from Previous Conversation (auto-injected by The Secretary)${cacheLabel}\n\n${finalSummary}\n`;
 
     // 3. User Memories
@@ -1367,6 +1416,31 @@ async function restore(hookInput) {
 
     process.stdout.write(output + `\n\n☑ Session memory recovered from ${formattedDate} (${totalItems} items restored)`);
     notify('The Secretary', `Memory recovered from ${formattedDate} (${totalItems} items)`);
+
+    // ── Fresh-context watermark ──
+    // Record max(created_at) of summaries known at restore-time for this project.
+    // userPromptHook() compares against this to detect summaries that landed
+    // AFTER restore (e.g. the previous session's tail finishing post-/clear)
+    // and injects a "new context available" notice on the next prompt.
+    try {
+      if (cwd && session_id) {
+        const maxRow = db.prepare(`
+          SELECT MAX(created_at) AS max_at FROM summaries
+          WHERE project_dir IN (?, '__global__')
+        `).get(cwd);
+        const watermark = {
+          session_id,
+          project_dir: cwd,
+          max_at: maxRow?.max_at || new Date().toISOString().replace('T',' ').slice(0,19),
+          restored_at: new Date().toISOString()
+        };
+        const wmDir = join(homedir(), '.claude', 'summarizer', 'watermarks');
+        mkdirSync(wmDir, { recursive: true });
+        writeFileSync(join(wmDir, `${session_id}.json`), JSON.stringify(watermark));
+      }
+    } catch (err) {
+      process.stderr.write(`[secretary] watermark write failed: ${err.message}\n`);
+    }
 
   } finally {
     db.close();
@@ -1770,6 +1844,17 @@ async function cmdSearch() {
  */
 async function userPromptHook(hookInput) {
   const prompt = hookInput.prompt || hookInput.user_prompt || '';
+
+  // ── Fresh-context watermark check ──
+  // If summaries landed AFTER the session's restore (e.g. previous session's
+  // tail finished summarizing post-/clear), inject a notice with the new content
+  // so Claude is aware of context it couldn't see at session start.
+  try {
+    await checkFreshContextWatermark(hookInput);
+  } catch (err) {
+    process.stderr.write(`[secretary] fresh-context check failed: ${err.message}\n`);
+  }
+
   if (!isRecallQuery(prompt)) return;
 
   const query = extractSearchQuery(prompt);
@@ -1782,6 +1867,65 @@ async function userPromptHook(hookInput) {
   process.stdout.write(`_(${hits.length} coincidencia${hits.length > 1 ? 's' : ''} en sesiones previas — usa esto para responder antes de buscar más)_\n\n`);
   for (const h of hits) {
     process.stdout.write(`### [${h.source}] ${h.project} · ${h.date}\n\n${h.snippet}\n\n---\n\n`);
+  }
+}
+
+/**
+ * Fresh-context watermark check.
+ *
+ * On SessionStart (restore), we save a watermark file with max(created_at) of
+ * summaries visible at that moment. If the previous session's summarizer was
+ * still running when the user hit /clear, its new summaries land AFTER the
+ * watermark. On the next user prompt we detect that, inject a system reminder
+ * with the new content, and advance the watermark so we only notify once.
+ */
+async function checkFreshContextWatermark(hookInput) {
+  const { session_id, cwd } = hookInput;
+  if (!session_id || !cwd) return;
+
+  const wmFile = join(homedir(), '.claude', 'summarizer', 'watermarks', `${session_id}.json`);
+  if (!existsSync(wmFile)) return;
+
+  let wm;
+  try {
+    wm = JSON.parse(readFileSync(wmFile, 'utf8'));
+  } catch { return; }
+
+  const db = openDb();
+  if (!db) return;
+
+  try {
+    const rows = db.prepare(`
+      SELECT summary, created_at, session_id, chunk_index FROM summaries
+      WHERE project_dir IN (?, '__global__')
+        AND created_at > ?
+        AND session_id NOT IN ('manual', 'notes', 'reminders')
+        AND session_id != ?
+      ORDER BY created_at ASC
+      LIMIT 20
+    `).all(wm.project_dir, wm.max_at, session_id);
+
+    if (rows.length === 0) return;
+
+    const newMax = rows[rows.length - 1].created_at;
+    try {
+      writeFileSync(wmFile, JSON.stringify({ ...wm, max_at: newMax, last_notified_at: new Date().toISOString() }));
+    } catch { /* best-effort */ }
+
+    const MAX_SHOW = 5;
+    const SNIP = 400;
+    const shown = rows.slice(-MAX_SHOW);
+
+    let out = `\n## 📥 The Secretary: contexto nuevo disponible\n\n`;
+    out += `_${rows.length} resumen${rows.length > 1 ? 'es' : ''} añadido${rows.length > 1 ? 's' : ''} desde el inicio de esta sesión (probablemente el summarizer de la sesión previa terminó después del \`/clear\`)._\n\n`;
+    for (const r of shown) {
+      const clean = (r.summary || '').replace(/^\[RAW-TAIL\]\s*/i, '').trim();
+      const snippet = clean.length > SNIP ? clean.slice(0, SNIP) + '…' : clean;
+      out += `### ${r.created_at}\n\n${snippet}\n\n---\n\n`;
+    }
+    process.stdout.write(out);
+  } finally {
+    db.close();
   }
 }
 
@@ -1809,8 +1953,9 @@ async function main() {
     process.exit(0);
   }
 
-  // Background cache regenerator — rebuilds the consolidated project cache
-  // so the next SessionStart gets an LLM-quality summary without blocking.
+  // Background cache bootstrap — if bullets.md doesn't exist yet for this
+  // project but the DB has summaries, distill them into bullets so the
+  // next SessionStart gets the new cache format without blocking.
   if (command === '_bg_regenerate') {
     const [, , , cwd, sessionId] = process.argv;
     try {
@@ -1818,7 +1963,7 @@ async function main() {
       const db = openDb();
       if (!db) process.exit(0);
       try {
-        await regenerateProjectCache(db, cwd, sessionId);
+        await bootstrapBulletsFromDb(db, cwd);
       } finally {
         db.close();
       }

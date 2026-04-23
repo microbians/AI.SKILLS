@@ -3,9 +3,9 @@
 A local LLM-powered secretary that runs via Claude Code hooks to preserve conversation context, manage user memories, take notes, and track reminders.
 
 ### How it works
-- **PostToolUse hook** runs on every tool call — detects secretary orders (remember/forget/note/reminder) via regex, and summarizes conversation every 15 calls via local LLM
-- **UserPromptSubmit hook** runs on every user prompt — detects recall-style questions (`¿recuerdas?`, `te acuerdas?`, `do you remember`, `do you recall`, `remember when`) and auto-injects matching snippets from cache + DB before Claude replies
-- **SessionStart hook** (on `/clear`, `startup`, `resume`) — injects saved context, memories, notes, and pending reminders
+- **PostToolUse hook** runs on every tool call — detects secretary orders (remember/forget/note/reminder) via regex, and summarizes conversation every 15 calls via local LLM. After each chunk summary, distills 3 terse one-line bullets and appends them to the per-project `bullets.md` cache (FIFO, max 20 bullets / 4000 chars per session, last 2 sessions kept)
+- **UserPromptSubmit hook** runs on every user prompt — detects recall-style questions (`¿recuerdas?`, `te acuerdas?`, `do you remember`, `do you recall`, `remember when`) and auto-injects matching snippets from cache + DB before Claude replies. Also checks a per-session watermark and injects a "contexto nuevo disponible" notice if summaries from the previous session landed in the DB after `/clear`
+- **SessionStart hook** (on `/clear`, `startup`, `resume`) — injects saved context directly from the per-project `bullets.md` (instant, no LLM call, no race with still-running summarizers). Bullets are strictly per-project — never mixed across different `cwd`s. Also writes a watermark so late-arriving summaries can still be surfaced on the next prompt
 - **PreCompact hook** — blocks compaction and suggests `/clear` so local summaries are used instead
 - **Stop hook** — forces a final summary of unsummarized conversation, then shuts down the local LLM server
 
