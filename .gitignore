@@ -1,6 +1,11 @@
 # OS
 .DS_Store
 Thumbs.db
+Icon
+Icon?
+
+# Local backups
+TheSecretary/backups/
 
 # Archives (source ZIPs already extracted)
 *.zip

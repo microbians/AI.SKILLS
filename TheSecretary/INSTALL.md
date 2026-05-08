@@ -5,28 +5,55 @@ If you prefer to install The Secretary manually instead of using `install.sh`, f
 ## 1. Create directory and copy files
 
 ```bash
-mkdir -p ~/.claude/summarizer/models
+mkdir -p ~/.claude/the-secretary/models
 
-cp src/summarize.mjs ~/.claude/summarizer/
-cp src/start-llm.sh ~/.claude/summarizer/
-cp src/config.json ~/.claude/summarizer/
-cp src/package.json ~/.claude/summarizer/
+cp src/summarize.mjs ~/.claude/the-secretary/
+cp src/start-llm.sh ~/.claude/the-secretary/
+cp src/config.json ~/.claude/the-secretary/
+cp src/package.json ~/.claude/the-secretary/
 
-chmod +x ~/.claude/summarizer/start-llm.sh
+chmod +x ~/.claude/the-secretary/start-llm.sh
 ```
+
+If migrating from a legacy install at `~/.claude/summarizer/`, move the directory first to preserve the SQLite DB, models, watermarks, and cache:
+
+```bash
+mv ~/.claude/summarizer ~/.claude/the-secretary
+# then re-run the cp commands above to update summarize.mjs / start-llm.sh / config.json with the new paths
+```
+
+## 1b. Install the skill
+
+```bash
+mkdir -p ~/.claude/skills/the-secretary
+cp skill/SKILL.md ~/.claude/skills/the-secretary/SKILL.md
+```
+
+The skill defines the behavior rules Claude must follow when interacting with The Secretary (recall commands, trigger patterns, scope, etc.).
 
 ## 2. Install dependencies
 
 ```bash
-cd ~/.claude/summarizer
+cd ~/.claude/the-secretary
 npm install
 ```
 
-## 3. Download the model (llama.cpp only)
+## 3. Download the model
+
+**Using MLX (Apple Silicon, recommended):** skip this step. `start-llm.sh` auto-selects the right Qwen2.5 size based on your unified memory and downloads it on first run:
+
+| Unified memory | Auto-selected model | Disk |
+|---|---|---|
+| ≥ 32 GB | `Qwen2.5-7B-Instruct-4bit` | ~4.5 GB |
+| 16 – 31 GB | `Qwen2.5-3B-Instruct-4bit` | ~2 GB |
+| < 16 GB | `Qwen2.5-1.5B-Instruct-4bit` | ~1 GB |
+
+Force a different model with `SECRETARY_MLX_MODEL=mlx-community/<repo>` in your shell environment.
+
+**Using llama.cpp (Linux / Intel / fallback):** download the bundled 3B GGUF:
 
 ```bash
-# Skip this if using MLX — it downloads automatically on first use
-curl -L -o ~/.claude/summarizer/models/qwen2.5-3b-instruct-q4_k_m.gguf \
+curl -L -o ~/.claude/the-secretary/models/qwen2.5-3b-instruct-q4_k_m.gguf \
   "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
 ```
 
@@ -43,7 +70,7 @@ Open `~/.claude/settings.json` and merge these hooks (don't replace existing one
         "hooks": [
           {
             "type": "command",
-            "command": "node ~/.claude/summarizer/summarize.mjs incremental",
+            "command": "node ~/.claude/the-secretary/summarize.mjs incremental",
             "timeout": 60
           }
         ]
@@ -55,7 +82,7 @@ Open `~/.claude/settings.json` and merge these hooks (don't replace existing one
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/summarizer/start-llm.sh start > /dev/null 2>&1; node ~/.claude/summarizer/summarize.mjs compact",
+            "command": "bash ~/.claude/the-secretary/start-llm.sh start > /dev/null 2>&1; node ~/.claude/the-secretary/summarize.mjs compact",
             "timeout": 15
           }
         ]
@@ -67,7 +94,7 @@ Open `~/.claude/settings.json` and merge these hooks (don't replace existing one
         "hooks": [
           {
             "type": "command",
-            "command": "node ~/.claude/summarizer/summarize.mjs force; bash ~/.claude/summarizer/start-llm.sh stop > /dev/null 2>&1",
+            "command": "node ~/.claude/the-secretary/summarize.mjs force; bash ~/.claude/the-secretary/start-llm.sh stop > /dev/null 2>&1",
             "timeout": 90
           }
         ]
@@ -79,8 +106,8 @@ Open `~/.claude/settings.json` and merge these hooks (don't replace existing one
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/summarizer/start-llm.sh start > /dev/null 2>&1; node ~/.claude/summarizer/summarize.mjs restore",
-            "timeout": 30
+            "command": "bash ~/.claude/the-secretary/start-llm.sh start > /dev/null 2>&1; node ~/.claude/the-secretary/summarize.mjs restore",
+            "timeout": 120
           }
         ]
       },
@@ -89,7 +116,7 @@ Open `~/.claude/settings.json` and merge these hooks (don't replace existing one
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/summarizer/start-llm.sh start > /dev/null 2>&1; node ~/.claude/summarizer/summarize.mjs restore",
+            "command": "bash ~/.claude/the-secretary/start-llm.sh start > /dev/null 2>&1; node ~/.claude/the-secretary/summarize.mjs restore",
             "timeout": 120
           }
         ]
@@ -108,9 +135,9 @@ cat src/claude-md-snippet.md >> ~/.claude/CLAUDE.md
 ## 6. Verify
 
 ```bash
-bash ~/.claude/summarizer/start-llm.sh start
+bash ~/.claude/the-secretary/start-llm.sh start
 curl -s http://localhost:8922/v1/models | head -1
-echo '{}' | node ~/.claude/summarizer/summarize.mjs incremental
+echo '{}' | node ~/.claude/the-secretary/summarize.mjs incremental
 echo $?  # Should be 0
 ```
 

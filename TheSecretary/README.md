@@ -1,6 +1,6 @@
 # The Secretary
 
-AI-powered context persistence for Claude Code. Preserves conversation context, manages user memories, takes notes, and tracks reminders — all using a small local LLM (Qwen 2.5 3B).
+AI-powered context persistence for Claude Code. Preserves conversation context, manages user memories, takes notes, and tracks reminders — all using a small local LLM (Qwen 2.5, auto-sized 1.5B / 3B / 7B by available RAM). Optional `claude_cli` provider available for users with a Claude Max subscription.
 
 ```
 ┌───────────────────────────────────────────────────────┐
@@ -81,8 +81,26 @@ How it works:
 For manual searches:
 
 ```bash
-node ~/.claude/summarizer/summarize.mjs search "template 691"
+node ~/.claude/the-secretary/summarize.mjs search "template 691"
 ```
+
+### Session handoff (resume next session without re-explaining)
+
+When a Claude Code session ends, the **Stop hook** asks the local LLM to write a richer "handoff brief" instead of the regular incremental summary. The handoff is designed so the **next session can pick up the work without the user having to explain anything again**.
+
+The brief includes (skipping any section that has nothing real to say):
+
+- **What was accomplished** — concrete features/files/behaviors that now work.
+- **Current state** — what's running, what's broken, what's untested.
+- **Next step** — the single most likely first action when the user returns.
+- **Open questions / decisions pending** — blockers awaiting user input.
+- **Don't break / hard rules** — constraints the user repeated this session (backups, language rules, "never revert without permission", naming conventions…).
+- **Backups** — paths of any backup folders created.
+- **Key files touched** — paths + one-line summary per file.
+
+Stored in the same `summaries` table tagged with a `[HANDOFF]` prefix. On the next `SessionStart`, **the most recent handoff for the current project is shown FIRST**, before the older bullet summaries, under a `📋 Session handoff — resume here` heading. The bullet cache stays available below as background.
+
+This is additive — incremental summaries, memories, notes and reminders all keep working as before. The handoff is what the next session reads first; the rest is context.
 
 ### Fresh-context notice (late summaries after `/clear`)
 
@@ -90,7 +108,7 @@ If you hit `/clear` while the local LLM is still summarizing the previous sessio
 
 The Secretary handles this automatically:
 
-1. On restore, a watermark file is written to `~/.claude/summarizer/watermarks/<session_id>.json` with `max(created_at)` of summaries visible at that moment.
+1. On restore, a watermark file is written to `~/.claude/the-secretary/watermarks/<session_id>.json` with `max(created_at)` of summaries visible at that moment.
 2. On every user prompt, `UserPromptSubmit` checks if any summaries with `created_at > watermark` have appeared for the current project.
 3. If so, a `📥 The Secretary: contexto nuevo disponible` block is injected into the conversation with the new content, and the watermark is advanced so the notice doesn't repeat.
 
@@ -103,17 +121,18 @@ The check is cheap (a single SQLite query per prompt) and fires only when there 
 3. **PreCompact hook** — Forces a final summary before Claude's compaction, then blocks it and suggests `/clear`.
 4. **SessionStart hook** — On `/clear`, `startup`, or `resume`, restores context:
    - **Overdue reminders** shown first (highest priority)
-   - Consolidated conversation summary (loaded from per-project cache — see below)
+   - **Session handoff brief** (📋) from the previous session's Stop hook — the dense "how to resume" doc
+   - Consolidated conversation summary (loaded from per-project cache — see below) as background
    - User memories
    - Active notes
    - Upcoming reminders
-5. **Stop hook** — Forces a final summary, then shuts down the LLM server.
+5. **Stop hook** — Generates a session **handoff brief** (richer than the regular summary, structured so the next session can resume without explanation), then shuts down the LLM server.
 
 ### Incremental bullets cache (per-project)
 
 To keep SessionStart instant and avoid racing with still-running summarizers after `/clear`, each background summarization distills **3 terse one-line bullets** from the latest chunk summary and appends them to a per-project `bullets.md`. SessionStart just reads that file — no LLM call, no waiting.
 
-- **Location:** `~/.claude/summarizer/cache/<project>-<hash8>/bullets.md`.
+- **Location:** `~/.claude/the-secretary/cache/<project>-<hash8>/bullets.md`.
 - **Structure:** sections by session. Each section header is `## Session <id> (started <iso>)`, followed by bullets.
 - **Per-session caps:** max **20 bullets** or **4000 chars**, FIFO when exceeded (oldest bullets drop first).
 - **Global caps:** last **2 sessions** kept (current + previous); older sessions are discarded when a new one starts.
@@ -126,16 +145,17 @@ To keep SessionStart instant and avoid racing with still-running summarizers aft
 
 PostToolUse fires on every tool call, which on slower machines (e.g. base M1) caused multiple `_bg_summarize` workers to pile up and saturate the neural engine. A lockfile at `/tmp/secretary-bg-<session>.lock` (PID + timestamp) ensures only one worker runs per session, and a 30s debounce window prevents back-to-back spawns even after the previous worker exits. The `--stop-llm` (Stop hook) path bypasses the debounce so the final summary always runs.
 
-### Model auto-selection by chip
+### Model auto-selection by RAM
 
-`start-llm.sh` picks the MLX model based on `sysctl machdep.cpu.brand_string`:
+`start-llm.sh` picks the MLX model based on total unified memory (`sysctl hw.memsize`):
 
-| Chip | Model |
-|------|-------|
-| Apple M1 / M2 (base, no Pro/Max/Ultra) | `mlx-community/Qwen2.5-1.5B-Instruct-4bit` |
-| M1/M2 Pro/Max/Ultra, M3+, Intel | `mlx-community/Qwen2.5-3B-Instruct-4bit` |
+| Unified memory | Model | RAM use | Speed (M-series) | Hallucination |
+|---|---|---|---|---|
+| ≥ 32 GB | `mlx-community/Qwen2.5-7B-Instruct-4bit` | ~4.5 GB | ~50 tok/s | very low |
+| 16 – 31 GB | `mlx-community/Qwen2.5-3B-Instruct-4bit` | ~2 GB | ~80 tok/s | low |
+| < 16 GB | `mlx-community/Qwen2.5-1.5B-Instruct-4bit` | ~1 GB | ~120 tok/s | medium |
 
-Override with env var `SECRETARY_MLX_MODEL=<repo>`.
+Override with env var `SECRETARY_MLX_MODEL=<repo>` (e.g. force 7B on a 16 GB machine if you have RAM headroom).
 
 ### Flexible matching via LLM
 
@@ -160,7 +180,7 @@ Cross-language matching works too (Spanish request matches English memory, and v
 - **macOS or Linux**
 - **Node.js** ≥ 18
 - **LLM backend**: MLX (recommended for Apple Silicon) or llama.cpp
-- **~2GB disk space** for the model (GGUF path only)
+- **~1–5 GB disk space** for the model (auto-downloaded by MLX on first run, or GGUF path)
 - **Claude Code** CLI
 
 ### Installing a backend
@@ -180,12 +200,14 @@ bash install.sh
 ```
 
 The installer will:
-1. Create `~/.claude/summarizer/` with all files
-2. Install `better-sqlite3` dependency
-3. Download the Qwen 2.5 3B model (if using llama.cpp)
-4. Merge hooks into `~/.claude/settings.json`
-5. Inject docs into `~/.claude/CLAUDE.md`
-6. Start the LLM server and verify
+1. Migrate any legacy install from `~/.claude/summarizer/` to `~/.claude/the-secretary/` (preserves DB, models, watermarks, cache)
+2. Create `~/.claude/the-secretary/` with all files
+3. Install the `the-secretary` skill at `~/.claude/skills/the-secretary/` (defines the behavior rules Claude must follow)
+4. Install `better-sqlite3` dependency
+5. Download a Qwen 2.5 model sized to your machine (MLX downloads on first run; llama.cpp uses the bundled 3B GGUF)
+6. Merge hooks into `~/.claude/settings.json`
+7. Inject a pointer to the skill into `~/.claude/CLAUDE.md`
+8. Start the LLM server and verify
 
 For manual installation, see [INSTALL.md](INSTALL.md).
 
@@ -193,35 +215,49 @@ For manual installation, see [INSTALL.md](INSTALL.md).
 
 ```bash
 # Force an immediate summary
-node ~/.claude/summarizer/summarize.mjs force
+node ~/.claude/the-secretary/summarize.mjs force
 
 # Inject arbitrary context
-node ~/.claude/summarizer/summarize.mjs inject --text "your context here"
+node ~/.claude/the-secretary/summarize.mjs inject --text "your context here"
 
 # Show everything: memories, notes, reminders, context
-echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/summarizer/summarize.mjs recall
+echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/the-secretary/summarize.mjs recall
 
 # Show only notes
-echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/summarizer/summarize.mjs recall-notes
+echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/the-secretary/summarize.mjs recall-notes
 
 # Show only reminders
-echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/summarizer/summarize.mjs recall-reminders
+echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/the-secretary/summarize.mjs recall-reminders
 
 # Search cache + DB for any query (on-demand)
-node ~/.claude/summarizer/summarize.mjs search "template 691"
+node ~/.claude/the-secretary/summarize.mjs search "template 691"
 ```
 
 ## Configuration
 
-Edit `~/.claude/summarizer/config.json`:
+Edit `~/.claude/the-secretary/config.json`:
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `provider` | `local` | `local` (MLX/llama.cpp server) or `claude_cli` (uses your Claude Max subscription via the `claude` CLI) |
 | `summarize_every_n` | `15` | Summarize every N tool calls |
 | `min_new_chars` | `2000` | Minimum new content before summarizing |
 | `max_summary_tokens` | `1500` | Max tokens for summary output |
-| `llm_url` | `http://localhost:8922/v1/chat/completions` | OpenAI-compatible endpoint |
-| `db_path` | `~/.claude/summarizer/summaries.db` | SQLite database path |
+| `llm_url` | `http://localhost:8922/v1/chat/completions` | OpenAI-compatible endpoint (used when `provider=local`) |
+| `claude_bin` | `/opt/homebrew/bin/claude` | Path to the `claude` binary (used when `provider=claude_cli`) |
+| `claude_model` | `claude-haiku-4-5` | Model passed to `claude -p --model` |
+| `db_path` | `~/.claude/the-secretary/summaries.db` | SQLite database path |
+
+### Provider: `claude_cli` (Claude Max)
+
+When set, summaries are generated by spawning `claude -p --model <claude_model> --output-format json` instead of hitting the local MLX server. No API key is needed — it reuses the authenticated session of your `claude` CLI (Max / Pro subscription).
+
+Built-in safeguards:
+
+- **Strict success parsing.** A response is only accepted if `subtype === 'success'`, `errors[]` is empty, and `result` is a non-empty string. Any other shape is treated as a failure (no silent passes).
+- **Cooldown after repeated failures.** After 2 consecutive failures the provider is marked degraded for 10 minutes (state persisted at `/tmp/secretary-claude-cli-degraded.json`), so the secretary stops retrying on every tool call.
+
+> **Note (May 2026):** `claude -p --model claude-haiku-4-5` currently returns `subtype: "error_during_execution"` due to an upstream bug in `@anthropic-ai/claude-code` (see issue [#52178](https://github.com/anthropics/claude-code/issues/52178)). Until that ships a fix, use `provider=local` or set `claude_model` to `claude-sonnet-4-5` (more expensive, consumes more of your Max quota).
 
 ## Uninstalling
 
@@ -249,13 +285,13 @@ TheSecretary/
 
 **LLM server won't start:**
 ```bash
-bash ~/.claude/summarizer/start-llm.sh start
-cat /tmp/llama-summarizer.log
+bash ~/.claude/the-secretary/start-llm.sh start
+cat /tmp/the-secretary-llm.log
 ```
 
 **No context after /clear:**
 ```bash
-sqlite3 ~/.claude/summarizer/summaries.db "SELECT session_id, COUNT(*) FROM summaries GROUP BY session_id"
+sqlite3 ~/.claude/the-secretary/summaries.db "SELECT session_id, COUNT(*) FROM summaries GROUP BY session_id"
 curl http://localhost:8922/v1/models
 ```
 

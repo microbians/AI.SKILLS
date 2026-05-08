@@ -1,8 +1,11 @@
 {
+  "provider": "local",
+  "claude_bin": "/opt/homebrew/bin/claude",
+  "claude_model": "claude-haiku-4-5",
   "llm_url": "http://localhost:8922/v1/chat/completions",
   "model": "qwen2.5-3b-instruct-q4_k_m.gguf",
   "summarize_every_n": 15,
   "min_new_chars": 2000,
   "max_summary_tokens": 1500,
-  "db_path": "~/.claude/summarizer/summaries.db"
+  "db_path": "~/.claude/the-secretary/summaries.db"
 }

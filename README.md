@@ -99,7 +99,9 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 - SQLite storage for persistent summaries across sessions
 - Configurable: model, summarization frequency (`summarize_every_n`), min content threshold (`min_new_chars`), token limits, remote LLM support
 
-**Includes:** `summarize.mjs`, `start-llm.sh`, `config.json`, `hooks.json`, `install.sh`, `claude-md-snippet.md`
+**Includes:** `summarize.mjs`, `start-llm.sh`, `config.json`, `hooks.json`, `install.sh`, `claude-md-snippet.md`, `skill/SKILL.md` (behavior rules skill, installed to `~/.claude/skills/the-secretary/`)
+
+**Install path:** `~/.claude/the-secretary/` (auto-migrates from legacy `~/.claude/summarizer/` on re-install).
 
 **Requirements:** macOS/Linux, Node.js 18+, llama-server (llama.cpp) or MLX in PATH, ~2GB disk for the GGUF model
 

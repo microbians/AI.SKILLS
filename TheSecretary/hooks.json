@@ -5,7 +5,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node ~/.claude/summarizer/summarize.mjs user-prompt",
+          "command": "node ~/.claude/the-secretary/summarize.mjs user-prompt",
           "timeout": 10
         }
       ]
@@ -17,7 +17,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node ~/.claude/summarizer/summarize.mjs incremental",
+          "command": "node ~/.claude/the-secretary/summarize.mjs incremental",
           "timeout": 60
         }
       ]
@@ -29,7 +29,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/summarizer/start-llm.sh start > /dev/null 2>&1; node ~/.claude/summarizer/summarize.mjs compact",
+          "command": "bash ~/.claude/the-secretary/start-llm.sh start > /dev/null 2>&1; node ~/.claude/the-secretary/summarize.mjs compact",
           "timeout": 15
         }
       ]
@@ -41,7 +41,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node ~/.claude/summarizer/summarize.mjs force --stop-llm",
+          "command": "node ~/.claude/the-secretary/summarize.mjs force --stop-llm",
           "timeout": 15
         }
       ]
@@ -53,7 +53,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node ~/.claude/summarizer/summarize.mjs force --stop-llm --notify",
+          "command": "node ~/.claude/the-secretary/summarize.mjs force --stop-llm --notify",
           "timeout": 15
         }
       ]
@@ -65,8 +65,8 @@
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/summarizer/start-llm.sh start > /dev/null 2>&1; node ~/.claude/summarizer/summarize.mjs restore",
-          "timeout": 30
+          "command": "bash ~/.claude/the-secretary/start-llm.sh start > /dev/null 2>&1; node ~/.claude/the-secretary/summarize.mjs restore",
+          "timeout": 120
         }
       ]
     },
@@ -75,7 +75,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/summarizer/start-llm.sh start > /dev/null 2>&1; node ~/.claude/summarizer/summarize.mjs restore",
+          "command": "bash ~/.claude/the-secretary/start-llm.sh start > /dev/null 2>&1; node ~/.claude/the-secretary/summarize.mjs restore",
           "timeout": 120
         }
       ]

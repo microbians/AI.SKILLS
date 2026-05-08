@@ -28,22 +28,25 @@ import { join, basename } from 'path';
 import { homedir, tmpdir } from 'os';
 import { createHash } from 'crypto';
 import { createRequire } from 'module';
-import { execSync } from 'child_process';
+import { execSync, execFile } from 'child_process';
 import http from 'http';
 
 // ═══════════════════ CONFIG ═══════════════════
 
-const SUMMARIZER_DIR = join(homedir(), '.claude', 'summarizer');
-const CONFIG_PATH = join(SUMMARIZER_DIR, 'config.json');
+const SECRETARY_DIR = join(homedir(), '.claude', 'the-secretary');
+const CONFIG_PATH = join(SECRETARY_DIR, 'config.json');
 
 function loadConfig() {
   const defaults = {
+    provider: 'claude_cli',
+    claude_bin: '/opt/homebrew/bin/claude',
+    claude_model: 'claude-haiku-4-5',
     llm_url: 'http://localhost:8922/v1/chat/completions',
     model: 'qwen2.5-3b-instruct-q4_k_m.gguf',
     summarize_every_n: 15,
     min_new_chars: 2000,
     max_summary_tokens: 1500,
-    db_path: join(SUMMARIZER_DIR, 'summaries.db'),
+    db_path: join(SECRETARY_DIR, 'summaries.db'),
   };
   try {
     const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
@@ -59,7 +62,7 @@ const config = loadConfig();
 
 // ═══════════════════ CACHE (per-project pre-generated summaries) ═══════════════════
 
-const CACHE_DIR = join(SUMMARIZER_DIR, 'cache');
+const CACHE_DIR = join(SECRETARY_DIR, 'cache');
 const CACHE_MAX_BULLETS_PER_SESSION = 20;
 const CACHE_MAX_CHARS_PER_SESSION = 4000;
 const CACHE_SESSIONS_KEPT = 2;
@@ -189,8 +192,8 @@ try {
     Database = require('better-sqlite3');
   } catch {
     const globalPaths = [
-      join(homedir(), '.claude', 'summarizer', 'node_modules', 'better-sqlite3'),
-      join(SUMMARIZER_DIR, 'node_modules', 'better-sqlite3'),
+      join(homedir(), '.claude', 'the-secretary', 'node_modules', 'better-sqlite3'),
+      join(SECRETARY_DIR, 'node_modules', 'better-sqlite3'),
     ];
     for (const p of globalPaths) {
       try { Database = require(p); break; } catch { /* continue */ }
@@ -231,6 +234,9 @@ function openDb() {
 // ═══════════════════ LLM ═══════════════════
 
 function callLLM(prompt, maxTokens = 1500) {
+  if (config.provider === 'claude_cli') {
+    return callClaudeCLI(prompt, maxTokens);
+  }
   return new Promise((resolve, reject) => {
     const url = new URL(config.llm_url);
     const body = JSON.stringify({
@@ -270,7 +276,100 @@ function callLLM(prompt, maxTokens = 1500) {
 
 let detectedModel = null;
 
+// ── Claude CLI degradation tracking ─────────────────────────────────
+// If the CLI fails N times in a row, mark the provider as degraded for
+// DEGRADE_MS so we stop retrying on every tool call. State is persisted
+// to a tmp file so it survives across the short-lived hook invocations.
+const CLAUDE_DEGRADE_FILE = join(tmpdir(), 'secretary-claude-cli-degraded.json');
+const CLAUDE_FAIL_THRESHOLD = 2;
+const CLAUDE_DEGRADE_MS = 10 * 60_000; // 10 minutes
+
+function readClaudeState() {
+  try {
+    if (!existsSync(CLAUDE_DEGRADE_FILE)) return { fails: 0, degradedUntil: 0 };
+    const raw = readFileSync(CLAUDE_DEGRADE_FILE, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return { fails: parsed.fails | 0, degradedUntil: parsed.degradedUntil | 0 };
+  } catch { return { fails: 0, degradedUntil: 0 }; }
+}
+
+function writeClaudeState(state) {
+  try { writeFileSync(CLAUDE_DEGRADE_FILE, JSON.stringify(state), 'utf-8'); } catch { /* ignore */ }
+}
+
+function isClaudeDegraded() {
+  const s = readClaudeState();
+  return s.degradedUntil > Date.now();
+}
+
+function recordClaudeFail() {
+  const s = readClaudeState();
+  s.fails += 1;
+  if (s.fails >= CLAUDE_FAIL_THRESHOLD) {
+    s.degradedUntil = Date.now() + CLAUDE_DEGRADE_MS;
+  }
+  writeClaudeState(s);
+}
+
+function recordClaudeSuccess() {
+  writeClaudeState({ fails: 0, degradedUntil: 0 });
+}
+
+function callClaudeCLI(prompt, maxTokens = 1500) {
+  return new Promise((resolve, reject) => {
+    if (isClaudeDegraded()) {
+      return reject(new Error('claude CLI provider is degraded (cooling down after repeated failures)'));
+    }
+    const bin = config.claude_bin;
+    const model = config.claude_model;
+    const args = ['-p', '--model', model, '--output-format', 'json'];
+    const child = execFile(bin, args, {
+      timeout: 45000,
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env },
+    }, (err, stdout, stderr) => {
+      if (err) {
+        recordClaudeFail();
+        return reject(new Error(`claude CLI failed: ${err.message} ${stderr || ''}`));
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch (e) {
+        recordClaudeFail();
+        return reject(new Error(`claude CLI parse error: ${e.message}`));
+      }
+      // Strict success validation: any deviation = failure (no silent passes).
+      if (parsed.is_error) {
+        recordClaudeFail();
+        return reject(new Error(`claude CLI api error: ${parsed.api_error_status || 'unknown'}`));
+      }
+      if (parsed.subtype && parsed.subtype !== 'success') {
+        recordClaudeFail();
+        return reject(new Error(`claude CLI non-success subtype: ${parsed.subtype}`));
+      }
+      if (Array.isArray(parsed.errors) && parsed.errors.length > 0) {
+        recordClaudeFail();
+        return reject(new Error(`claude CLI returned errors: ${JSON.stringify(parsed.errors).slice(0, 200)}`));
+      }
+      const result = typeof parsed.result === 'string' ? parsed.result.trim() : '';
+      if (!result) {
+        recordClaudeFail();
+        return reject(new Error('claude CLI returned empty result'));
+      }
+      recordClaudeSuccess();
+      resolve(result);
+    });
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
+}
+
 function isLLMAvailable() {
+  if (config.provider === 'claude_cli') {
+    if (isClaudeDegraded()) return Promise.resolve(false);
+    return Promise.resolve(existsSync(config.claude_bin));
+  }
   return new Promise((resolve) => {
     const url = new URL(config.llm_url);
     const req = http.request({
@@ -301,8 +400,12 @@ function isLLMAvailable() {
 }
 
 async function ensureLLMRunning() {
+  if (config.provider === 'claude_cli') {
+    if (isClaudeDegraded()) return false;
+    return existsSync(config.claude_bin);
+  }
   if (await isLLMAvailable()) return true;
-  const startScript = join(SUMMARIZER_DIR, 'start-llm.sh');
+  const startScript = join(SECRETARY_DIR, 'start-llm.sh');
   if (!existsSync(startScript)) return false;
   try {
     execSync(`bash "${startScript}" start`, { timeout: 30000, stdio: 'ignore' });
@@ -352,6 +455,39 @@ function registerBgWorker(sessionId, pid) {
 
 function clearBgWorker(sessionId) {
   try { unlinkSync(bgLockPath(sessionId)); } catch { /* ignore */ }
+}
+
+// Per-project lock: ensures at most ONE background worker per cwd, even if
+// multiple Claude sessions are open in the same project. Prevents the
+// "tormenta de procesos" when Claude CLI is the provider and several sessions
+// fire summaries / deletes / regenerates at the same time.
+function bgProjectLockPath(cwd) {
+  const key = createHash('sha1').update(String(cwd || 'default')).digest('hex').slice(0, 16);
+  return join(tmpdir(), `secretary-bg-project-${key}.lock`);
+}
+
+function canSpawnBgWorkerForProject(cwd) {
+  const lockFile = bgProjectLockPath(cwd);
+  if (!existsSync(lockFile)) return true;
+  try {
+    const raw = readFileSync(lockFile, 'utf-8').trim();
+    const [pidStr, tsStr] = raw.split('|');
+    const pid = parseInt(pidStr, 10);
+    const ts = parseInt(tsStr, 10) || 0;
+    if (pid > 0) {
+      try { process.kill(pid, 0); return false; } catch { /* dead */ }
+    }
+    if (Date.now() - ts < BG_DEBOUNCE_MS) return false;
+  } catch { /* malformed, fall through */ }
+  return true;
+}
+
+function registerBgWorkerForProject(cwd, pid) {
+  try { writeFileSync(bgProjectLockPath(cwd), `${pid}|${Date.now()}`, 'utf-8'); } catch { /* ignore */ }
+}
+
+function clearBgWorkerForProject(cwd) {
+  try { unlinkSync(bgProjectLockPath(cwd)); } catch { /* ignore */ }
 }
 
 // ═══════════════════ NOTIFICATIONS ═══════════════════
@@ -700,8 +836,14 @@ async function processSecretaryOrders(messages, db, cwd) {
     }
   }
 
-  // Launch LLM-dependent deletions in background (don't block the hook)
+  // Launch LLM-dependent deletions in background (don't block the hook).
+  // Per-project lock prevents pile-up when multiple sessions of the same
+  // project receive deletion orders at once.
   if (bgDeletions.length > 0) {
+    if (!canSpawnBgWorkerForProject(cwd)) {
+      process.stderr.write(`[secretary] Skipping bg deletions (project worker busy/debounced)\n`);
+      return;
+    }
     const { spawn } = await import('child_process');
     const child = spawn('node', [new URL(import.meta.url).pathname,
       '_bg_delete', cwd || '', JSON.stringify(bgDeletions)
@@ -710,6 +852,7 @@ async function processSecretaryOrders(messages, db, cwd) {
       stdio: 'ignore',
     });
     child.unref();
+    registerBgWorkerForProject(cwd, child.pid);
     process.stderr.write(`[secretary] Deletions launched in background (${bgDeletions.length} action(s))\n`);
   }
 }
@@ -946,7 +1089,9 @@ async function incremental(hookInput) {
 
     // Skip if a previous worker is still running or ran very recently.
     // Avoids a queue of heavy LLM jobs piling up on slower machines.
-    if (!canSpawnBgWorker(session_id)) {
+    // Also respect the per-project lock so multiple sessions of the same
+    // project don't fire workers in parallel.
+    if (!canSpawnBgWorker(session_id) || !canSpawnBgWorkerForProject(cwd)) {
       process.stderr.write(`[secretary] Skipping bg summary (worker busy/debounced)\n`);
       try { unlinkSync(tmpFile); } catch {}
       return;
@@ -962,6 +1107,7 @@ async function incremental(hookInput) {
     });
     child.unref();
     registerBgWorker(session_id, child.pid);
+    registerBgWorkerForProject(cwd, child.pid);
     process.stderr.write(`[secretary] Summarization launched in background (counter=${counter})\n`);
 
   } finally {
@@ -1091,7 +1237,7 @@ ${joined}`;
  * Background summarization worker — called as a forked child process.
  * Args: _bg_summarize <session_id> <cwd> <message_count> <tmpFile>
  */
-async function bgSummarize(sessionId, cwd, messageCount, tmpFile, { notify: shouldNotify = false } = {}) {
+async function bgSummarize(sessionId, cwd, messageCount, tmpFile, { notify: shouldNotify = false, isHandoff = false } = {}) {
   let text;
   try {
     text = readFileSync(tmpFile, 'utf-8');
@@ -1106,7 +1252,13 @@ async function bgSummarize(sessionId, cwd, messageCount, tmpFile, { notify: shou
     process.exit(1);
   }
 
-  const prompt = `Summarize this coding conversation segment. Extract:
+  // Two prompt flavours:
+  //   - Incremental (every N tool calls): bullet-list of decisions/changes/
+  //     problems/state. Useful for in-session recall.
+  //   - Handoff (Stop hook — session is closing): a denser brief written so
+  //     the next session can resume WITHOUT the user re-explaining anything.
+  //     Mirrors the manual context the user used to inject by hand.
+  const incrementalPrompt = `Summarize this coding conversation segment. Extract:
 
 - DECISIONS: What was decided and why (max 3)
 - CHANGES: Files modified and how (max 5)
@@ -1119,7 +1271,43 @@ Keep each item to 1-2 sentences.
 CONVERSATION:
 ${text}`;
 
-  const summary = await callLLM(prompt);
+  const handoffPrompt = `You are writing a session handoff so the NEXT session can resume this work WITHOUT the user explaining anything again. The reader will be a fresh assistant with no memory of what just happened.
+
+Output Markdown with these sections (skip a section only if truly nothing applies):
+
+## What was accomplished
+2-5 bullets. Concrete: feature names, file paths, what now works that didn't before.
+
+## Current state
+Where things stand at session close. What's running, what's broken, what's untested. Mention the active branch, server URL, or any process worth knowing.
+
+## Next step
+The single most likely first action when the user returns. Be specific (a file to open, a function to write, a bug to verify).
+
+## Open questions / decisions pending
+Things the user has not decided yet that would block progress.
+
+## Don't break / hard rules
+Constraints repeated by the user this session: backups required, naming conventions, "never revert without permission", language rules, etc. Anything that, if forgotten, would frustrate the user.
+
+## Backups
+Paths of any backup folders created this session.
+
+## Key files touched
+File paths + one-line description of what changed in each.
+
+Rules:
+- Be concrete, name things. No vague language ("we worked on improvements").
+- Quote exact file paths, function names, command names where relevant.
+- Don't pad. Skip sections that have nothing real to say.
+- Maximum 600 words total.
+
+CONVERSATION:
+${text}`;
+
+  const prompt = isHandoff ? handoffPrompt : incrementalPrompt;
+  // Handoffs benefit from a higher token budget so all sections fit.
+  const summary = await callLLM(prompt, isHandoff ? 1500 : undefined);
   if (!summary || summary.length < 50) {
     process.exit(0);
   }
@@ -1131,8 +1319,11 @@ ${text}`;
     const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM summaries WHERE session_id = ?').get(sessionId);
     const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
 
+    // Tag handoff entries with a [HANDOFF] prefix so the SessionStart hook
+    // can surface them prominently. Plain summaries stay untagged.
+    const summaryRow = isHandoff ? `[HANDOFF] ${summary}` : summary;
     db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)').run(
-      sessionId, cwd, chunkIndex, summary, parseInt(messageCount, 10)
+      sessionId, cwd, chunkIndex, summaryRow, parseInt(messageCount, 10)
     );
 
     try { await updateBulletsCache(db, cwd, sessionId, summary); } catch { /* cache failure must not break summarization */ }
@@ -1229,7 +1420,7 @@ async function restore(hookInput) {
 
   const db = openDb();
   if (!db) {
-    process.stdout.write(`⚠️ **The Secretary: No se pudo abrir la base de datos.** Ejecuta manualmente:\n\`\`\`bash\nbash ~/.claude/summarizer/start-llm.sh start\necho '{"cwd":"${cwd || ''}"}' | node ~/.claude/summarizer/summarize.mjs recall\n\`\`\`\n`);
+    process.stdout.write(`⚠️ **The Secretary: No se pudo abrir la base de datos.** Ejecuta manualmente:\n\`\`\`bash\nbash ~/.claude/the-secretary/start-llm.sh start\necho '{"cwd":"${cwd || ''}"}' | node ~/.claude/the-secretary/summarize.mjs recall\n\`\`\`\n`);
     return;
   }
 
@@ -1357,20 +1548,46 @@ async function restore(hookInput) {
         finalSummary = finalSummary.slice(-3950) + '\n\n[...older chunks truncated]';
       }
 
-      if (cwd && lastSessionId) {
+      if (cwd && lastSessionId && canSpawnBgWorkerForProject(cwd)) {
         try {
           const { spawn } = await import('child_process');
           const child = spawn('node', [
             new URL(import.meta.url).pathname, '_bg_regenerate', cwd, lastSessionId,
           ], { detached: true, stdio: 'ignore' });
           child.unref();
+          registerBgWorkerForProject(cwd, child.pid);
           process.stderr.write('[secretary] Bullets bootstrap spawned in background\n');
         } catch { /* best effort */ }
       }
     }
 
+    // 2a. Handoff brief — written by the previous session's Stop hook with
+    //     the explicit goal of letting the next session resume without the
+    //     user re-explaining anything. Surface this BEFORE the older bullet
+    //     summaries so it dominates the new session's initial context.
+    let handoffBrief = '';
+    if (cwd) {
+      const handoffRow = db.prepare(`
+        SELECT summary, created_at, session_id FROM summaries
+        WHERE project_dir = ?
+          AND session_id NOT IN ('manual', 'notes', 'reminders')
+          AND summary LIKE '[HANDOFF]%'
+        ORDER BY created_at DESC
+        LIMIT 1
+      `).get(cwd);
+      if (handoffRow) {
+        const body = (handoffRow.summary || '').replace(/^\[HANDOFF\]\s*/i, '').trim();
+        const when = handoffRow.created_at
+          ? new Date(handoffRow.created_at + 'Z').toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+          : '';
+        handoffBrief = `## 📋 Session handoff — resume here\n\n_Written at the end of the previous session (${when}). Read this first; the older bullet summaries below are background._\n\n${body}\n`;
+        output += handoffBrief + '\n';
+      }
+    }
+
     const cacheLabel = cacheHit ? ` _(bullets cache)_` : '';
-    output += `## Context from Previous Conversation (auto-injected by The Secretary)${cacheLabel}\n\n${finalSummary}\n`;
+    const ctxLabel = handoffBrief ? '## Background — older session bullets' : '## Context from Previous Conversation (auto-injected by The Secretary)';
+    output += `${ctxLabel}${cacheLabel}\n\n${finalSummary}\n`;
 
     // 3. User Memories
     if (manualEntries.length > 0) {
@@ -1404,7 +1621,7 @@ async function restore(hookInput) {
     const totalItems = summaries.length + manualEntries.length + noteEntries.length + overdueReminders.length + upcomingReminders.length;
 
     if (totalItems === 0) {
-      process.stdout.write(`⚠️ **The Secretary: No hay contexto previo para este proyecto.** Si crees que debería haberlo, ejecuta:\n\`\`\`bash\nbash ~/.claude/summarizer/start-llm.sh start\necho '{"cwd":"${cwd || ''}"}' | node ~/.claude/summarizer/summarize.mjs recall\n\`\`\`\n`);
+      process.stdout.write(`⚠️ **The Secretary: No hay contexto previo para este proyecto.** Si crees que debería haberlo, ejecuta:\n\`\`\`bash\nbash ~/.claude/the-secretary/start-llm.sh start\necho '{"cwd":"${cwd || ''}"}' | node ~/.claude/the-secretary/summarize.mjs recall\n\`\`\`\n`);
       return;
     }
 
@@ -1434,7 +1651,7 @@ async function restore(hookInput) {
           max_at: maxRow?.max_at || new Date().toISOString().replace('T',' ').slice(0,19),
           restored_at: new Date().toISOString()
         };
-        const wmDir = join(homedir(), '.claude', 'summarizer', 'watermarks');
+        const wmDir = join(homedir(), '.claude', 'the-secretary', 'watermarks');
         mkdirSync(wmDir, { recursive: true });
         writeFileSync(join(wmDir, `${session_id}.json`), JSON.stringify(watermark));
       }
@@ -1481,7 +1698,7 @@ async function force(hookInput, { stopLlm = false, notify: shouldNotify = false 
 
     // Respect the same lock/debounce used by incremental(), unless --stop-llm
     // was passed (Stop hook — final summary at session end should always run).
-    if (!stopLlm && !canSpawnBgWorker(session_id)) {
+    if (!stopLlm && (!canSpawnBgWorker(session_id) || !canSpawnBgWorkerForProject(cwd))) {
       process.stderr.write('[secretary] Skipping forced summary (worker busy/debounced)\n');
       try { unlinkSync(tmpFile); } catch {}
       return;
@@ -1498,6 +1715,7 @@ async function force(hookInput, { stopLlm = false, notify: shouldNotify = false 
     });
     child.unref();
     registerBgWorker(session_id, child.pid);
+    registerBgWorkerForProject(cwd, child.pid);
     process.stderr.write(`☑ Session memory: summarization launched in background\n`);
   } finally {
     db.close();
@@ -1883,7 +2101,7 @@ async function checkFreshContextWatermark(hookInput) {
   const { session_id, cwd } = hookInput;
   if (!session_id || !cwd) return;
 
-  const wmFile = join(homedir(), '.claude', 'summarizer', 'watermarks', `${session_id}.json`);
+  const wmFile = join(homedir(), '.claude', 'the-secretary', 'watermarks', `${session_id}.json`);
   if (!existsSync(wmFile)) return;
 
   let wm;
@@ -1938,16 +2156,22 @@ async function main() {
   if (command === '_bg_summarize') {
     const [, , , sessionId, cwd, messageCount, tmpFile, ...flags] = process.argv;
     try {
-      await bgSummarize(sessionId, cwd, messageCount, tmpFile, { notify: flags.includes('--notify') });
+      // Stop hook implies "session is closing" → write a richer handoff
+      // brief instead of the regular incremental summary.
+      await bgSummarize(sessionId, cwd, messageCount, tmpFile, {
+        notify: flags.includes('--notify'),
+        isHandoff: flags.includes('--stop-llm'),
+      });
     } catch (err) {
       process.stderr.write(`[secretary-bg] ${err.message}\n`);
     }
-    // Release lock so the next incremental() can spawn
+    // Release locks so the next incremental() can spawn
     clearBgWorker(sessionId);
+    clearBgWorkerForProject(cwd);
     // If called with --stop-llm, shut down the LLM server after summarizing
     if (flags.includes('--stop-llm')) {
       try {
-        execSync('bash ~/.claude/summarizer/start-llm.sh stop > /dev/null 2>&1');
+        execSync('bash ~/.claude/the-secretary/start-llm.sh stop > /dev/null 2>&1');
       } catch { /* ignore */ }
     }
     process.exit(0);
@@ -1970,6 +2194,7 @@ async function main() {
     } catch (err) {
       process.stderr.write(`[secretary-bg-regen] ${err.message}\n`);
     }
+    clearBgWorkerForProject(cwd);
     process.exit(0);
   }
 
@@ -2001,6 +2226,7 @@ async function main() {
     } catch (err) {
       process.stderr.write(`[secretary-bg] delete error: ${err.message}\n`);
     }
+    clearBgWorkerForProject(cwd);
     process.exit(0);
   }
 

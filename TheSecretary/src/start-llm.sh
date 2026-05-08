@@ -4,13 +4,27 @@
 # Usage: bash start-llm.sh [start|stop|status]
 
 PORT=8922
-LOG="/tmp/llama-summarizer.log"
-PID_FILE="/tmp/llama-summarizer.pid"
+LOG="/tmp/the-secretary-llm.log"
+PID_FILE="/tmp/the-secretary-llm.pid"
 
-# Llama-3.2-3B-Instruct-4bit: best speed/quality/RAM tradeoff across
-# Apple Silicon in our benchmarks. Override with SECRETARY_MLX_MODEL if needed.
-MLX_MODEL="${SECRETARY_MLX_MODEL:-mlx-community/Llama-3.2-3B-Instruct-4bit}"
-GGUF_MODEL="$HOME/.claude/summarizer/models/qwen2.5-3b-instruct-q4_k_m.gguf"
+# Auto-select MLX model by unified memory size (Apple Silicon).
+# Override with env var SECRETARY_MLX_MODEL=<repo> to force a specific model.
+#   ≥32 GB → Qwen2.5-7B-Instruct-4bit (~4.5 GB RAM, ~50 tok/s, lowest hallucination)
+#   16–31 GB → Qwen2.5-3B-Instruct-4bit (~2 GB RAM, ~80 tok/s, balanced)
+#   <16 GB / Linux / Intel → Qwen2.5-1.5B-Instruct-4bit (~1 GB RAM, fastest)
+pick_mlx_model() {
+  local ram_gb=0
+  if command -v sysctl &>/dev/null; then
+    local bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+    ram_gb=$(( bytes / 1024 / 1024 / 1024 ))
+  fi
+  if   [ "$ram_gb" -ge 32 ]; then echo "mlx-community/Qwen2.5-7B-Instruct-4bit"
+  elif [ "$ram_gb" -ge 16 ]; then echo "mlx-community/Qwen2.5-3B-Instruct-4bit"
+  else                            echo "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+  fi
+}
+MLX_MODEL="${SECRETARY_MLX_MODEL:-$(pick_mlx_model)}"
+GGUF_MODEL="$HOME/.claude/the-secretary/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 
 # Detect backend: prefer MLX on Apple Silicon, fallback to llama.cpp
 detect_backend() {
@@ -60,16 +74,22 @@ case "${1:-start}" in
 
     echo $! > "$PID_FILE"
 
-    # Wait for ready
-    for i in {1..30}; do
+    # Wait for ready. First-run downloads the MLX model (1–5 GB) so allow up
+    # to 10 minutes; subsequent starts are near-instant.
+    for i in $(seq 1 600); do
       sleep 1
       if curl -s http://localhost:$PORT/v1/models > /dev/null 2>&1; then
-        echo "LLM server running on port $PORT (PID $(cat "$PID_FILE"), backend: $BACKEND)"
+        echo "LLM server running on port $PORT (PID $(cat "$PID_FILE"), backend: $BACKEND, model: $MLX_MODEL)"
         exit 0
+      fi
+      # Bail out early if the launched process died.
+      if [ -f "$PID_FILE" ] && ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo "ERROR: LLM server process exited. Check $LOG"
+        exit 1
       fi
     done
 
-    echo "ERROR: LLM server failed to start. Check $LOG"
+    echo "ERROR: LLM server did not become ready within 600s. Check $LOG"
     exit 1
     ;;
 

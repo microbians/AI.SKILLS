@@ -7,7 +7,9 @@
 
 set -e
 
-DEST="$HOME/.claude/summarizer"
+DEST="$HOME/.claude/the-secretary"
+LEGACY_DEST="$HOME/.claude/summarizer"
+SKILL_DEST="$HOME/.claude/skills/the-secretary"
 SETTINGS="$HOME/.claude/settings.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MODEL_URL="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
@@ -25,18 +27,20 @@ error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
 # Match patterns for identifying our hooks in settings.json
 HOOK_MATCH="summarize\|start-llm"
-# Match patterns for identifying our sections in CLAUDE.md (old + new names)
-SNIPPET_MATCH="ClaudeSumarizer\|The Secretary"
+# Match patterns for identifying our sections in CLAUDE.md (legacy + current names)
+SNIPPET_MATCH="ClaudeSumarizer\|The Secretary\|Memory / notes / reminders"
 
 # ─── UNINSTALL ───────────────────────────────────────────────────
 
 if [ "$1" = "--uninstall" ]; then
   echo "Uninstalling The Secretary..."
 
-  # Stop LLM server
-  if [ -f "$DEST/start-llm.sh" ]; then
-    bash "$DEST/start-llm.sh" stop 2>/dev/null || true
-  fi
+  # Stop LLM server (try both current and legacy locations)
+  for d in "$DEST" "$LEGACY_DEST"; do
+    if [ -f "$d/start-llm.sh" ]; then
+      bash "$d/start-llm.sh" stop 2>/dev/null || true
+    fi
+  done
 
   # Remove hooks from settings.json
   if [ -f "$SETTINGS" ] && command -v node &>/dev/null; then
@@ -60,25 +64,35 @@ if [ "$1" = "--uninstall" ]; then
     " 2>/dev/null && info "Hooks removed from settings.json" || warn "Could not clean settings.json — remove hooks manually"
   fi
 
-  # Remove CLAUDE.md snippet (handles both old and new section names)
+  # Remove CLAUDE.md snippet (handles legacy + current section names)
   for f in "$HOME/.claude/CLAUDE.md" ".claude/CLAUDE.md" "CLAUDE.md"; do
-    if [ -f "$f" ] && grep -qE "ClaudeSumarizer|The Secretary" "$f" 2>/dev/null; then
+    if [ -f "$f" ] && grep -qE "ClaudeSumarizer|The Secretary|Memory / notes / reminders" "$f" 2>/dev/null; then
       node -e "
         const fs = require('fs');
         let md = fs.readFileSync('$f', 'utf-8');
-        // Remove old ClaudeSumarizer section
+        // Remove legacy ClaudeSumarizer section
         md = md.replace(/\n*## ClaudeSumarizer[\s\S]*?(?=\n## [^C]|\n## $|$)/, '');
-        // Remove new The Secretary section
+        // Remove legacy 'The Secretary' section
         md = md.replace(/\n*## The Secretary[\s\S]*?(?=\n## [^T]|\n## $|$)/, '');
+        // Remove current 'Memory / notes / reminders / recall' section
+        md = md.replace(/\n*## Memory \/ notes \/ reminders[\s\S]*?(?=\n## [^M]|\n## $|$)/, '');
         md = md.trimEnd();
         if (md.length === 0) { fs.unlinkSync('$f'); } else { fs.writeFileSync('$f', md + '\n'); }
       " 2>/dev/null && info "Removed section from $f" || warn "Could not clean $f"
     fi
   done
 
-  # Remove directory
+  # Remove skill
+  rm -rf "$SKILL_DEST"
+  info "Removed $SKILL_DEST"
+
+  # Remove directories (current + legacy)
   rm -rf "$DEST"
   info "Removed $DEST"
+  if [ -d "$LEGACY_DEST" ]; then
+    rm -rf "$LEGACY_DEST"
+    info "Removed legacy $LEGACY_DEST"
+  fi
   info "The Secretary uninstalled successfully."
   exit 0
 fi
@@ -117,6 +131,20 @@ if [ "$HAS_MLX" = false ] && [ "$HAS_LLAMA" = false ]; then
   echo ""
 fi
 
+# 0. Migrate legacy install (~/.claude/summarizer → ~/.claude/the-secretary)
+if [ -d "$LEGACY_DEST" ] && [ ! -d "$DEST" ]; then
+  warn "Legacy install detected at $LEGACY_DEST"
+  info "Migrating to $DEST (preserves DB, models, watermarks, cache)..."
+  # Stop legacy LLM server before moving
+  if [ -f "$LEGACY_DEST/start-llm.sh" ]; then
+    bash "$LEGACY_DEST/start-llm.sh" stop 2>/dev/null || true
+  fi
+  mv "$LEGACY_DEST" "$DEST"
+  info "Migrated legacy data to $DEST"
+elif [ -d "$LEGACY_DEST" ] && [ -d "$DEST" ]; then
+  warn "Both $LEGACY_DEST and $DEST exist. Leaving legacy untouched — please remove manually if no longer needed."
+fi
+
 # 1. Create directory structure
 info "Creating $DEST"
 mkdir -p "$DEST/models"
@@ -128,6 +156,12 @@ cp "$SCRIPT_DIR/src/start-llm.sh" "$DEST/"
 cp "$SCRIPT_DIR/src/config.json" "$DEST/"
 cp "$SCRIPT_DIR/src/package.json" "$DEST/"
 chmod +x "$DEST/start-llm.sh"
+
+# 2b. Install skill
+info "Installing the-secretary skill..."
+mkdir -p "$SKILL_DEST"
+cp "$SCRIPT_DIR/skill/SKILL.md" "$SKILL_DEST/SKILL.md"
+info "Skill installed at $SKILL_DEST"
 
 # 3. Install npm dependencies
 info "Installing dependencies..."
@@ -196,8 +230,8 @@ node -e "
   if (!settings.permissions.allow) settings.permissions.allow = [];
 
   const perms = [
-    'Bash(node ~/.claude/summarizer/summarize.mjs*)',
-    'Bash(bash ~/.claude/summarizer/start-llm.sh*)'
+    'Bash(node ~/.claude/the-secretary/summarize.mjs*)',
+    'Bash(bash ~/.claude/the-secretary/start-llm.sh*)'
   ];
 
   for (const perm of perms) {
@@ -225,16 +259,18 @@ inject_snippet() {
     return
   fi
 
-  # Remove any existing section (old ClaudeSumarizer or new The Secretary)
-  if grep -qE "ClaudeSumarizer|The Secretary" "$target" 2>/dev/null; then
+  # Remove any existing section (legacy ClaudeSumarizer / The Secretary, or current Memory/notes/reminders)
+  if grep -qE "ClaudeSumarizer|The Secretary|Memory / notes / reminders" "$target" 2>/dev/null; then
     node -e "
       const fs = require('fs');
       let md = fs.readFileSync('$target', 'utf-8');
       const snippet = fs.readFileSync('$SNIPPET', 'utf-8');
-      // Remove old section
+      // Remove legacy ClaudeSumarizer section
       md = md.replace(/## ClaudeSumarizer[\\s\\S]*?(?=\\n## [^C]|\\n## \$|\$)/, '');
-      // Remove new section (re-install case)
+      // Remove legacy 'The Secretary' section
       md = md.replace(/## The Secretary[\\s\\S]*?(?=\\n## [^T]|\\n## \$|\$)/, '');
+      // Remove current 'Memory / notes / reminders / recall' section (re-install case)
+      md = md.replace(/## Memory \\/ notes \\/ reminders[\\s\\S]*?(?=\\n## [^M]|\\n## \$|\$)/, '');
       md = md.trimEnd() + '\\n\\n' + snippet.trim() + '\\n';
       fs.writeFileSync('$target', md);
     "
