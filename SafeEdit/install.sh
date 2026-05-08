@@ -17,7 +17,7 @@ warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
 # Match patterns for identifying our hook + CLAUDE.md section
-HOOK_MATCH="safe-edit/block-inplace-edit\|safe-edit/safe-edit"
+HOOK_MATCH="safe-edit"
 SNIPPET_MATCH="Mass file edits (sed -i replacement)"
 
 # ─── UNINSTALL ───────────────────────────────────────────────────
