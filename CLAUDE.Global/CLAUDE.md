@@ -48,3 +48,9 @@ For any ASCII box-drawing content (diagrams, tables, boxes using `│ ┌ ┐ �
 ## Memory / notes / reminders / recall
 
 For all context persistence (user memories, notes, reminders, recall questions, conversation summaries), STRICTLY follow the `the-secretary` skill rules. Never use Claude's built-in memory system.
+
+---
+
+## Mass file edits (sed -i replacement)
+
+For find-and-replace across multiple files, STRICTLY follow the `safe-edit` skill rules. Never use `sed -i`, `perl -i`, `awk -i inplace`, or `gawk -i inplace` — they are blocked by a PreToolUse hook. Read-only sed/awk/perl (`cat | sed`, `awk '{print}'`, `sed -n`) still works.

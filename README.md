@@ -12,17 +12,20 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 │  TheSecretary/               Local LLM context summarizer       │
 │                              + recall-on-demand ("remember?")   │
 │                                                                 │
+│  SafeEdit/                   sed -i replacement: diff preview,  │
+│                              backups + auto-prune (Node CLI)    │
+│                                                                 │
 │  skills/                                                        │
 │    - ascii-art-diagrams/     Unicode diagram formatting rules   │
 │    - defensive-development/  Verify-first coding practices      │
 │    - project-structure/      Auto-gen directory structure docs  │
 │    - project-api/            Auto-gen API reference docs        │
 │                                                                 │
-│  plugins/                                                       │
+│  others/                                                        │
 │    - microbrain/             Persistent SQLite memory system    │
 │    - block-destructive/      Block destructive Bash commands    │
 │                                                                 │
-│  tools/                                                         │
+│  utilities/                                                     │
 │    - microlocalhostproxy/    Zero-config subdomain + auto-start │
 │    - claude-launcher/        VS Code extension (Activity Bar +  │
 │                              Status Bar launcher for Claude)    │
@@ -39,15 +42,16 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 ## Table of Contents
 
 - [TheSecretary](#thesecretary) ⭐
+- [SafeEdit](#safeedit)
 - [Skills](#skills)
   - [Defensive Development](#defensive-development)
   - [ASCII Art Diagrams](#ascii-art-diagrams)
   - [Project Structure](#project-structure)
   - [Project API](#project-api)
-- [Plugins](#plugins)
+- [Others](#others)
   - [Microbrain](#microbrain)
   - [Block Destructive](#block-destructive)
-- [Tools](#tools)
+- [Utilities](#utilities)
   - [Microlocalhostproxy](#microlocalhostproxy)
   - [Claude Launcher](#claude-launcher)
 - [OpenCode MLX](#opencode-mlx)
@@ -104,6 +108,26 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 **Install path:** `~/.claude/the-secretary/` (auto-migrates from legacy `~/.claude/summarizer/` on re-install).
 
 **Requirements:** macOS/Linux, Node.js 18+, llama-server (llama.cpp) or MLX in PATH, ~2GB disk for the GGUF model
+
+---
+
+## SafeEdit
+
+> [`SafeEdit/`](SafeEdit/)
+
+Safer replacement for `sed -i`, `perl -i`, and `awk -i inplace` in Claude Code sessions. Ships as a Node CLI plus a `PreToolUse` hook that **blocks the dangerous commands** and points the agent at the safer one.
+
+- **Dry-run by default** — shows a unified diff; `--apply` is opt-in
+- **Backups to `.safe-edit-backups/<timestamp>/`** with auto-prune (default: keep 7 days, max 20 batches)
+- **Literal match by default**, `--regex` opt-in (with `$1`/`$2`/`$&` backrefs)
+- **Multiple globs in one invocation**
+- **Hook only blocks WRITES** — read-only sed/awk/perl (`cat | sed`, `awk '{print}'`, `sed -n`) still work
+
+**Includes:** `src/safe-edit.mjs`, `src/block-inplace-edit.mjs`, `hooks.json`, `install.sh`, `skill/SKILL.md`, `claude-md-snippet.md`
+
+**Install path:** `~/.claude/safe-edit/` (CLI + hook), `~/.claude/skills/safe-edit/` (behavior rules).
+
+**Requirements:** Node.js 18+, npm.
 
 ---
 
@@ -217,14 +241,14 @@ Self-healing skill that auto-generates and maintains a `.claude/api.md` referenc
 
 ---
 
-## Plugins
+## Others
 
 Full-featured plugins with runtime logic that hook into the agent's lifecycle events.
 
 
 ### Microbrain
 
-> [`plugins/microbrain/`](plugins/microbrain/)
+> [`others/microbrain/`](others/microbrain/)
 
 Persistent SQLite memory system for OpenCode. A single TypeScript file that registers custom tools and lifecycle hooks directly in the agent runtime.
 
@@ -260,7 +284,7 @@ Persistent SQLite memory system for OpenCode. A single TypeScript file that regi
 - Six memory types: `error`, `api`, `decision`, `pattern`, `context`, `preference`
 - Bilingual pattern matching (English + Spanish)
 
-**Includes:** `plugins/microbrain.ts`, `plugins/README.md`, `INSTALL.md`, `package.json.example`
+**Includes:** `others/microbrain/plugins/microbrain.ts`, `others/microbrain/plugins/README.md`, `INSTALL.md`, `package.json.example`
 
 **Requirements:** OpenCode with plugin support, Bun runtime, optionally Node.js >= 18 for LLM extraction
 
@@ -268,7 +292,7 @@ Persistent SQLite memory system for OpenCode. A single TypeScript file that regi
 
 ### Block Destructive
 
-> [`plugins/block-destructive/`](plugins/block-destructive/)
+> [`others/block-destructive/`](others/block-destructive/)
 
 A Claude Code `PreToolUse` hook that blocks destructive Bash commands — `rm -rf`, `git reset --hard`, `DROP TABLE`, `--no-verify`, and more — even in auto / bypass-permissions mode. Includes an `# approved` escape hatch for intentional destructive operations.
 
@@ -306,14 +330,14 @@ A Claude Code `PreToolUse` hook that blocks destructive Bash commands — `rm -r
 
 ---
 
-## Tools
+## Utilities
 
 Standalone utilities for development workflows. Not tied to the agent's skill system.
 
 
 ### Microlocalhostproxy
 
-> [`tools/microlocalhostproxy/`](tools/microlocalhostproxy/)
+> [`utilities/microlocalhostproxy/`](utilities/microlocalhostproxy/)
 
 Zero-config local subdomain routing with auto-start for any project type (PHP, Node, Python, static).
 
@@ -348,7 +372,7 @@ Zero-config local subdomain routing with auto-start for any project type (PHP, N
 
 ### Claude Launcher
 
-> [`tools/claude-launcher/`](tools/claude-launcher/)
+> [`utilities/claude-launcher/`](utilities/claude-launcher/)
 
 VS Code extension that adds one-click launchers for Claude Code in the Activity Bar (left) and the Status Bar (bottom). Opens Claude as an editor tab (not the terminal panel) with an optional `--dangerously-skip-permissions` flag, and keeps a live counter of open sessions.
 
@@ -459,7 +483,7 @@ cp -r skills/defensive-development /path/to/project/.claude/skills/
 
 # Plugins -- copy to .opencode/plugins/
 mkdir -p /path/to/project/.opencode/plugins
-cp plugins/microbrain/plugins/microbrain.ts /path/to/project/.opencode/plugins/
+cp others/microbrain/plugins/microbrain.ts /path/to/project/.opencode/plugins/
 
 # Symlink for Claude Code compatibility
 cd /path/to/project && ln -s .opencode .claude

@@ -6,6 +6,7 @@ Icon?
 
 # Local backups
 TheSecretary/backups/
+.safe-edit-backups/
 
 # Archives (source ZIPs already extracted)
 *.zip

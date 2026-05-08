@@ -1,0 +1,10 @@
+{
+  "name": "safe-edit",
+  "version": "1.0.0",
+  "description": "Safer replacement for sed -i / perl -i / awk -i inplace, with diff preview and batch backups.",
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "glob": "^10.4.5"
+  }
+}

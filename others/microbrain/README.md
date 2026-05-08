@@ -91,7 +91,7 @@ See [INSTALL.md](INSTALL.md) for full installation details and troubleshooting.
 ## Files
 
 ```
-plugins/microbrain/
+others/microbrain/
 ├── README.md               ← This file
 ├── INSTALL.md              ← Full installation guide
 ├── package.json.example    ← Example .opencode/package.json

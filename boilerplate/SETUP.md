@@ -38,7 +38,7 @@ cp -r /path/to/AI.SKILLS/skills/project-structure .opencode/skills/
 cp -r /path/to/AI.SKILLS/skills/project-api .opencode/skills/
 
 # Microbrain plugin -- copy the .ts file and install dependencies
-cp /path/to/AI.SKILLS/plugins/microbrain/plugins/microbrain.ts .opencode/plugins/
+cp /path/to/AI.SKILLS/others/microbrain/plugins/microbrain.ts .opencode/plugins/
 cat > .opencode/package.json << 'EOF'
 {
   "dependencies": {
