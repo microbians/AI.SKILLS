@@ -86,11 +86,28 @@ At the start of every `--apply`, safe-edit prunes `.safe-edit-backups/`:
 
 Both run; whichever fires first wins.
 
-To revert a batch:
+### Reverting a batch
+
+There is **no `undo` subcommand** — reverting is just `cp` from the backup, so you can always inspect first.
 
 ```bash
-cp -r .safe-edit-backups/20260508-143022/. .
+# 1. Find the batch (newest first)
+ls -lt .safe-edit-backups/
+
+# 2. See what it would revert
+diff -u src/foo.ts .safe-edit-backups/20260508-143022/src/foo.ts
+
+# 3a. Revert one file
+cp .safe-edit-backups/20260508-143022/src/foo.ts src/foo.ts
+
+# 3b. Revert the whole batch (note the trailing /. — includes hidden files)
+cp -R .safe-edit-backups/20260508-143022/. .
+
+# 3c. Or just use git, if the tree was clean before the edit
+git checkout -- src/foo.ts
 ```
+
+**Watch out:** if the user edited the same file *after* safe-edit ran, copying the backup back will silently overwrite those later edits. Always `diff` first. And remember pruning runs at the start of every `--apply`, so revert old batches *before* running safe-edit again.
 
 Add `.safe-edit-backups/` to `.gitignore`.
 

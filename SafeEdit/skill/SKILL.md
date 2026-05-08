@@ -43,7 +43,68 @@ node ~/.claude/safe-edit/safe-edit.mjs replace \
 
 1. **Always dry-run first** (omit `--apply`). Read the unified diff. Confirm replacement count looks sane.
 2. **Then apply** (add `--apply`). The script writes files and prints the backup path.
-3. **If you need to revert**, copy the batch back: `cp -r .safe-edit-backups/<timestamp>/. .`
+3. **If you need to revert**, see "Undo / revert a batch" below.
+
+## Undo / revert a batch
+
+Every `--apply` writes a batch dir at `.safe-edit-backups/YYYYMMDD-HHMMSS/` containing the **pre-edit** copies of every file changed, with full relative paths preserved. The summary line printed by safe-edit names the batch (e.g. `backups: .safe-edit-backups/20260508-143022`).
+
+### Step 1 — find the right batch
+
+```bash
+ls -lt .safe-edit-backups/                    # newest first
+ls .safe-edit-backups/20260508-143022/        # see which files were touched
+```
+
+If you're not sure which batch corresponds to which edit, diff the backup against the current file:
+
+```bash
+diff -u .safe-edit-backups/20260508-143022/src/foo.ts src/foo.ts
+```
+
+### Step 2 — preview what the revert will change
+
+**Before pisando nada**, see exactly what going back to the backup would do:
+
+```bash
+# For one file
+diff -u src/foo.ts .safe-edit-backups/20260508-143022/src/foo.ts
+
+# For the whole batch (recursive, only files that differ)
+diff -ruN . .safe-edit-backups/20260508-143022/ \
+  | grep -E '^(diff|---|\+\+\+|@@)'
+```
+
+If the user has made other edits on top of the safe-edit changes, the diff will show those too — flag this to the user before reverting.
+
+### Step 3 — revert
+
+**Option A: revert a single file** (most common, safest):
+
+```bash
+cp .safe-edit-backups/20260508-143022/src/foo.ts src/foo.ts
+```
+
+**Option B: revert the entire batch** (only if every change in that batch was wrong):
+
+```bash
+cp -R .safe-edit-backups/20260508-143022/. .
+```
+
+The trailing `/.` (NOT `/*`) ensures hidden files are included. `cp -R` preserves the directory structure verbatim.
+
+**Option C: use git instead** (preferred when the project is a git repo and was clean before the edit):
+
+```bash
+git diff src/foo.ts                    # see what safe-edit changed
+git checkout -- src/foo.ts             # revert via git
+```
+
+### Things to watch for
+
+- **Other edits on top.** If the user (or another tool) edited the same file after safe-edit, copying the backup will silently lose those edits. Always diff first.
+- **Backup pruning.** Batches older than `--keep-days` (default 7) or beyond `--keep-batches` (default 20) are deleted at the start of every new `--apply`. If you need to revert something old, do it BEFORE running another safe-edit.
+- **No "undo" subcommand.** safe-edit deliberately doesn't ship an `undo` command — copying files back is transparent and gives the user a chance to inspect first.
 
 ## Shell quoting (important)
 
