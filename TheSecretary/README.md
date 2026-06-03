@@ -102,6 +102,16 @@ Stored in the same `summaries` table tagged with a `[HANDOFF]` prefix. On the ne
 
 This is additive — incremental summaries, memories, notes and reminders all keep working as before. The handoff is what the next session reads first; the rest is context.
 
+#### Project-tree restore (matches the whole project, not the exact cwd)
+
+A single project is saved under **many** `project_dir` values — a session indexes by whatever cwd it ran in, so summaries land under the project root *and* every subfolder a session happened to start in (`repo/`, `repo/apps/web/`, `repo/packages/...`). The Secretary keys purely on the cwd path; it has nothing to do with git.
+
+If restore matched `project_dir = cwd` exactly, a session opened in one folder would never see context saved under a sibling or parent path — so it could surface a **stale** handoff while today's real work sat invisible under another prefix. To prevent this, restore resolves the **project root from the DB**: it climbs the cwd's ancestors and keeps the highest one that still has summaries *and* hasn't crossed into a generic container folder (`Code`, `Programacion`, `Documents`, `AI.SKILLS`, home, …; see `GENERIC_CONTAINERS` in `summarize.mjs`). Every restore query then matches that root **and everything nested under it** (`root` OR `root/%`), so it always sees the project's latest activity regardless of which subfolder the session opened in. This tree scope applies to **everything** restore loads — the handoff, the latest-N items, the conversation summaries, and the user memories / notes / reminders — so a memory anchored to a project is visible from any of its subfolders but never leaks to a sibling project. `__global__` items are always included on top of the project tree.
+
+#### Latest-N items (the literal "what just happened" view)
+
+Right after the handoff, restore injects a `🕑 Latest N items in the DB (newest first)` block: the N most recent summaries across the whole project tree, ordered by `created_at DESC`, one compact line each. This is independent of session grouping or the bullet cache, so it can never go stale relative to a handoff written under a sibling path — it's the literal tail of the DB for this project. N defaults to `15` and is configurable via `restore_recent_items`.
+
 ### Fresh-context notice (late summaries after `/clear`)
 
 If you hit `/clear` while the local LLM is still summarizing the previous session's tail, those new summaries land in the DB **after** SessionStart has already injected context — so Claude doesn't see them and the user has to prompt them manually.
@@ -119,9 +129,10 @@ The check is cheap (a single SQLite query per prompt) and fires only when there 
 1. **PostToolUse hook** — On every tool call, scans user messages for secretary orders (remember/forget/note/reminder) via regex. Every N calls (default: 15), summarizes conversation via local LLM.
 2. **UserPromptSubmit hook** — On every user prompt, detects recall-style questions (`¿recuerdas?`, `do you remember`, etc.) and auto-injects matching snippets from cache + DB.
 3. **PreCompact hook** — Forces a final summary before Claude's compaction, then blocks it and suggests `/clear`.
-4. **SessionStart hook** — On `/clear`, `startup`, or `resume`, restores context:
+4. **SessionStart hook** — On `/clear`, `startup`, or `resume`, restores context (resolving the project root from the DB so it matches the whole project tree, not just the exact cwd):
    - **Overdue reminders** shown first (highest priority)
    - **Session handoff brief** (📋) from the previous session's Stop hook — the dense "how to resume" doc
+   - **Latest N items** (🕑) — the N most recent summaries across the project tree, newest-first (`restore_recent_items`, default 15)
    - Consolidated conversation summary (loaded from per-project cache — see below) as background
    - User memories
    - Active notes
@@ -243,6 +254,7 @@ Edit `~/.claude/the-secretary/config.json`:
 | `summarize_every_n` | `15` | Summarize every N tool calls |
 | `min_new_chars` | `2000` | Minimum new content before summarizing |
 | `max_summary_tokens` | `1500` | Max tokens for summary output |
+| `restore_recent_items` | `15` | How many recent items the `🕑 Latest N items` restore block shows (newest-first, across the whole project tree) |
 | `llm_url` | `http://localhost:8922/v1/chat/completions` | OpenAI-compatible endpoint (used when `provider=local`) |
 | `claude_bin` | `/opt/homebrew/bin/claude` | Path to the `claude` binary (used when `provider=claude_cli`) |
 | `claude_model` | `claude-haiku-4-5` | Model passed to `claude -p --model` |

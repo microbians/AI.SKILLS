@@ -1,22 +1,53 @@
 #!/bin/bash
-# PreToolUse hook: blocks destructive Bash commands even in bypass mode.
-# Reads tool input JSON from stdin, exits with deny decision if pattern matches.
+# PreToolUse hook: intercepts destructive Bash commands.
 #
-# Escape hatch: append "# approved" at the end of a command to skip all checks.
-# Example: rm -rf /tmp/foo # approved
+# Behavior:
+#   - If the user's last prompt contains an authorization keyword
+#     ("approved", "dale", "force", "borra", "adelante", "hazlo", etc.)
+#     OR the command ends with "# approved" → allow without dialog.
+#   - Otherwise → emit permissionDecision: "ask" so Claude Code shows
+#     the native approval dialog before running.
+#
+# Why "ask" instead of "deny":
+#   "deny" forces a 3-turn loop (run → error → user types "approved" → retry).
+#   "ask" delegates to the native UI: one click, one turn, no keyword magic.
 
-cmd=$(jq -r '.tool_input.command // ""')
+input=$(cat)
+cmd=$(echo "$input" | jq -r '.tool_input.command // ""')
+session_id=$(echo "$input" | jq -r '.session_id // "default"')
 
-# Escape hatch: if command ends with "# approved" comment, skip all checks.
+# Check if user already authorized this turn (in their last prompt).
+user_authorized() {
+  local last_prompt_file="$HOME/.claude/last-prompts/$session_id.txt"
+  [ -f "$last_prompt_file" ] || return 1
+  grep -qiE '(^|[^a-z])(approve[ds]?|aprov[ao]d[ao]s?|aprob[ao]d[ao]s?|aprivad[ao]s?|aprived[ao]s?|apruebo|apruebas?|force|forzar|forz[ao]|autorizo|autoriza(do|da)?|borra(l[oa]s?)?|dale|dale[[:space:]]+force|ok[[:space:]]+force|ok[[:space:]]+borra|puedes[[:space:]]+forzar|s[ií][[:space:]]+(borra|forzar?|adelante|hazlo)|adelante|hazlo|s[ií][[:space:]]+aprob|# approved)' "$last_prompt_file"
+}
+
+# "# approved" trailing comment + user authorization → allow.
 if echo "$cmd" | grep -qE '#[[:space:]]*approved[[:space:]]*$'; then
+  if user_authorized; then
+    exit 0
+  fi
+  # No user authorization in last prompt → ask via native dialog.
+  jq -n '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "ask",
+      permissionDecisionReason: "Command marked \"# approved\" but user has not authorized this turn — confirm to proceed."
+    }
+  }'
   exit 0
 fi
 
-block() {
+ask() {
+  # If the user already authorized this turn in their last prompt, skip the dialog.
+  if user_authorized; then
+    exit 0
+  fi
   jq -n --arg reason "$1" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
-      permissionDecision: "deny",
+      permissionDecision: "ask",
       permissionDecisionReason: $reason
     }
   }'
@@ -25,70 +56,73 @@ block() {
 
 # rm -rf / rm -fr (any variant with both flags)
 if echo "$cmd" | grep -qE '(^|[[:space:]])rm[[:space:]]+(-[a-zA-Z]*[rf][a-zA-Z]*[rf]|-r[[:space:]]+-f|-f[[:space:]]+-r)'; then
-  block "BLOCKED: rm -rf detected. Append '# approved' to confirm, or ask the user."
+  ask "Destructive command: rm -rf — requires explicit confirmation."
 fi
 
 # git destructive
 if echo "$cmd" | grep -qE 'git[[:space:]]+reset[[:space:]]+--hard'; then
-  block "BLOCKED: git reset --hard. Append '# approved' to confirm."
+  ask "Destructive command: git reset --hard — discards local changes."
 fi
 if echo "$cmd" | grep -qE 'git[[:space:]]+push[[:space:]]+(.*[[:space:]])?(-f($|[[:space:]])|--force($|[[:space:]])|--force-with-lease)'; then
-  block "BLOCKED: git push --force. Append '# approved' to confirm."
+  ask "Destructive command: git push --force — can overwrite remote history."
 fi
 if echo "$cmd" | grep -qE 'git[[:space:]]+checkout[[:space:]]+(--[[:space:]]+)?\.($|[[:space:]])'; then
-  block "BLOCKED: git checkout . (discards changes). Append '# approved' to confirm."
+  ask "Destructive command: git checkout . — discards working tree changes."
+fi
+if echo "$cmd" | grep -qE 'git[[:space:]]+restore[[:space:]]+\.($|[[:space:]])'; then
+  ask "Destructive command: git restore . — discards working tree changes."
 fi
 if echo "$cmd" | grep -qE 'git[[:space:]]+clean[[:space:]]+-[a-zA-Z]*f'; then
-  block "BLOCKED: git clean -f. Append '# approved' to confirm."
+  ask "Destructive command: git clean -f — removes untracked files."
 fi
 if echo "$cmd" | grep -qE 'git[[:space:]]+branch[[:space:]]+(.*[[:space:]])?-D($|[[:space:]])'; then
-  block "BLOCKED: git branch -D. Append '# approved' to confirm."
+  ask "Destructive command: git branch -D — force-delete branch."
 fi
 if echo "$cmd" | grep -qE 'git[[:space:]]+stash[[:space:]]+(drop|clear)'; then
-  block "BLOCKED: git stash drop/clear. Append '# approved' to confirm."
+  ask "Destructive command: git stash drop/clear — discards stashed changes."
 fi
 if echo "$cmd" | grep -qE -- '--no-verify'; then
-  block "BLOCKED: --no-verify (skips hooks). Append '# approved' to confirm."
+  ask "Destructive flag: --no-verify — skips git hooks."
 fi
 
 # database
 if echo "$cmd" | grep -qE '(^|[[:space:]])dropdb($|[[:space:]])'; then
-  block "BLOCKED: dropdb. Append '# approved' to confirm."
+  ask "Destructive command: dropdb."
 fi
 if echo "$cmd" | grep -qiE 'DROP[[:space:]]+(TABLE|DATABASE|SCHEMA)'; then
-  block "BLOCKED: DROP TABLE/DATABASE/SCHEMA. Append '# approved' to confirm."
+  ask "Destructive SQL: DROP TABLE/DATABASE/SCHEMA."
 fi
 if echo "$cmd" | grep -qiE 'TRUNCATE[[:space:]]+(TABLE[[:space:]]+)?[a-zA-Z_]'; then
-  block "BLOCKED: TRUNCATE TABLE. Append '# approved' to confirm."
+  ask "Destructive SQL: TRUNCATE TABLE."
 fi
 # DELETE FROM <table> without WHERE (mass delete)
 if echo "$cmd" | grep -qiE 'DELETE[[:space:]]+FROM[[:space:]]+[a-zA-Z_][a-zA-Z0-9_.]*[[:space:]]*(;|"|'\''|$)' \
   && ! echo "$cmd" | grep -qiE 'DELETE[[:space:]]+FROM[[:space:]]+[^;"'\'']*WHERE'; then
-  block "BLOCKED: DELETE FROM without WHERE (mass delete). Append '# approved' to confirm."
+  ask "Destructive SQL: DELETE FROM without WHERE (mass delete)."
 fi
 # UPDATE <table> SET ... without WHERE (mass update)
 if echo "$cmd" | grep -qiE 'UPDATE[[:space:]]+[a-zA-Z_][a-zA-Z0-9_.]*[[:space:]]+SET[[:space:]]' \
   && ! echo "$cmd" | grep -qiE 'UPDATE[[:space:]]+[^;"'\'']*WHERE'; then
-  block "BLOCKED: UPDATE without WHERE (mass update). Append '# approved' to confirm."
+  ask "Destructive SQL: UPDATE without WHERE (mass update)."
 fi
 # mongo dropDatabase / deleteMany({})
 if echo "$cmd" | grep -qE 'dropDatabase\(\)|deleteMany\([[:space:]]*\{[[:space:]]*\}'; then
-  block "BLOCKED: mongo dropDatabase/deleteMany({}). Append '# approved' to confirm."
+  ask "Destructive mongo: dropDatabase() / deleteMany({})."
 fi
 # redis FLUSHDB / FLUSHALL
 if echo "$cmd" | grep -qiE '(^|[[:space:]])(FLUSHDB|FLUSHALL)($|[[:space:]])'; then
-  block "BLOCKED: redis FLUSHDB/FLUSHALL. Append '# approved' to confirm."
+  ask "Destructive redis: FLUSHDB/FLUSHALL."
 fi
 
 # disk
 if echo "$cmd" | grep -qE '(^|[[:space:]])mkfs'; then
-  block "BLOCKED: mkfs. Append '# approved' to confirm."
+  ask "Destructive command: mkfs (formats filesystem)."
 fi
 if echo "$cmd" | grep -qE '(^|[[:space:]])dd[[:space:]]+.*if='; then
-  block "BLOCKED: dd if=. Append '# approved' to confirm."
+  ask "Destructive command: dd — raw block copy."
 fi
 if echo "$cmd" | grep -qE '>[[:space:]]*/dev/(sd|disk|nvme)'; then
-  block "BLOCKED: direct write to disk device. Append '# approved' to confirm."
+  ask "Destructive: direct write to disk device."
 fi
 
 exit 0

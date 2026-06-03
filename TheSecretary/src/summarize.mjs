@@ -46,6 +46,7 @@ function loadConfig() {
     summarize_every_n: 15,
     min_new_chars: 2000,
     max_summary_tokens: 1500,
+    restore_recent_items: 15,
     db_path: join(SECRETARY_DIR, 'summaries.db'),
   };
   try {
@@ -59,6 +60,80 @@ function loadConfig() {
 }
 
 const config = loadConfig();
+
+// ═══════════════════ PROJECT-ROOT RESOLUTION ═══════════════════
+//
+// A single logical project is stored under MANY project_dir values: a session
+// runs (and saves summaries) wherever its cwd happened to be — the project
+// root, but also any subfolder (dom-stories, apps/web, public/assets/…).
+// Matching on `project_dir = cwd` exactly means a session opened in one folder
+// never sees context saved under a sibling/parent path, so restore can surface
+// a stale handoff while today's real work sits invisible under another prefix.
+//
+// the-secretary has NOTHING to do with git — it keys purely on the cwd path.
+// So we resolve the project root from the DB itself, not from filesystem
+// markers: walk UP the cwd's ancestors and keep the highest one that (a) still
+// has summaries in the DB and (b) hasn't crossed into a generic container
+// folder (Code, Programacion, Documents, home…). That anchors the root at the
+// real project dir and captures every nested subfolder beneath it.
+
+// Generic parent folders that group many unrelated projects. We never treat
+// these (or anything above them) as a project root.
+const GENERIC_CONTAINERS = new Set([
+  'Code', 'code', 'Programacion', 'Programación', 'Projects', 'projects',
+  'Documents', 'Desktop', 'Developer', 'dev', 'src', 'repos', 'Repos',
+  'work', 'Work', 'CloudDocs', 'Mobile Documents',
+  // Personal monorepo-of-projects buckets that group unrelated skills/apps.
+  'AI.SKILLS',
+]);
+
+function parentDir(p) {
+  const i = p.lastIndexOf('/');
+  if (i <= 0) return null;
+  return p.slice(0, i);
+}
+
+function hasSummariesUnder(db, prefix) {
+  const { clause, params } = projectTreeClause(prefix);
+  const row = db.prepare(
+    `SELECT 1 FROM summaries WHERE ${clause} AND session_id NOT IN ('manual','notes','reminders') LIMIT 1`
+  ).get(...params);
+  return !!row;
+}
+
+function resolveProjectRoot(db, cwd) {
+  if (!cwd) return null;
+  let root = cwd;
+  let parent = parentDir(cwd);
+  // Climb while the parent is a real project folder (not a generic container,
+  // not home/root) AND the DB actually has summaries under it. Stop as soon as
+  // climbing would either leave the project or enter a shared container.
+  while (parent && parent !== homedir() && parent !== '/') {
+    const base = basename(parent);
+    if (GENERIC_CONTAINERS.has(base)) break;
+    if (db && !hasSummariesUnder(db, parent)) break;
+    root = parent;
+    parent = parentDir(parent);
+  }
+  return root;
+}
+
+// Returns { clause, params } for a WHERE fragment matching the whole project
+// tree rooted at `root`. Use as: `WHERE ${clause}` with `.all(...params)`.
+// When root is falsy, matches nothing meaningful — callers guard on cwd first.
+function projectTreeClause(root, column = 'project_dir') {
+  if (!root) return { clause: '1=0', params: [] };
+  return {
+    clause: `(${column} = ? OR ${column} LIKE ? ESCAPE '\\')`,
+    params: [root, escapeLike(root) + '/%'],
+  };
+}
+
+// Escape LIKE wildcards in a literal path so `_` / `%` in folder names don't
+// act as wildcards. Paired with `ESCAPE '\'` in the clause above.
+function escapeLike(s) {
+  return s.replace(/[\\%_]/g, '\\$&');
+}
 
 // ═══════════════════ CACHE (per-project pre-generated summaries) ═══════════════════
 
@@ -1407,12 +1482,12 @@ ${text}`;
     }
   })() : false;
 
-  const msg = hasSummaries
-    ? `Context is about to be compacted. You have saved summaries from this session (including a fresh one just captured). Type /clear now to use local LLM summaries instead of Claude's compaction.`
-    : `Context is about to be compacted. The local summarizer has no saved summaries for this session yet. Compaction will proceed with Claude's built-in summarization.`;
-
-  process.stderr.write(msg);
-  process.exit(2);
+  if (hasSummaries) {
+    process.stderr.write(`[secretary] Local summaries available for this session. Tip: /clear loads them instead of compacting.\n`);
+  } else {
+    process.stderr.write(`[secretary] No local summaries yet — Claude's built-in compaction will proceed.\n`);
+  }
+  process.exit(0);
 }
 
 async function restore(hookInput) {
@@ -1428,12 +1503,18 @@ async function restore(hookInput) {
     // ── Gather all data ──
     const specialSessions = ['manual', 'notes', 'reminders'];
 
+    // Resolve the whole project tree (repo root + every nested subfolder a
+    // session ran in) so restore never misses today's work just because it was
+    // saved under a sibling path. See resolveProjectRoot/projectTreeClause.
+    const projectRoot = resolveProjectRoot(db, cwd);
+    const tree = projectTreeClause(projectRoot);
+
     const lastSessionRow = cwd
       ? db.prepare(`
           SELECT session_id FROM summaries
-          WHERE project_dir = ? AND session_id NOT IN ('manual', 'notes', 'reminders')
+          WHERE ${tree.clause} AND session_id NOT IN ('manual', 'notes', 'reminders')
           ORDER BY created_at DESC LIMIT 1
-        `).get(cwd)
+        `).get(...tree.params)
       : db.prepare(`
           SELECT session_id FROM summaries
           WHERE session_id NOT IN ('manual', 'notes', 'reminders')
@@ -1442,34 +1523,37 @@ async function restore(hookInput) {
 
     const lastSessionId = lastSessionRow?.session_id;
 
-    // Fetch all categories
+    // Fetch all categories. Memories/notes/reminders match the whole project
+    // tree (root + nested subfolders) so an item anchored to the project is
+    // visible from any subfolder a session opens in — same tree resolution as
+    // the conversation summaries above. '__global__' items are always included.
     const manualEntries = cwd ? db.prepare(`
       SELECT summary, created_at FROM summaries
-      WHERE project_dir IN (?, '__global__') AND session_id = 'manual' AND status = 'active'
+      WHERE (${tree.clause} OR project_dir = '__global__') AND session_id = 'manual' AND status = 'active'
       ORDER BY created_at ASC
-    `).all(cwd) : [];
+    `).all(...tree.params) : [];
 
     const noteEntries = cwd ? db.prepare(`
       SELECT summary, created_at FROM summaries
-      WHERE project_dir IN (?, '__global__') AND session_id = 'notes' AND status = 'active'
+      WHERE (${tree.clause} OR project_dir = '__global__') AND session_id = 'notes' AND status = 'active'
       ORDER BY created_at ASC
-    `).all(cwd) : [];
+    `).all(...tree.params) : [];
 
     const today = new Date().toISOString().split('T')[0];
     const overdueReminders = cwd ? db.prepare(`
       SELECT summary, due_at FROM summaries
-      WHERE project_dir IN (?, '__global__') AND session_id = 'reminders' AND status = 'active'
+      WHERE (${tree.clause} OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'active'
         AND due_at IS NOT NULL AND due_at <= ?
       ORDER BY due_at ASC
-    `).all(cwd, today) : [];
+    `).all(...tree.params, today) : [];
 
     const upcomingReminders = cwd ? db.prepare(`
       SELECT summary, due_at FROM summaries
-      WHERE project_dir IN (?, '__global__') AND session_id = 'reminders' AND status = 'active'
+      WHERE (${tree.clause} OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'active'
         AND (due_at IS NULL OR due_at > ?)
       ORDER BY due_at ASC
       LIMIT 10
-    `).all(cwd, today) : [];
+    `).all(...tree.params, today) : [];
 
     // Get conversation summaries
     let summaries = [];
@@ -1484,9 +1568,9 @@ async function restore(hookInput) {
         const needed = MIN_CHUNKS - summaries.length;
         const backfill = db.prepare(`
           SELECT summary, chunk_index, created_at, session_id FROM summaries
-          WHERE project_dir = ? AND session_id != ? AND session_id NOT IN ('manual', 'notes', 'reminders')
+          WHERE ${tree.clause} AND session_id != ? AND session_id NOT IN ('manual', 'notes', 'reminders')
           ORDER BY created_at DESC LIMIT ?
-        `).all(cwd, lastSessionId, needed);
+        `).all(...tree.params, lastSessionId, needed);
         backfill.reverse();
         summaries = [...backfill, ...summaries];
       }
@@ -1569,12 +1653,12 @@ async function restore(hookInput) {
     if (cwd) {
       const handoffRow = db.prepare(`
         SELECT summary, created_at, session_id FROM summaries
-        WHERE project_dir = ?
+        WHERE ${tree.clause}
           AND session_id NOT IN ('manual', 'notes', 'reminders')
           AND summary LIKE '[HANDOFF]%'
         ORDER BY created_at DESC
         LIMIT 1
-      `).get(cwd);
+      `).get(...tree.params);
       if (handoffRow) {
         const body = (handoffRow.summary || '').replace(/^\[HANDOFF\]\s*/i, '').trim();
         const when = handoffRow.created_at
@@ -1582,6 +1666,37 @@ async function restore(hookInput) {
           : '';
         handoffBrief = `## 📋 Session handoff — resume here\n\n_Written at the end of the previous session (${when}). Read this first; the older bullet summaries below are background._\n\n${body}\n`;
         output += handoffBrief + '\n';
+      }
+    }
+
+    // 2b. Latest raw items across the WHOLE project tree, newest-first. This is
+    //     the literal "what happened most recently in the DB" view the user
+    //     asked for — independent of session grouping or bullet caching, so it
+    //     can never go stale relative to a handoff written under a sibling path.
+    if (cwd) {
+      const N = Math.max(1, parseInt(config.restore_recent_items, 10) || 15);
+      const recentItems = db.prepare(`
+        SELECT summary, created_at FROM summaries
+        WHERE ${tree.clause}
+          AND session_id NOT IN ('manual', 'notes', 'reminders')
+        ORDER BY created_at DESC
+        LIMIT ?
+      `).all(...tree.params, N);
+      if (recentItems.length > 0) {
+        output += `## 🕑 Latest ${recentItems.length} items in the DB (newest first)\n\n`;
+        for (const it of recentItems) {
+          const when = it.created_at
+            ? new Date(it.created_at + 'Z').toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+            : '';
+          // Strip the [HANDOFF]/[NOTE]/etc tag and collapse to a single compact line.
+          const oneLine = (it.summary || '')
+            .replace(/^\[[A-Z]+\]\s*/i, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 220);
+          output += `- _${when}_ — ${oneLine}\n`;
+        }
+        output += '\n';
       }
     }
 

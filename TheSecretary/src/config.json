@@ -7,5 +7,6 @@
   "summarize_every_n": 15,
   "min_new_chars": 2000,
   "max_summary_tokens": 1500,
+  "restore_recent_items": 15,
   "db_path": "~/.claude/the-secretary/summaries.db"
 }

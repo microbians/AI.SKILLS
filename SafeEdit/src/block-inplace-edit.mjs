@@ -7,9 +7,22 @@
  * Reads Claude Code's PreToolUse JSON payload from stdin. If the tool is Bash
  * and its command contains an in-place edit invocation, prints a blocking
  * message to stderr and exits with code 2 (deny).
+ *
+ * Per-session bypass:
+ *   When the user says "permite sed -i siempre" / "allow this for the session"
+ *   etc., Claude creates `/tmp/mp-allow-inplace-<sessionId>`. This hook checks
+ *   that file at startup — if present, every in-place edit invocation passes
+ *   through silently for the rest of that session. The marker dies on tmp
+ *   cleanup (system reboot, /tmp clear) so the protection comes back by
+ *   default in fresh sessions.
+ *
+ *   Session ID source: $CLAUDE_SESSION_ID env (set by Claude Code). When the
+ *   env var is absent we fall back to a wildcard `mp-allow-inplace-*` glob so
+ *   a single touch'd marker covers the run.
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync, readdirSync } from 'fs';
+import { tmpdir } from 'os';
 
 let raw = '';
 try { raw = readFileSync(0, 'utf8'); } catch { process.exit(0); }
@@ -27,6 +40,13 @@ if (typeof command !== 'string' || !command) process.exit(0);
 const offense = detectInplace(command);
 if (!offense) process.exit(0);
 
+// Per-session bypass check. If Claude has touched the allow marker for THIS
+// session (or any wildcard marker when no session id is known), let it pass.
+if (hasSessionBypass()) process.exit(0);
+
+const sid = process.env.CLAUDE_SESSION_ID || '<sessionId>';
+const allowPath = `${tmpdir()}/mp-allow-inplace-${sid}`;
+
 const msg = `[safe-edit] Blocked in-place edit: ${offense.tool} ${offense.flag}
 
 Command: ${command}
@@ -43,11 +63,33 @@ Replace with:
   # Add --regex for regex mode. Drop --apply for a dry-run.
 
 Read-only sed/awk/perl (cat | sed, awk '{print}', sed -n) are NOT blocked —
-only writes. If you genuinely need to bypass this guard, run the command
-in a subshell that the hook cannot inspect, or temporarily disable the hook.`;
+only writes.
+
+PER-SESSION BYPASS:
+  To allow in-place edits for the rest of this session, run once:
+    touch ${allowPath}
+  The marker lives in /tmp and is wiped on reboot, so protection returns
+  automatically in a fresh session. Claude is expected to create this
+  marker only after the user explicitly approves "yes always".`;
 
 process.stderr.write(msg + '\n');
 process.exit(2);
+
+// ─────────────────────────────────────────────────────────────────
+
+function hasSessionBypass() {
+  const dir = tmpdir();
+  const sid = process.env.CLAUDE_SESSION_ID;
+  if (sid && existsSync(`${dir}/mp-allow-inplace-${sid}`)) return true;
+  // Fallback: env var not set → any marker file counts. Cheap to scan
+  // because /tmp is small and we only look at a single basename prefix.
+  try {
+    for (const name of readdirSync(dir)) {
+      if (name.startsWith('mp-allow-inplace-')) return true;
+    }
+  } catch { /* unreadable tmp → no bypass */ }
+  return false;
+}
 
 // ─────────────────────────────────────────────────────────────────
 

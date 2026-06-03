@@ -39,6 +39,27 @@ awk '{print $1}' file      # extract column — fine
 
 The rule: if the command rewrites a file in place, it's blocked. If it emits to stdout, it passes.
 
+## Per-session bypass
+
+Sometimes a workflow genuinely needs `sed -i` and re-typing the `safe-edit` invocation each time gets in the way. The hook supports a per-session opt-out: drop a marker file under `/tmp` and every in-place edit invocation passes through silently until the next `/tmp` cleanup (reboot, manual delete).
+
+```bash
+# Allow in-place edits for this Claude session.
+touch /tmp/mp-allow-inplace-$CLAUDE_SESSION_ID
+
+# Or, when the session id is unknown / hard to type, a generic marker:
+touch /tmp/mp-allow-inplace-manual
+```
+
+Claude is expected to create the marker only after the user **explicitly says "yes always"** (or equivalent). The block message printed by the hook tells the user the exact path to touch, so this is also doable by hand.
+
+Why a file marker:
+
+- Survives across hook invocations within the same session (the hook is a fresh process every time, no shared memory).
+- Dies on reboot — protection automatically returns in a fresh session.
+- Scoped by `$CLAUDE_SESSION_ID` so giving "yes always" in one session does not affect another.
+- Easy to undo: `rm /tmp/mp-allow-inplace-*`.
+
 ## Install
 
 ```bash

@@ -21,6 +21,18 @@ For single-file targeted edits, prefer the `Edit` tool — it's safer because it
 
 The PreToolUse hook installed alongside this skill **blocks** `sed -i`, `perl -i`, `awk -i inplace`, and `gawk -i inplace` in Bash commands. Read-only sed/awk/perl (`cat | sed`, `awk '{print}'`, `sed -n`) still works. Don't try to bypass — use safe-edit.
 
+### Per-session bypass (only when the user explicitly approves)
+
+The hook supports a per-session opt-out via a marker file under `/tmp`. If the user explicitly says "permite sed -i siempre" / "yes always" / "allow in-place for this session", create the marker:
+
+```bash
+touch /tmp/mp-allow-inplace-$CLAUDE_SESSION_ID
+```
+
+After that, the hook lets every in-place edit through for the rest of this session. The marker dies on `/tmp` cleanup (reboot), so protection automatically returns in a fresh session.
+
+**Important:** do not create the marker preemptively. The default is "use safe-edit" — the bypass exists only because some workflows (mass rename, codebase migration) genuinely benefit from `sed -i` and re-typing the safe-edit invocation each time gets in the way. Wait for the user to give explicit consent before touching the file.
+
 ## Invocation
 
 ```bash

@@ -44,13 +44,13 @@ command -v jq || sudo apt install jq  # Debian/Ubuntu
 
 ## 4. Test the hook
 
-Block test (should fail with a BLOCKED message):
+Ask test (should print a JSON with `"permissionDecision": "ask"`):
 
 ```bash
 echo '{"tool_input":{"command":"rm -rf /tmp/whatever"}}' | bash ~/.claude/hooks/block-destructive.sh
 ```
 
-Escape-hatch test (should exit with no output):
+Pre-authorized test (should exit with no output — but only if your last prompt in this session contained an authorization keyword like "dale"/"approved"):
 
 ```bash
 echo '{"tool_input":{"command":"rm -rf /tmp/whatever # approved"}}' | bash ~/.claude/hooks/block-destructive.sh
