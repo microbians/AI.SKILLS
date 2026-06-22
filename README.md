@@ -131,6 +131,26 @@ Safer replacement for `sed -i`, `perl -i`, and `awk -i inplace` in Claude Code s
 
 ---
 
+## CodeIndex
+
+> [`CodeIndex/`](CodeIndex/)
+
+A fast, incremental **symbol index** so the agent can answer *"where is `X` defined?"* and *"what references it?"* in milliseconds instead of reading thousands of files or spawning search agents on every change. Thin layer over **universal-ctags** (symbol extraction, ~150 languages) + **SQLite** (`node:sqlite`, queried in ms).
+
+- **Per-project**, stored at `<project-root>/.claude/codeindex.db` (git root, else cwd)
+- **Incremental** — only files whose content hash changed are re-parsed; a no-op reindex touches zero files
+- **Auto-fresh** — a `SessionStart` hook reindexes each session; manual `index` / `index --full` available
+- **Commands:** `where`, `refs`, `file`, `grep`, `stats`, `index`
+- **Shortcut, not a replacement** — ctags indexes definitions; `refs` augments with a ripgrep textual scan
+
+**Includes:** `src/codeindex.mjs`, `src/reindex-hook.mjs`, `hooks.json`, `install.sh`, `skill/SKILL.md`, `src/claude-md-snippet.md`
+
+**Install path:** `~/.claude/codeindex/` (engine + hook), `~/.claude/skills/code-index/` (behavior rules).
+
+**Requirements:** Node.js 22+ (built-in `node:sqlite`), universal-ctags (`brew install universal-ctags`).
+
+---
+
 ## Skills
 
 Skill files (`.md`) that teach the agent specific behaviors and workflows. Drop them into `.claude/skills/` or `.opencode/skills/` and the agent picks them up automatically.

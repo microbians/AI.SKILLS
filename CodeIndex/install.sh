@@ -145,10 +145,14 @@ inject_snippet() {
     node -e "
       const fs = require('fs');
       let md = fs.readFileSync('$target','utf-8');
-      const snippet = fs.readFileSync('$SNIPPET','utf-8');
-      md = md.replace(/## Code symbol lookup \(CodeIndex\)[\s\S]*?(?=\n## |\n## \$|\$)/, '');
-      md = md.trimEnd() + '\n\n' + snippet.trim() + '\n';
-      fs.writeFileSync('$target', md);
+      const snippet = fs.readFileSync('$SNIPPET','utf-8').trim();
+      // Replace the existing section IN PLACE: match from its '## Code symbol lookup'
+      // heading up to (but not including) the next level-2 heading, or end of file.
+      // The 'm' flag makes ^ match line starts so the lookahead lands on real headings.
+      const re = /^## Code symbol lookup \(CodeIndex\)[\s\S]*?(?=^## |\$(?![\s\S]))/m;
+      if (re.test(md)) md = md.replace(re, snippet + '\n\n');
+      else md = md.trimEnd() + '\n\n' + snippet + '\n';
+      fs.writeFileSync('$target', md.replace(/\n{3,}/g, '\n\n').trimEnd() + '\n');
     "
     info "Updated snippet in $target"
   else

@@ -26,10 +26,17 @@ Reach for CodeIndex *before* Read/Grep/Glob or an Explore agent whenever you nee
 locate a symbol you can name:
 
 - "Where is `UserService` defined?" → `where UserService`
-- "What calls `validateToken`?" → `refs validateToken`
+- "What references `validateToken`?" → `refs validateToken`
 - "What's in this file?" → `file src/auth/login.ts`
 - "There's a function about parsing… what's it called?" → `grep pars`
 - "How big is this project / what languages?" → `stats`
+
+And *before* a change, to understand how the project wires together (the relational thread):
+
+- "Who would break if I change `parseConfig`?" → `callers parseConfig`
+- "What does this file pull in?" → `deps src/auth/login.ts`
+- "How is this codebase structured?" → `arch`
+- "What depends on the auth module / what does it need?" → `flow src/auth`
 
 This is a shortcut, not a replacement for reading. Once CodeIndex points you at
 `file:line`, Read that exact location. The win is skipping the *search* phase.
@@ -39,11 +46,19 @@ This is a shortcut, not a replacement for reading. Once CodeIndex points you at
 ## Commands
 
 ```bash
-node ~/.claude/codeindex/codeindex.mjs where <Name>     # definitions: file:line (kind)
+# Locate symbols
+node ~/.claude/codeindex/codeindex.mjs where <Name>     # definitions: file:line (kind) + doc
 node ~/.claude/codeindex/codeindex.mjs refs <Name>      # definitions + every textual reference
 node ~/.claude/codeindex/codeindex.mjs file <path>      # all symbols defined in one file
 node ~/.claude/codeindex/codeindex.mjs grep <pattern>   # fuzzy symbol search (substring)
-node ~/.claude/codeindex/codeindex.mjs stats            # files, symbols, languages, freshness
+
+# Relational thread — how the project connects (deterministic edge graph)
+node ~/.claude/codeindex/codeindex.mjs callers <Name>   # who calls/uses a symbol (blast radius)
+node ~/.claude/codeindex/codeindex.mjs deps <file>      # what a file imports + the local files it calls into
+node ~/.claude/codeindex/codeindex.mjs arch             # module dependency map (from -> to, weighted)
+node ~/.claude/codeindex/codeindex.mjs flow <module>    # up/downstream of a module
+
+node ~/.claude/codeindex/codeindex.mjs stats            # files, symbols, edges, languages, freshness
 node ~/.claude/codeindex/codeindex.mjs index            # incremental reindex (changed files only)
 node ~/.claude/codeindex/codeindex.mjs index --full     # full rebuild
 ```
@@ -79,10 +94,13 @@ node ~/.claude/codeindex/codeindex.mjs refs parseConfig
 
 ## Limitations (be honest about these)
 
-- ctags indexes **definitions**, not a call graph. `refs` augments with a `ripgrep`
-  textual scan, so a "reference" is any line mentioning the word — not semantic usage.
+- ctags indexes **definitions**; `refs` augments with a `ripgrep` textual scan, so a
+  "reference" is any line mentioning the word — not semantic usage.
+- The relational graph (`callers`/`deps`/`arch`/`flow`) is deterministic but heuristic:
+  `import` edges resolved to local files and `callers` of uniquely-named symbols are
+  exact; `uses`/`arch` edges are matched by name, so in a monorepo where unrelated
+  subprojects share common function names (`init`, `start`, `openDb`) a few cross-module
+  edges may be noise. Treat `arch`/`flow` as a strong hint, `where`/`callers` as ground truth.
 - A symbol name shared across files returns all definitions; disambiguate by `scope`/`path`.
 - Requires `universal-ctags`. If missing, the hook prints an install hint and the index
   stays empty — fall back to Grep/Explore until `brew install universal-ctags` is run.
-
-// touch probe
