@@ -15,6 +15,9 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 │  SafeEdit/                   sed -i replacement: diff preview,  │
 │                              backups + auto-prune (Node CLI)    │
 │                                                                 │
+│  CodeIndex/                  Incremental symbol index +         │
+│                              relational edge graph (SQLite)     │
+│                                                                 │
 │  skills/                                                        │
 │    - ascii-art-diagrams/     Unicode diagram formatting rules   │
 │    - defensive-development/  Verify-first coding practices      │
@@ -43,6 +46,7 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 
 - [TheSecretary](#thesecretary) ⭐
 - [SafeEdit](#safeedit)
+- [CodeIndex](#codeindex)
 - [Skills](#skills)
   - [Defensive Development](#defensive-development)
   - [ASCII Art Diagrams](#ascii-art-diagrams)
@@ -135,12 +139,14 @@ Safer replacement for `sed -i`, `perl -i`, and `awk -i inplace` in Claude Code s
 
 > [`CodeIndex/`](CodeIndex/)
 
-A fast, incremental **symbol index** so the agent can answer *"where is `X` defined?"* and *"what references it?"* in milliseconds instead of reading thousands of files or spawning search agents on every change. Thin layer over **universal-ctags** (symbol extraction, ~150 languages) + **SQLite** (`node:sqlite`, queried in ms).
+A fast, incremental **symbol index** so the agent can answer *"where is `X` defined?"*, *"what references it?"*, and *"how does this project wire together?"* in milliseconds instead of reading thousands of files or spawning search agents on every change. Thin layer over **universal-ctags** (symbol extraction, ~150 languages) + **SQLite** (`node:sqlite`, symbols + a relational edge graph, queried in ms).
 
 - **Per-project**, stored at `<project-root>/.claude/codeindex.db` (git root, else cwd)
 - **Incremental** — only files whose content hash changed are re-parsed; a no-op reindex touches zero files
 - **Auto-fresh** — a `SessionStart` hook reindexes each session; manual `index` / `index --full` available
-- **Commands:** `where`, `refs`, `file`, `grep`, `stats`, `index`
+- **Symbol commands:** `where`, `refs`, `file`, `grep`, `stats`, `index`
+- **Relational thread** (deterministic edge graph, no LLM): `callers` (who uses a symbol), `deps` (what a file imports + calls into), `arch` (module dependency map), `flow` (up/downstream of a module)
+- **Also indexes** JS embedded in PHP/HTML templates; non-git projects fall back to a scoped file scan
 - **Shortcut, not a replacement** — ctags indexes definitions; `refs` augments with a ripgrep textual scan
 
 **Includes:** `src/codeindex.mjs`, `src/reindex-hook.mjs`, `hooks.json`, `install.sh`, `skill/SKILL.md`, `src/claude-md-snippet.md`
@@ -532,6 +538,8 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-06-22 | CodeIndex: relational edge graph (`callers`/`deps`/`arch`/`flow`), JS embedded in PHP/HTML templates, hardened non-git fallback + OOM/large-line guards |
+| 2026-06-22 | Add CodeIndex plugin: incremental symbol index with signatures + doc hints (`where`/`refs`/`file`/`grep`/`stats`) |
 | 2026-04-22 | TheSecretary: chunked LLM summarization — conversation split into bounded chunks (every N tool calls / min M chars), each chunk sent to the local LLM immediately for a fresh summary, stored with incremental `chunk_index` in SQLite + per-project `.md` cache. Consolidation pass merges chunks on session end; second LLM pass compacts if merged summary exceeds size budget. Keeps every call small, prevents context blow-up, no oversized single-shot summaries |
 | 2026-04-22 | TheSecretary: use Llama-3.2-3B-4bit (MLX) on all chips, drop chip-based model gating         |
 | 2026-04-22 | TheSecretary: optimize startup for low-power machines (M1 base)                              |
