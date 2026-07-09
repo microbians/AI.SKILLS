@@ -538,6 +538,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-07-09 | CLAUDE.Global: restructure behavior rules as terse headline + enforcement detail        |
 | 2026-06-22 | CodeIndex: relational edge graph (`callers`/`deps`/`arch`/`flow`), JS embedded in PHP/HTML templates, hardened non-git fallback + OOM/large-line guards |
 | 2026-06-22 | Add CodeIndex plugin: incremental symbol index with signatures + doc hints (`where`/`refs`/`file`/`grep`/`stats`) |
 | 2026-04-22 | TheSecretary: chunked LLM summarization — conversation split into bounded chunks (every N tool calls / min M chars), each chunk sent to the local LLM immediately for a fresh summary, stored with incremental `chunk_index` in SQLite + per-project `.md` cache. Consolidation pass merges chunks on session end; second LLM pass compacts if merged summary exceeds size budget. Keeps every call small, prevents context blow-up, no oversized single-shot summaries |
