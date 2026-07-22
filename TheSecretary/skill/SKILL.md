@@ -10,7 +10,7 @@ A local-LLM secretary that auto-summarizes the conversation, captures user memor
 
 ## Behavior rules
 
-- **DO NOT use Claude's built-in memory.** All persistence is The Secretary (summarizer hooks + SQLite at `~/.claude/the-secretary/summaries.db`).
+- **DO NOT use Claude's built-in memory.** All persistence is The Secretary (summarizer hooks + SQLite per project at `<projectRoot>/.claude/the-secretary/summaries.db`; items marked "global" live in `~/.claude/the-secretary/summaries.db`).
 - **Trust injected context.** When the user asks about previous sessions ("qué hicimos?", "última sesión", "what did we do?"), respond from the context already injected at session start — do not re-search files or run commands unless the context is missing.
 - **Memories under `## User Memories (NEVER ignore these)`** must always be respected.
 - **When the user asks "qué recuerdas?", "muestra mis notas", "show my reminders", "what do you remember"**: run the matching recall command below and show its output as the response.
@@ -49,7 +49,7 @@ Reminders parse natural dates: "mañana", "el viernes", "en 3 días", "el 15 de 
 
 ## Scope
 
-By default memories/notes/reminders are **per-project** (scoped to `cwd`). The "global" modifier makes them cross-project. Items appear tagged `[global]` when shown.
+By default memories/notes/reminders are **per-project**: stored in the project's own `<projectRoot>/.claude/the-secretary/` (DB + bullets cache), so memory travels with the folder if you copy it elsewhere. The "global" modifier makes items cross-project (stored in the global DB). Items appear tagged `[global]` when shown.
 
 ## Configuration
 
@@ -62,5 +62,6 @@ By default memories/notes/reminders are **per-project** (scoped to `cwd`). The "
 
 ```bash
 curl -s http://localhost:8922/v1/models | head -1
-sqlite3 ~/.claude/the-secretary/summaries.db "SELECT session_id, COUNT(*) FROM summaries GROUP BY session_id"
+sqlite3 <projectRoot>/.claude/the-secretary/summaries.db "SELECT session_id, COUNT(*) FROM summaries GROUP BY session_id"   # project data
+sqlite3 ~/.claude/the-secretary/summaries.db "SELECT session_id, COUNT(*) FROM summaries GROUP BY session_id"              # global items
 ```

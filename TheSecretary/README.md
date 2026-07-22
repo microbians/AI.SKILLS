@@ -28,6 +28,15 @@ AI-powered context persistence for Claude Code. Preserves conversation context, 
 
 ## Features
 
+### Per-project storage (memory travels with the folder)
+
+Each project stores its own database and bullets cache **inside the project** at `<projectRoot>/.claude/the-secretary/` (`summaries.db` + `bullets.md`). Copy or sync the project folder anywhere and its memory goes with it — the next session in the copied folder restores the same context.
+
+- The project root is resolved from the filesystem: climb the cwd's ancestors until a generic container folder (`Code`, `Programacion`, `Documents`, home, …). An ancestor that already holds `.claude/the-secretary/` data (or a plain `.claude/` dir) anchors the root, so sessions opened in any subfolder share the same DB.
+- Only items explicitly marked **global** (`project_dir = '__global__'`) live in the shared DB at `~/.claude/the-secretary/summaries.db`. Every query reads project + global through a unified `all_items` view (the global DB is `ATTACH`ed to the project connection).
+- **Automatic migration:** the first time a project DB is created, the project's rows are copied out of the old global DB (non-destructively — the global DB is left untouched). The legacy `bullets.md` under `~/.claude/the-secretary/cache/` is copied over the same way.
+- **Never pushed by default:** the data dir is created with a self-ignoring `.gitignore` (`*`) inside, so no repo ever commits the memory — no per-project setup needed. To intentionally commit/share it, delete `<projectRoot>/.claude/the-secretary/.gitignore`.
+
 ### Conversation Summarization (automatic)
 Every 15 tool calls, the conversation is summarized by the local LLM and stored. On `/clear` or session restart, context is recovered automatically.
 
@@ -106,7 +115,7 @@ This is additive — incremental summaries, memories, notes and reminders all ke
 
 A single project is saved under **many** `project_dir` values — a session indexes by whatever cwd it ran in, so summaries land under the project root *and* every subfolder a session happened to start in (`repo/`, `repo/apps/web/`, `repo/packages/...`). The Secretary keys purely on the cwd path; it has nothing to do with git.
 
-If restore matched `project_dir = cwd` exactly, a session opened in one folder would never see context saved under a sibling or parent path — so it could surface a **stale** handoff while today's real work sat invisible under another prefix. To prevent this, restore resolves the **project root from the DB**: it climbs the cwd's ancestors and keeps the highest one that still has summaries *and* hasn't crossed into a generic container folder (`Code`, `Programacion`, `Documents`, `AI.SKILLS`, home, …; see `GENERIC_CONTAINERS` in `summarize.mjs`). Every restore query then matches that root **and everything nested under it** (`root` OR `root/%`), so it always sees the project's latest activity regardless of which subfolder the session opened in. This tree scope applies to **everything** restore loads — the handoff, the latest-N items, the conversation summaries, and the user memories / notes / reminders — so a memory anchored to a project is visible from any of its subfolders but never leaks to a sibling project. `__global__` items are always included on top of the project tree.
+If restore matched `project_dir = cwd` exactly, a session opened in one folder would never see context saved under a sibling or parent path — so it could surface a **stale** handoff while today's real work sat invisible under another prefix. To prevent this, the **project root is resolved from the filesystem** (see *Per-project storage* above): climb the cwd's ancestors until a generic container folder (`Code`, `Programacion`, `Documents`, `AI.SKILLS`, home, …; see `GENERIC_CONTAINERS` in `summarize.mjs`), anchoring on any ancestor that already holds secretary data or a `.claude/` dir. Every query then runs against that root's own DB — which contains the whole project tree — so a session sees the project's latest activity regardless of which subfolder it opened in: the handoff, the latest-N items, the conversation summaries, and the user memories / notes / reminders. A memory anchored to a project is visible from any of its subfolders but never leaks to a sibling project. `__global__` items are always included on top via the attached global DB.
 
 #### Latest-N items (the literal "what just happened" view)
 
@@ -129,7 +138,7 @@ The check is cheap (a single SQLite query per prompt) and fires only when there 
 1. **PostToolUse hook** — On every tool call, scans user messages for secretary orders (remember/forget/note/reminder) via regex. Every N calls (default: 15), summarizes conversation via local LLM.
 2. **UserPromptSubmit hook** — On every user prompt, detects recall-style questions (`¿recuerdas?`, `do you remember`, etc.) and auto-injects matching snippets from cache + DB.
 3. **PreCompact hook** — Forces a final summary before Claude's compaction, then blocks it and suggests `/clear`.
-4. **SessionStart hook** — On `/clear`, `startup`, or `resume`, restores context (resolving the project root from the DB so it matches the whole project tree, not just the exact cwd):
+4. **SessionStart hook** — On `/clear`, `startup`, or `resume`, restores context from the project's own DB (root resolved from the filesystem, so it matches the whole project tree, not just the exact cwd):
    - **Overdue reminders** shown first (highest priority)
    - **Session handoff brief** (📋) from the previous session's Stop hook — the dense "how to resume" doc
    - **Latest N items** (🕑) — the N most recent summaries across the project tree, newest-first (`restore_recent_items`, default 15)
@@ -143,7 +152,7 @@ The check is cheap (a single SQLite query per prompt) and fires only when there 
 
 To keep SessionStart instant and avoid racing with still-running summarizers after `/clear`, each background summarization distills **3 terse one-line bullets** from the latest chunk summary and appends them to a per-project `bullets.md`. SessionStart just reads that file — no LLM call, no waiting.
 
-- **Location:** `~/.claude/the-secretary/cache/<project>-<hash8>/bullets.md`.
+- **Location:** `<projectRoot>/.claude/the-secretary/bullets.md` (travels with the project). Legacy caches under `~/.claude/the-secretary/cache/<project>-<hash8>/` are migrated automatically on first read.
 - **Structure:** sections by session. Each section header is `## Session <id> (started <iso>)`, followed by bullets.
 - **Per-session caps:** max **20 bullets** or **4000 chars**, FIFO when exceeded (oldest bullets drop first).
 - **Global caps:** last **2 sessions** kept (current + previous); older sessions are discarded when a new one starts.
@@ -258,7 +267,7 @@ Edit `~/.claude/the-secretary/config.json`:
 | `llm_url` | `http://localhost:8922/v1/chat/completions` | OpenAI-compatible endpoint (used when `provider=local`) |
 | `claude_bin` | `/opt/homebrew/bin/claude` | Path to the `claude` binary (used when `provider=claude_cli`) |
 | `claude_model` | `claude-haiku-4-5` | Model passed to `claude -p --model` |
-| `db_path` | `~/.claude/the-secretary/summaries.db` | SQLite database path |
+| `db_path` | `~/.claude/the-secretary/summaries.db` | GLOBAL SQLite DB path (only `__global__` items; per-project data lives in `<projectRoot>/.claude/the-secretary/summaries.db`) |
 
 ### Provider: `claude_cli` (Claude Max)
 
@@ -303,6 +312,9 @@ cat /tmp/the-secretary-llm.log
 
 **No context after /clear:**
 ```bash
+# Per-project DB (main storage):
+sqlite3 <projectRoot>/.claude/the-secretary/summaries.db "SELECT session_id, COUNT(*) FROM summaries GROUP BY session_id"
+# Global DB (only items marked 'global'):
 sqlite3 ~/.claude/the-secretary/summaries.db "SELECT session_id, COUNT(*) FROM summaries GROUP BY session_id"
 curl http://localhost:8922/v1/models
 ```

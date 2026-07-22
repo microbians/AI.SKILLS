@@ -96,6 +96,7 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 ```
 
 **Key features:**
+- **Per-project storage (memory travels with the folder)** — each project keeps its own SQLite DB + bullets cache inside the project at `<projectRoot>/.claude/the-secretary/`; copy or sync the folder anywhere and its memory goes with it. Only items marked `global` live in the shared DB at `~/.claude/the-secretary/`. Legacy global data is migrated automatically (non-destructively) the first time a project opens
 - **Recall-on-demand** — detects recall-style prompts (`do you remember`, `do you recall`, `remember when`, plus `¿recuerdas?` / `te acuerdas?` in Spanish) via UserPromptSubmit hook and auto-injects matching snippets from cache + DB before Claude replies
 - **Chunked summarization + immediate LLM call** — conversation is broken into bounded chunks (every `summarize_every_n` tool calls, minimum `min_new_chars` of new content), each chunk is sent to the local LLM right away for a fresh summary, then stored with an incremental `chunk_index` in SQLite and appended to the per-project `.md` cache. This keeps every LLM call small and fast, prevents context blow-up, and ensures no long conversation is ever summarized in a single oversized request
 - **Consolidation + compaction pass** — on session end / restore, chunks are consolidated into a single summary; if the merged summary exceeds the size budget, a second LLM pass compacts it under 3500 chars while preserving critical info
@@ -104,12 +105,12 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 - SessionStart hook injects saved summaries on `/clear`, `startup`, or `resume`
 - Memories, notes, reminders with regex detection + bilingual date parsing (EN/ES)
 - Global scope: memories, notes, and reminders can be shared across all projects
-- SQLite storage for persistent summaries across sessions
+- SQLite storage for persistent summaries across sessions (per-project DB + attached global DB, unified `all_items` view)
 - Configurable: model, summarization frequency (`summarize_every_n`), min content threshold (`min_new_chars`), token limits, remote LLM support
 
 **Includes:** `summarize.mjs`, `start-llm.sh`, `config.json`, `hooks.json`, `install.sh`, `claude-md-snippet.md`, `skill/SKILL.md` (behavior rules skill, installed to `~/.claude/skills/the-secretary/`)
 
-**Install path:** `~/.claude/the-secretary/` (auto-migrates from legacy `~/.claude/summarizer/` on re-install).
+**Install path:** `~/.claude/the-secretary/` (engine, config, LLM; auto-migrates from legacy `~/.claude/summarizer/` on re-install). Project data lives in each project's `.claude/the-secretary/`.
 
 **Requirements:** macOS/Linux, Node.js 18+, llama-server (llama.cpp) or MLX in PATH, ~2GB disk for the GGUF model
 
@@ -538,6 +539,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-07-22 | TheSecretary: per-project storage — DB + bullets cache move into `<projectRoot>/.claude/the-secretary/` so memory travels with the folder; global DB keeps only `global` items (attached via unified `all_items` view); filesystem-based project-root resolution; automatic non-destructive migration from the old global DB and legacy cache |
 | 2026-07-09 | CLAUDE.Global: restructure behavior rules as terse headline + enforcement detail        |
 | 2026-06-22 | CodeIndex: relational edge graph (`callers`/`deps`/`arch`/`flow`), JS embedded in PHP/HTML templates, hardened non-git fallback + OOM/large-line guards |
 | 2026-06-22 | Add CodeIndex plugin: incremental symbol index with signatures + doc hints (`where`/`refs`/`file`/`grep`/`stats`) |

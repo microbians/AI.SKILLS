@@ -63,19 +63,17 @@ const config = loadConfig();
 
 // ═══════════════════ PROJECT-ROOT RESOLUTION ═══════════════════
 //
-// A single logical project is stored under MANY project_dir values: a session
-// runs (and saves summaries) wherever its cwd happened to be — the project
-// root, but also any subfolder (dom-stories, apps/web, public/assets/…).
-// Matching on `project_dir = cwd` exactly means a session opened in one folder
-// never sees context saved under a sibling/parent path, so restore can surface
-// a stale handoff while today's real work sits invisible under another prefix.
+// Each project stores its own data under <projectRoot>/.claude/the-secretary/
+// (summaries.db + bullets.md), so memory TRAVELS with the folder when it is
+// copied or synced somewhere else. Only items explicitly marked 'global'
+// (project_dir = '__global__') live in the shared DB at ~/.claude/the-secretary.
 //
 // the-secretary has NOTHING to do with git — it keys purely on the cwd path.
-// So we resolve the project root from the DB itself, not from filesystem
-// markers: walk UP the cwd's ancestors and keep the highest one that (a) still
-// has summaries in the DB and (b) hasn't crossed into a generic container
-// folder (Code, Programacion, Documents, home…). That anchors the root at the
-// real project dir and captures every nested subfolder beneath it.
+// The root is resolved from the filesystem: climb the cwd's ancestors until
+// hitting a generic container folder (Code, Programacion, Documents, home…).
+// While climbing, the highest ancestor that already holds .claude/the-secretary/
+// data (or a plain .claude/ dir) anchors the root there, so sessions opened in
+// any nested subfolder all share the same project DB.
 
 // Generic parent folders that group many unrelated projects. We never treat
 // these (or anything above them) as a project root.
@@ -83,6 +81,7 @@ const GENERIC_CONTAINERS = new Set([
   'Code', 'code', 'Programacion', 'Programación', 'Projects', 'projects',
   'Documents', 'Desktop', 'Developer', 'dev', 'src', 'repos', 'Repos',
   'work', 'Work', 'CloudDocs', 'Mobile Documents',
+  'Library', 'CloudStorage', 'Shared drives',
   // Personal monorepo-of-projects buckets that group unrelated skills/apps.
   'AI.SKILLS',
 ]);
@@ -93,29 +92,49 @@ function parentDir(p) {
   return p.slice(0, i);
 }
 
-function hasSummariesUnder(db, prefix) {
-  const { clause, params } = projectTreeClause(prefix);
-  const row = db.prepare(
-    `SELECT 1 FROM summaries WHERE ${clause} AND session_id NOT IN ('manual','notes','reminders') LIMIT 1`
-  ).get(...params);
-  return !!row;
+const PROJECT_DATA_SUBDIR = join('.claude', 'the-secretary');
+
+function resolveProjectRoot(cwd) {
+  if (!cwd || cwd === '__global__') return null;
+  let dataRoot = null;
+  let markerRoot = null;
+  let top = cwd;
+  let dir = cwd;
+  // Climb until the PARENT is a generic container (or home/root): containers
+  // stop the climb but a cwd itself named like one (e.g. …/project/src) still
+  // resolves to its enclosing project.
+  while (dir) {
+    if (existsSync(join(dir, PROJECT_DATA_SUBDIR))) dataRoot = dir;
+    if (existsSync(join(dir, '.claude'))) markerRoot = dir;
+    top = dir;
+    const parent = parentDir(dir);
+    if (!parent || parent === homedir() || parent === '/' || GENERIC_CONTAINERS.has(basename(parent))) break;
+    dir = parent;
+  }
+  // Existing secretary data anchors the root; a .claude/ dir is the next best
+  // marker; otherwise fall back to the highest dir below a generic container.
+  return dataRoot || markerRoot || top;
 }
 
-function resolveProjectRoot(db, cwd) {
-  if (!cwd) return null;
-  let root = cwd;
-  let parent = parentDir(cwd);
-  // Climb while the parent is a real project folder (not a generic container,
-  // not home/root) AND the DB actually has summaries under it. Stop as soon as
-  // climbing would either leave the project or enter a shared container.
-  while (parent && parent !== homedir() && parent !== '/') {
-    const base = basename(parent);
-    if (GENERIC_CONTAINERS.has(base)) break;
-    if (db && !hasSummariesUnder(db, parent)) break;
-    root = parent;
-    parent = parentDir(parent);
+function projectDataDir(root) {
+  return root ? join(root, PROJECT_DATA_SUBDIR) : null;
+}
+
+// Creates the project data dir with a self-ignoring .gitignore so the memory
+// never gets committed/pushed, even in repos without their own ignore rules.
+function ensureProjectDataDir(root) {
+  const dir = projectDataDir(root);
+  if (!dir) return null;
+  mkdirSync(dir, { recursive: true });
+  const gitignore = join(dir, '.gitignore');
+  if (!existsSync(gitignore)) {
+    try { writeFileSync(gitignore, '*\n', 'utf-8'); } catch { /* ignore */ }
   }
-  return root;
+  return dir;
+}
+
+function projectDbPath(root) {
+  return root ? join(projectDataDir(root), 'summaries.db') : null;
 }
 
 // Returns { clause, params } for a WHERE fragment matching the whole project
@@ -136,6 +155,10 @@ function escapeLike(s) {
 }
 
 // ═══════════════════ CACHE (per-project pre-generated summaries) ═══════════════════
+//
+// bullets.md now lives INSIDE the project (<root>/.claude/the-secretary/) so it
+// travels with the folder. CACHE_DIR is the legacy pre-per-project location,
+// kept only as a migration source and as fallback when no root resolves.
 
 const CACHE_DIR = join(SECRETARY_DIR, 'cache');
 const CACHE_MAX_BULLETS_PER_SESSION = 20;
@@ -152,10 +175,34 @@ function projectFolderName(cwd) {
 }
 
 function cacheDirForProject(cwd) {
+  const root = resolveProjectRoot(cwd);
+  if (root) return projectDataDir(root);
   return join(CACHE_DIR, projectFolderName(cwd));
 }
 
+// One-time copy of the legacy bullets.md (~/.claude/the-secretary/cache/…)
+// into the project's own .claude/the-secretary/ dir.
+function migrateLegacyBullets(cwd) {
+  const root = resolveProjectRoot(cwd);
+  if (!root) return;
+  const dest = join(projectDataDir(root), BULLETS_FILE);
+  if (existsSync(dest)) return;
+  for (const key of [root, cwd]) {
+    const legacy = join(CACHE_DIR, projectFolderName(key), BULLETS_FILE);
+    if (!existsSync(legacy)) continue;
+    try {
+      ensureProjectDataDir(root);
+      writeFileSync(dest, readFileSync(legacy, 'utf-8'));
+    } catch { /* ignore */ }
+    return;
+  }
+}
+
 function ensureCacheDir(cwd) {
+  const root = resolveProjectRoot(cwd);
+  if (root) {
+    try { return ensureProjectDataDir(root); } catch { /* fall through */ }
+  }
   const dir = cacheDirForProject(cwd);
   try { mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
   return dir;
@@ -178,6 +225,7 @@ function bulletsFilePath(cwd) {
  */
 function readBulletsCache(cwd) {
   if (!cwd) return [];
+  migrateLegacyBullets(cwd);
   const file = bulletsFilePath(cwd);
   if (!existsSync(file)) return [];
   try {
@@ -276,34 +324,93 @@ try {
   }
 } catch { /* will be checked later */ }
 
-function openDb() {
+function ensureSchema(db, schema = 'main') {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${schema}.summaries (
+      id INTEGER PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      project_dir TEXT NOT NULL,
+      chunk_index INTEGER DEFAULT 0,
+      summary TEXT NOT NULL,
+      message_count INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+  `);
+  // Schema migration: add columns for The Secretary features
+  try { db.exec(`ALTER TABLE ${schema}.summaries ADD COLUMN due_at TEXT DEFAULT NULL`); } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE ${schema}.summaries ADD COLUMN status TEXT DEFAULT 'active'`); } catch { /* already exists */ }
+}
+
+const ITEM_COLS = 'session_id, project_dir, chunk_index, summary, message_count, created_at, due_at, status';
+const ALL_ITEMS_COLS = `id, ${ITEM_COLS}`;
+
+// One-time seed of a freshly created project DB: copy this project's rows out
+// of the old global DB so existing memory shows up in the new per-project
+// storage. The global DB is left untouched (non-destructive); reads only look
+// at the project DB + '__global__' rows, so nothing is duplicated.
+function migrateFromGlobalDb(db, root) {
+  try {
+    if (db.prepare('SELECT 1 FROM main.summaries LIMIT 1').get()) return;
+    const { clause, params } = projectTreeClause(root);
+    const count = db.prepare(
+      `SELECT COUNT(*) AS c FROM g.summaries WHERE ${clause} AND project_dir != '__global__'`
+    ).get(...params)?.c || 0;
+    if (!count) return;
+    db.prepare(`
+      INSERT INTO main.summaries (${ITEM_COLS})
+      SELECT ${ITEM_COLS}
+      FROM g.summaries WHERE ${clause} AND project_dir != '__global__'
+    `).run(...params);
+    process.stderr.write(`[secretary] Migrated ${count} item(s) from the global DB into ${projectDbPath(root)}\n`);
+  } catch { /* best effort */ }
+}
+
+// Opens the PROJECT database (<root>/.claude/the-secretary/summaries.db) and
+// attaches the global one as `g`. All reads go through the temp view
+// `all_items` (project rows + '__global__' rows, tagged with src 'p'/'g').
+// Without a resolvable root, falls back to the global DB alone.
+function openDb(cwd) {
   if (!Database) return null;
   try {
-    const db = new Database(config.db_path);
-    db.pragma('journal_mode = WAL');
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS summaries (
-        id INTEGER PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        project_dir TEXT NOT NULL,
-        chunk_index INTEGER DEFAULT 0,
-        summary TEXT NOT NULL,
-        message_count INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-      CREATE TABLE IF NOT EXISTS state (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TEXT DEFAULT (datetime('now'))
-      );
-    `);
-    // Schema migration: add columns for The Secretary features
-    try { db.exec(`ALTER TABLE summaries ADD COLUMN due_at TEXT DEFAULT NULL`); } catch { /* already exists */ }
-    try { db.exec(`ALTER TABLE summaries ADD COLUMN status TEXT DEFAULT 'active'`); } catch { /* already exists */ }
+    mkdirSync(SECRETARY_DIR, { recursive: true });
+    const root = resolveProjectRoot(cwd);
+    let db;
+    if (root) {
+      ensureProjectDataDir(root);
+      db = new Database(projectDbPath(root));
+      db.pragma('journal_mode = WAL');
+      ensureSchema(db);
+      db.exec(`ATTACH DATABASE '${config.db_path.replace(/'/g, "''")}' AS g`);
+      ensureSchema(db, 'g');
+      db._hasProject = true;
+      migrateFromGlobalDb(db, root);
+      db.exec(`CREATE TEMP VIEW IF NOT EXISTS all_items AS
+        SELECT ${ALL_ITEMS_COLS}, 'p' AS src FROM main.summaries
+        UNION ALL
+        SELECT ${ALL_ITEMS_COLS}, 'g' AS src FROM g.summaries WHERE project_dir = '__global__'`);
+    } else {
+      db = new Database(config.db_path);
+      db.pragma('journal_mode = WAL');
+      ensureSchema(db);
+      db._hasProject = false;
+      db.exec(`CREATE TEMP VIEW IF NOT EXISTS all_items AS
+        SELECT ${ALL_ITEMS_COLS}, 'p' AS src FROM main.summaries`);
+    }
     return db;
   } catch {
     return null;
   }
+}
+
+// Physical table an item belongs to. Global items go to the attached global DB
+// when a project DB is open; everything else lives in the project DB itself.
+function itemTable(db, isGlobal) {
+  return isGlobal && db._hasProject ? 'g.summaries' : 'summaries';
 }
 
 // ═══════════════════ LLM ═══════════════════
@@ -936,9 +1043,9 @@ async function processSecretaryOrders(messages, db, cwd) {
 
 async function actionRemember(content, db, cwd) {
   const existingManual = db.prepare(`
-    SELECT summary FROM summaries
-    WHERE project_dir IN (?, '__global__') AND session_id = 'manual' AND status = 'active'
-  `).all(cwd || '').map(r => r.summary.toLowerCase());
+    SELECT summary FROM all_items
+    WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'manual' AND status = 'active'
+  `).all().map(r => r.summary.toLowerCase());
 
   const normalized = content.toLowerCase();
   const isDuplicate = existingManual.some(existing =>
@@ -946,9 +1053,9 @@ async function actionRemember(content, db, cwd) {
   );
 
   if (!isDuplicate) {
-    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM summaries WHERE session_id = ?').get('manual');
+    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM all_items WHERE session_id = ?').get('manual');
     const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
-    db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)').run(
+    db.prepare(`INSERT INTO ${itemTable(db, cwd === '__global__')} (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)`).run(
       'manual', cwd || '', chunkIndex, `[REMEMBER] ${content}`, 0
     );
     process.stderr.write(`[secretary] 💾 Memory saved: "${content.slice(0, 80)}"\n`);
@@ -959,18 +1066,17 @@ async function actionRemember(content, db, cwd) {
 
 async function actionForget(content, db, cwd, llmAvailable) {
   const manualEntries = db.prepare(`
-    SELECT id, summary FROM summaries
-    WHERE project_dir IN (?, '__global__') AND session_id = 'manual' AND status = 'active'
-  `).all(cwd || '');
+    SELECT id, src, summary FROM all_items
+    WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'manual' AND status = 'active'
+  `).all();
 
   if (manualEntries.length === 0) return;
 
-  const idsToDelete = await matchItemsForDeletion(content, manualEntries, 'memories', llmAvailable);
+  const entriesToDelete = await matchItemsForDeletion(content, manualEntries, 'memories', llmAvailable);
 
-  for (const id of idsToDelete) {
-    const entry = manualEntries.find(e => e.id === id);
-    db.prepare('DELETE FROM summaries WHERE id = ?').run(id);
-    process.stderr.write(`[secretary] 🗑️ Memory deleted: "${(entry?.summary || id).toString().slice(0, 80)}"\n`);
+  for (const entry of entriesToDelete) {
+    db.prepare(`DELETE FROM ${itemTable(db, entry.src === 'g')} WHERE id = ?`).run(entry.id);
+    process.stderr.write(`[secretary] 🗑️ Memory deleted: "${entry.summary.slice(0, 80)}"\n`);
   }
 }
 
@@ -978,9 +1084,9 @@ async function actionForget(content, db, cwd, llmAvailable) {
 
 async function actionNote(content, db, cwd) {
   const existingNotes = db.prepare(`
-    SELECT summary FROM summaries
-    WHERE project_dir IN (?, '__global__') AND session_id = 'notes' AND status = 'active'
-  `).all(cwd || '').map(r => r.summary.toLowerCase());
+    SELECT summary FROM all_items
+    WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'notes' AND status = 'active'
+  `).all().map(r => r.summary.toLowerCase());
 
   const normalized = content.toLowerCase();
   const isDuplicate = existingNotes.some(existing =>
@@ -988,9 +1094,9 @@ async function actionNote(content, db, cwd) {
   );
 
   if (!isDuplicate) {
-    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM summaries WHERE session_id = ?').get('notes');
+    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM all_items WHERE session_id = ?').get('notes');
     const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
-    db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)').run(
+    db.prepare(`INSERT INTO ${itemTable(db, cwd === '__global__')} (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)`).run(
       'notes', cwd || '', chunkIndex, `[NOTE] ${content}`, 0
     );
     process.stderr.write(`[secretary] 📝 Note saved: "${content.slice(0, 80)}"\n`);
@@ -1001,18 +1107,17 @@ async function actionNote(content, db, cwd) {
 
 async function actionNoteDelete(content, db, cwd, llmAvailable) {
   const noteEntries = db.prepare(`
-    SELECT id, summary FROM summaries
-    WHERE project_dir IN (?, '__global__') AND session_id = 'notes' AND status = 'active'
-  `).all(cwd || '');
+    SELECT id, src, summary FROM all_items
+    WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'notes' AND status = 'active'
+  `).all();
 
   if (noteEntries.length === 0) return;
 
-  const idsToDelete = await matchItemsForDeletion(content, noteEntries, 'notes', llmAvailable);
+  const entriesToDelete = await matchItemsForDeletion(content, noteEntries, 'notes', llmAvailable);
 
-  for (const id of idsToDelete) {
-    const entry = noteEntries.find(e => e.id === id);
-    db.prepare('DELETE FROM summaries WHERE id = ?').run(id);
-    process.stderr.write(`[secretary] 🗑️ Note deleted: "${(entry?.summary || id).toString().slice(0, 80)}"\n`);
+  for (const entry of entriesToDelete) {
+    db.prepare(`DELETE FROM ${itemTable(db, entry.src === 'g')} WHERE id = ?`).run(entry.id);
+    process.stderr.write(`[secretary] 🗑️ Note deleted: "${entry.summary.slice(0, 80)}"\n`);
   }
 }
 
@@ -1021,9 +1126,9 @@ async function actionNoteDelete(content, db, cwd, llmAvailable) {
 async function actionReminder(content, db, cwd) {
   // Dedup: check if a similar reminder already exists
   const existingReminders = db.prepare(`
-    SELECT summary FROM summaries
-    WHERE project_dir IN (?, '__global__') AND session_id = 'reminders' AND status = 'active'
-  `).all(cwd || '').map(r => r.summary.toLowerCase());
+    SELECT summary FROM all_items
+    WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'active'
+  `).all().map(r => r.summary.toLowerCase());
 
   const normalized = content.toLowerCase();
   const isDuplicate = existingReminders.some(existing =>
@@ -1034,9 +1139,9 @@ async function actionReminder(content, db, cwd) {
 
   const dueDate = parseDueDate(content);
 
-  const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM summaries WHERE session_id = ?').get('reminders');
+  const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM all_items WHERE session_id = ?').get('reminders');
   const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
-  db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count, due_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+  db.prepare(`INSERT INTO ${itemTable(db, cwd === '__global__')} (session_id, project_dir, chunk_index, summary, message_count, due_at) VALUES (?, ?, ?, ?, ?, ?)`).run(
     'reminders', cwd || '', chunkIndex, `[REMINDER] ${content}`, 0, dueDate
   );
 
@@ -1048,27 +1153,29 @@ async function actionReminder(content, db, cwd) {
 
 async function actionReminderDone(content, db, cwd, llmAvailable) {
   const reminderEntries = db.prepare(`
-    SELECT id, summary FROM summaries
-    WHERE project_dir IN (?, '__global__') AND session_id = 'reminders' AND status = 'active'
-  `).all(cwd || '');
+    SELECT id, src, summary FROM all_items
+    WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'active'
+  `).all();
 
   if (reminderEntries.length === 0) return;
 
-  const idsToUpdate = await matchItemsForDeletion(content, reminderEntries, 'reminders', llmAvailable);
+  const entriesToUpdate = await matchItemsForDeletion(content, reminderEntries, 'reminders', llmAvailable);
 
-  for (const id of idsToUpdate) {
-    const entry = reminderEntries.find(e => e.id === id);
-    db.prepare("UPDATE summaries SET status = 'done' WHERE id = ?").run(id);
-    process.stderr.write(`[secretary] ✅ Reminder done: "${(entry?.summary || id).toString().slice(0, 80)}"\n`);
+  for (const entry of entriesToUpdate) {
+    db.prepare(`UPDATE ${itemTable(db, entry.src === 'g')} SET status = 'done' WHERE id = ?`).run(entry.id);
+    process.stderr.write(`[secretary] ✅ Reminder done: "${entry.summary.slice(0, 80)}"\n`);
   }
 }
 
 // ── SHARED: LLM-based matching for deletion/completion ──
 
+// Returns the matched ENTRIES (not raw ids): entries can come from both the
+// project and the global DB, where numeric ids may collide, so the LLM is
+// shown positional ids (1..N) that map back to the entry list.
 async function matchItemsForDeletion(userRequest, entries, category, llmAvailable) {
-  const entriesList = entries.map(e => `[ID:${e.id}] ${e.summary}`).join('\n');
+  const entriesList = entries.map((e, i) => `[ID:${i + 1}] ${e.summary}`).join('\n');
 
-  let idsToMatch = [];
+  let matched = [];
 
   if (llmAvailable) {
     try {
@@ -1092,33 +1199,31 @@ DO NOT include any other text.`;
       const cleaned = response.trim();
 
       if (cleaned && cleaned !== 'NONE' && cleaned.toLowerCase() !== 'none') {
-        idsToMatch = cleaned.split(/[,\s]+/)
+        matched = cleaned.split(/[,\s]+/)
           .map(s => parseInt(s.trim(), 10))
-          .filter(n => !isNaN(n));
-
-        const validIds = new Set(entries.map(e => e.id));
-        idsToMatch = idsToMatch.filter(id => validIds.has(id));
+          .filter(n => !isNaN(n) && n >= 1 && n <= entries.length)
+          .map(n => entries[n - 1]);
       }
     } catch (err) {
       process.stderr.write(`[secretary] LLM matching failed: ${err.message}, falling back to keyword match\n`);
-      idsToMatch = [];
+      matched = [];
     }
   }
 
   // Fallback: keyword matching
-  if (idsToMatch.length === 0) {
+  if (matched.length === 0) {
     const keyword = userRequest.toLowerCase();
     for (const entry of entries) {
       const cleanEntry = entry.summary.toLowerCase()
         .replace(/^\[(?:remember|manual|note|reminder)\]\s*/gi, '')
         .trim();
       if (cleanEntry.includes(keyword) || keyword.includes(cleanEntry)) {
-        idsToMatch.push(entry.id);
+        matched.push(entry);
       }
     }
   }
 
-  return idsToMatch;
+  return matched;
 }
 
 // ═══════════════════ COMMANDS ═══════════════════
@@ -1127,7 +1232,7 @@ async function incremental(hookInput) {
   const { session_id, transcript_path, cwd } = hookInput;
   if (!session_id || !transcript_path) return;
 
-  const db = openDb();
+  const db = openDb(cwd);
   if (!db) return;
 
   try {
@@ -1259,18 +1364,18 @@ async function bootstrapBulletsFromDb(db, cwd) {
   if (existsSync(bulletsFilePath(cwd))) return false;
 
   const lastSessionRow = db.prepare(`
-    SELECT session_id FROM summaries
-    WHERE project_dir = ? AND session_id NOT IN ('manual', 'notes', 'reminders')
+    SELECT session_id FROM all_items
+    WHERE src = 'p' AND session_id NOT IN ('manual', 'notes', 'reminders')
     ORDER BY created_at DESC LIMIT 1
-  `).get(cwd);
+  `).get();
   if (!lastSessionRow?.session_id) return false;
 
   const lastSessionId = lastSessionRow.session_id;
   const chunks = db.prepare(`
-    SELECT summary FROM summaries
-    WHERE project_dir = ? AND session_id = ?
+    SELECT summary FROM all_items
+    WHERE src = 'p' AND session_id = ?
     ORDER BY chunk_index ASC
-  `).all(cwd, lastSessionId);
+  `).all(lastSessionId);
   if (chunks.length === 0) return false;
 
   if (!(await isLLMAvailable())) return false;
@@ -1387,11 +1492,11 @@ ${text}`;
     process.exit(0);
   }
 
-  const db = openDb();
+  const db = openDb(cwd);
   if (!db) process.exit(1);
 
   try {
-    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM summaries WHERE session_id = ?').get(sessionId);
+    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM all_items WHERE session_id = ?').get(sessionId);
     const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
 
     // Tag handoff entries with a [HANDOFF] prefix so the SessionStart hook
@@ -1422,7 +1527,7 @@ async function compact(hookInput) {
   const { session_id, transcript_path, cwd } = hookInput;
 
   if (session_id && transcript_path) {
-    const db = openDb();
+    const db = openDb(cwd);
     if (db) {
       try {
         const stateKey = `offset:${session_id}`;
@@ -1452,7 +1557,7 @@ ${text}`;
 
             const summary = await callLLM(prompt);
             if (summary && summary.length >= 50) {
-              const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM summaries WHERE session_id = ?').get(session_id);
+              const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM all_items WHERE session_id = ?').get(session_id);
               const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
 
               db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)').run(
@@ -1472,10 +1577,10 @@ ${text}`;
     }
   }
 
-  const db2 = openDb();
+  const db2 = openDb(cwd);
   const hasSummaries = db2 ? (() => {
     try {
-      const row = db2.prepare('SELECT COUNT(*) as count FROM summaries WHERE session_id = ?').get(session_id);
+      const row = db2.prepare('SELECT COUNT(*) as count FROM all_items WHERE session_id = ?').get(session_id);
       return row?.count > 0;
     } finally {
       db2.close();
@@ -1493,7 +1598,7 @@ ${text}`;
 async function restore(hookInput) {
   const { session_id, cwd } = hookInput;
 
-  const db = openDb();
+  const db = openDb(cwd);
   if (!db) {
     process.stdout.write(`⚠️ **The Secretary: No se pudo abrir la base de datos.** Ejecuta manualmente:\n\`\`\`bash\nbash ~/.claude/the-secretary/start-llm.sh start\necho '{"cwd":"${cwd || ''}"}' | node ~/.claude/the-secretary/summarize.mjs recall\n\`\`\`\n`);
     return;
@@ -1506,17 +1611,17 @@ async function restore(hookInput) {
     // Resolve the whole project tree (repo root + every nested subfolder a
     // session ran in) so restore never misses today's work just because it was
     // saved under a sibling path. See resolveProjectRoot/projectTreeClause.
-    const projectRoot = resolveProjectRoot(db, cwd);
+    const projectRoot = resolveProjectRoot(cwd);
     const tree = projectTreeClause(projectRoot);
 
     const lastSessionRow = cwd
       ? db.prepare(`
-          SELECT session_id FROM summaries
+          SELECT session_id FROM all_items
           WHERE ${tree.clause} AND session_id NOT IN ('manual', 'notes', 'reminders')
           ORDER BY created_at DESC LIMIT 1
         `).get(...tree.params)
       : db.prepare(`
-          SELECT session_id FROM summaries
+          SELECT session_id FROM all_items
           WHERE session_id NOT IN ('manual', 'notes', 'reminders')
           ORDER BY created_at DESC LIMIT 1
         `).get();
@@ -1528,27 +1633,27 @@ async function restore(hookInput) {
     // visible from any subfolder a session opens in — same tree resolution as
     // the conversation summaries above. '__global__' items are always included.
     const manualEntries = cwd ? db.prepare(`
-      SELECT summary, created_at FROM summaries
+      SELECT summary, created_at FROM all_items
       WHERE (${tree.clause} OR project_dir = '__global__') AND session_id = 'manual' AND status = 'active'
       ORDER BY created_at ASC
     `).all(...tree.params) : [];
 
     const noteEntries = cwd ? db.prepare(`
-      SELECT summary, created_at FROM summaries
+      SELECT summary, created_at FROM all_items
       WHERE (${tree.clause} OR project_dir = '__global__') AND session_id = 'notes' AND status = 'active'
       ORDER BY created_at ASC
     `).all(...tree.params) : [];
 
     const today = new Date().toISOString().split('T')[0];
     const overdueReminders = cwd ? db.prepare(`
-      SELECT summary, due_at FROM summaries
+      SELECT summary, due_at FROM all_items
       WHERE (${tree.clause} OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'active'
         AND due_at IS NOT NULL AND due_at <= ?
       ORDER BY due_at ASC
     `).all(...tree.params, today) : [];
 
     const upcomingReminders = cwd ? db.prepare(`
-      SELECT summary, due_at FROM summaries
+      SELECT summary, due_at FROM all_items
       WHERE (${tree.clause} OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'active'
         AND (due_at IS NULL OR due_at > ?)
       ORDER BY due_at ASC
@@ -1559,7 +1664,7 @@ async function restore(hookInput) {
     let summaries = [];
     if (lastSessionId) {
       summaries = db.prepare(`
-        SELECT summary, chunk_index, created_at, session_id FROM summaries
+        SELECT summary, chunk_index, created_at, session_id FROM all_items
         WHERE session_id = ? ORDER BY chunk_index ASC
       `).all(lastSessionId);
 
@@ -1567,7 +1672,7 @@ async function restore(hookInput) {
       if (summaries.length < MIN_CHUNKS && cwd) {
         const needed = MIN_CHUNKS - summaries.length;
         const backfill = db.prepare(`
-          SELECT summary, chunk_index, created_at, session_id FROM summaries
+          SELECT summary, chunk_index, created_at, session_id FROM all_items
           WHERE ${tree.clause} AND session_id != ? AND session_id NOT IN ('manual', 'notes', 'reminders')
           ORDER BY created_at DESC LIMIT ?
         `).all(...tree.params, lastSessionId, needed);
@@ -1652,7 +1757,7 @@ async function restore(hookInput) {
     let handoffBrief = '';
     if (cwd) {
       const handoffRow = db.prepare(`
-        SELECT summary, created_at, session_id FROM summaries
+        SELECT summary, created_at, session_id FROM all_items
         WHERE ${tree.clause}
           AND session_id NOT IN ('manual', 'notes', 'reminders')
           AND summary LIKE '[HANDOFF]%'
@@ -1676,7 +1781,7 @@ async function restore(hookInput) {
     if (cwd) {
       const N = Math.max(1, parseInt(config.restore_recent_items, 10) || 15);
       const recentItems = db.prepare(`
-        SELECT summary, created_at FROM summaries
+        SELECT summary, created_at FROM all_items
         WHERE ${tree.clause}
           AND session_id NOT IN ('manual', 'notes', 'reminders')
         ORDER BY created_at DESC
@@ -1757,9 +1862,9 @@ async function restore(hookInput) {
     try {
       if (cwd && session_id) {
         const maxRow = db.prepare(`
-          SELECT MAX(created_at) AS max_at FROM summaries
-          WHERE project_dir IN (?, '__global__')
-        `).get(cwd);
+          SELECT MAX(created_at) AS max_at FROM all_items
+          WHERE (src = 'p' OR project_dir = '__global__')
+        `).get();
         const watermark = {
           session_id,
           project_dir: cwd,
@@ -1783,7 +1888,7 @@ async function force(hookInput, { stopLlm = false, notify: shouldNotify = false 
   const { session_id, transcript_path, cwd } = hookInput;
   if (!session_id || !transcript_path) return;
 
-  const db = openDb();
+  const db = openDb(cwd);
   if (!db) return;
 
   try {
@@ -1852,14 +1957,14 @@ async function inject(hookInput) {
     process.exit(1);
   }
 
-  const db = openDb();
+  const db = openDb(cwd);
   if (!db) {
     process.stderr.write('[secretary] Cannot open database.\n');
     return;
   }
 
   try {
-    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM summaries WHERE session_id = ?').get(session_id);
+    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM all_items WHERE session_id = ?').get(session_id);
     const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
 
     db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)').run(
@@ -1875,7 +1980,7 @@ async function inject(hookInput) {
 async function recall(hookInput, filter = 'all') {
   const cwd = hookInput.cwd || process.argv[3] || process.cwd();
 
-  const db = openDb();
+  const db = openDb(cwd);
   if (!db) {
     process.stdout.write('No database available.\n');
     return;
@@ -1887,10 +1992,10 @@ async function recall(hookInput, filter = 'all') {
     // Memories
     if (filter === 'all' || filter === 'memories') {
       const entries = db.prepare(`
-        SELECT id, summary, created_at, project_dir FROM summaries
-        WHERE project_dir IN (?, '__global__') AND session_id = 'manual' AND status = 'active'
+        SELECT id, summary, created_at, project_dir FROM all_items
+        WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'manual' AND status = 'active'
         ORDER BY created_at ASC
-      `).all(cwd);
+      `).all();
 
       if (entries.length > 0) {
         output += `## Memorias del usuario (${entries.length})\n\n`;
@@ -1907,10 +2012,10 @@ async function recall(hookInput, filter = 'all') {
     // Notes
     if (filter === 'all' || filter === 'notes') {
       const entries = db.prepare(`
-        SELECT id, summary, created_at, project_dir FROM summaries
-        WHERE project_dir IN (?, '__global__') AND session_id = 'notes' AND status = 'active'
+        SELECT id, summary, created_at, project_dir FROM all_items
+        WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'notes' AND status = 'active'
         ORDER BY created_at ASC
-      `).all(cwd);
+      `).all();
 
       if (entries.length > 0) {
         output += `## Notas (${entries.length})\n\n`;
@@ -1927,16 +2032,16 @@ async function recall(hookInput, filter = 'all') {
     // Reminders
     if (filter === 'all' || filter === 'reminders') {
       const active = db.prepare(`
-        SELECT id, summary, due_at, created_at FROM summaries
-        WHERE project_dir IN (?, '__global__') AND session_id = 'reminders' AND status = 'active'
+        SELECT id, summary, due_at, created_at FROM all_items
+        WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'active'
         ORDER BY due_at ASC, created_at ASC
-      `).all(cwd);
+      `).all();
 
       const done = db.prepare(`
-        SELECT id, summary, due_at, created_at FROM summaries
-        WHERE project_dir IN (?, '__global__') AND session_id = 'reminders' AND status = 'done'
+        SELECT id, summary, due_at, created_at FROM all_items
+        WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'done'
         ORDER BY created_at DESC LIMIT 10
-      `).all(cwd);
+      `).all();
 
       if (active.length > 0) {
         const today = new Date().toISOString().split('T')[0];
@@ -1963,14 +2068,14 @@ async function recall(hookInput, filter = 'all') {
     // Context summaries (only in 'all' mode)
     if (filter === 'all') {
       const lastSessionRow = db.prepare(`
-        SELECT session_id FROM summaries
-        WHERE project_dir = ? AND session_id NOT IN ('manual', 'notes', 'reminders')
+        SELECT session_id FROM all_items
+        WHERE src = 'p' AND session_id NOT IN ('manual', 'notes', 'reminders')
         ORDER BY created_at DESC LIMIT 1
-      `).get(cwd);
+      `).get();
 
       if (lastSessionRow) {
         const summaries = db.prepare(`
-          SELECT summary, created_at FROM summaries
+          SELECT summary, created_at FROM all_items
           WHERE session_id = ? ORDER BY chunk_index ASC
         `).all(lastSessionRow.session_id);
 
@@ -2044,10 +2149,12 @@ function isRecallQuery(prompt) {
 }
 
 /**
- * Search for `query` across cache .md files (fast) and DB summaries (fallback).
+ * Search for `query` across the project's cache .md files (fast) and its DB
+ * summaries (fallback). Strictly per-project: only the cwd's project data
+ * (plus '__global__' items via the DB view) is searched.
  * Returns an array of hits: { source, project, date, snippet }.
  */
-async function searchContext(query, { maxHits = 5, snippetChars = 400 } = {}) {
+async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = process.cwd() } = {}) {
   const q = (query || '').trim();
   if (q.length < 3) return [];
 
@@ -2056,19 +2163,16 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400 } = {}) {
 
   const hits = [];
 
-  // ── 1. Cache .md files ──
+  // ── 1. Cache .md files (this project only) ──
   try {
     const { readdirSync, readFileSync, statSync } = await import('fs');
-    const projectDirs = readdirSync(CACHE_DIR, { withFileTypes: true })
-      .filter((d) => d.isDirectory())
-      .map((d) => d.name);
-
-    for (const proj of projectDirs) {
-      const projPath = join(CACHE_DIR, proj);
+    const projPath = cacheDirForProject(cwd);
+    const projName = basename(resolveProjectRoot(cwd) || cwd || '');
+    {
       let files = [];
       try {
         files = readdirSync(projPath).filter((f) => f.endsWith('.md'));
-      } catch { continue; }
+      } catch { files = []; }
 
       for (const f of files) {
         const full = join(projPath, f);
@@ -2090,7 +2194,7 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400 } = {}) {
 
         hits.push({
           source: 'cache',
-          project: proj,
+          project: projName,
           date: mtime || f.replace('.md', ''),
           score: matchCount,
           snippet: snippet.trim(),
@@ -2108,14 +2212,14 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400 } = {}) {
 
   // ── 2. DB fallback (summaries table) ──
   try {
-    const db = openDb();
+    const db = openDb(cwd);
     if (db) {
       try {
         const likeClauses = terms.map(() => 'summary LIKE ?').join(' AND ');
         const params = terms.map((t) => `%${t}%`);
         const rows = db.prepare(`
           SELECT project_dir, summary, created_at
-          FROM summaries
+          FROM all_items
           WHERE session_id NOT IN ('manual', 'notes', 'reminders')
             AND ${likeClauses}
           ORDER BY created_at DESC
@@ -2193,7 +2297,7 @@ async function userPromptHook(hookInput) {
   const query = extractSearchQuery(prompt);
   if (query.length < 3) return;
 
-  const hits = await searchContext(query, { maxHits: 5, snippetChars: 500 });
+  const hits = await searchContext(query, { maxHits: 5, snippetChars: 500, cwd: hookInput.cwd || process.cwd() });
   if (hits.length === 0) return;
 
   process.stdout.write(`## 🧠 The Secretary: contexto encontrado para "${query}"\n\n`);
@@ -2224,19 +2328,19 @@ async function checkFreshContextWatermark(hookInput) {
     wm = JSON.parse(readFileSync(wmFile, 'utf8'));
   } catch { return; }
 
-  const db = openDb();
+  const db = openDb(cwd);
   if (!db) return;
 
   try {
     const rows = db.prepare(`
-      SELECT summary, created_at, session_id, chunk_index FROM summaries
-      WHERE project_dir IN (?, '__global__')
+      SELECT summary, created_at, session_id, chunk_index FROM all_items
+      WHERE (src = 'p' OR project_dir = '__global__')
         AND created_at > ?
         AND session_id NOT IN ('manual', 'notes', 'reminders')
         AND session_id != ?
       ORDER BY created_at ASC
       LIMIT 20
-    `).all(wm.project_dir, wm.max_at, session_id);
+    `).all(wm.max_at, session_id);
 
     if (rows.length === 0) return;
 
@@ -2299,7 +2403,7 @@ async function main() {
     const [, , , cwd, sessionId] = process.argv;
     try {
       if (!(await ensureLLMRunning())) process.exit(0);
-      const db = openDb();
+      const db = openDb(cwd);
       if (!db) process.exit(0);
       try {
         await bootstrapBulletsFromDb(db, cwd);
@@ -2318,7 +2422,7 @@ async function main() {
     const [, , , cwd, actionsJson] = process.argv;
     try {
       const actions = JSON.parse(actionsJson);
-      const db = openDb();
+      const db = openDb(cwd);
       if (!db) process.exit(1);
       try {
         const llmAvailable = await isLLMAvailable();

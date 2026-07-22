@@ -36,3 +36,9 @@ models/
 
 # Cloned repos (installed by scripts)
 opencodemlx/turbomlx-src/
+
+# Local-only extras
+others/
+
+# The Secretary per-project data (memory lives with the folder, never in git)
+.claude/the-secretary/
