@@ -700,8 +700,14 @@ function notify(title, message) {
  * Stripping it keeps the summarizer's budget for what the user actually said.
  */
 const NOISE_PATTERNS = [
-  /<command-(?:name|message|args|contents)>[\s\S]*?<\/command-\1>/g,
-  /<local-command-(?:stdout|stderr|caveat)>[\s\S]*?<\/local-command-\1>/g,
+  // NOTE: the tag groups MUST be capturing — `\1` refers to them. Written as (?:...)
+  // the backreference had nothing to bind to, so these two patterns silently matched
+  // nothing and every slash-command wrapper landed verbatim in the index.
+  /<command-(name|message|args|contents)>[\s\S]*?<\/command-\1>/g,
+  /<local-command-(stdout|stderr|caveat)>[\s\S]*?<\/local-command-\1>/g,
+  // Same tags left unclosed: a turn is truncated at 3000 chars, which can cut the
+  // closing tag off and leave the opening one stranded.
+  /<\/?(?:command-(?:name|message|args|contents)|local-command-(?:stdout|stderr|caveat))>/g,
   /<task-notification>[\s\S]*?<\/task-notification>/g,
   /<system-reminder>[\s\S]*?<\/system-reminder>/g,
   /<user-prompt-submit-hook>[\s\S]*?<\/user-prompt-submit-hook>/g,
