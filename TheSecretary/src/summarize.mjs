@@ -2485,6 +2485,27 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
  * while this loads a 600 MB model and takes ~50 s per 2k turns. It is an explicit,
  * occasional operation. Re-running it only embeds turns that are not in vturns yet.
  */
+/**
+ * CLI command: sync — keep both indexes current, in the background.
+ *
+ * Wired to SessionStart. Indexing must never delay the prompt, so this only
+ * spawns a detached worker and returns; the work happens in `_bg_sync`.
+ *
+ * Without this the indexes only ever grew when someone remembered to run the
+ * commands by hand, so a project drifted further behind with every session.
+ */
+async function cmdSync({ vectors = true } = {}) {
+  const cwd = process.cwd();
+  if (!canSpawnBgWorkerForProject(cwd)) return;
+
+  const { spawn } = await import('child_process');
+  const child = spawn('node', [
+    new URL(import.meta.url).pathname, '_bg_sync', cwd, vectors ? '1' : '0',
+  ], { detached: true, stdio: 'ignore' });
+  child.unref();
+  registerBgWorkerForProject(cwd, child.pid);
+}
+
 async function cmdIndexVectors() {
   const cwd = process.cwd();
   if (!semanticAvailable()) {
@@ -2512,7 +2533,13 @@ async function cmdIndexVectors() {
     }
 
     process.stdout.write(`Embedding ${pending.length} turn(s)…\n`);
+    // vec0 enforces its primary key before SQLite's conflict clause runs, so
+    // `INSERT OR IGNORE` still throws — the duplicate has to be filtered out in JS.
+    // This matters because a run killed mid-batch leaves rows committed that the next
+    // run may still read as pending; without the guard the whole batch would die on
+    // the first repeat.
     const insert = db.prepare('INSERT INTO vturns(rowid, embedding) VALUES (?, ?)');
+    const alreadyIndexed = db.prepare('SELECT 1 FROM vturns WHERE rowid = ?');
     let done = 0;
     const BATCH = 128;
     for (let i = 0; i < pending.length; i += BATCH) {
@@ -2520,7 +2547,10 @@ async function cmdIndexVectors() {
       const vecs = embedTexts(slice.map(r => r.body));
       if (!vecs) { process.stderr.write('[secretary] embedding failed — stopping\n'); break; }
       const tx = db.transaction((rows) => {
-        rows.forEach((r, k) => insert.run(BigInt(r.rid), vecs[k]));
+        rows.forEach((r, k) => {
+          if (alreadyIndexed.get(r.rid)) return;
+          insert.run(BigInt(r.rid), vecs[k]);
+        });
       });
       tx(slice);
       done += slice.length;
@@ -2718,6 +2748,21 @@ async function main() {
   // Background cache bootstrap — if bullets.md doesn't exist yet for this
   // project but the DB has summaries, distill them into bullets so the
   // next SessionStart gets the new cache format without blocking.
+  // Background index sync (spawned by `sync` at SessionStart).
+  if (command === '_bg_sync') {
+    const [, , , cwd, withVectors] = process.argv;
+    try {
+      process.chdir(cwd);
+      await cmdIndexTurns();
+      // Vectors are optional and slow; skip silently when the stack is absent.
+      if (withVectors === '1' && semanticAvailable()) await cmdIndexVectors();
+    } catch (err) {
+      process.stderr.write(`[secretary-bg-sync] ${err.message}\n`);
+    }
+    clearBgWorkerForProject(cwd);
+    process.exit(0);
+  }
+
   if (command === '_bg_regenerate') {
     const [, , , cwd, sessionId] = process.argv;
     try {
@@ -2762,7 +2807,7 @@ async function main() {
     process.exit(0);
   }
 
-  const validCommands = ['incremental', 'compact', 'restore', 'force', 'inject', 'recall', 'search', 'index-turns', 'index-vectors', 'user-prompt'];
+  const validCommands = ['incremental', 'compact', 'restore', 'force', 'inject', 'recall', 'search', 'index-turns', 'index-vectors', 'sync', 'user-prompt'];
 
   if (command === 'search') {
     await cmdSearch();
@@ -2779,6 +2824,11 @@ async function main() {
     return;
   }
 
+  if (command === 'sync') {
+    await cmdSync({ vectors: !process.argv.includes('--no-vectors') });
+    return;
+  }
+
   if (!command || !validCommands.includes(command)) {
     process.stderr.write('The Secretary — AI-powered context persistence for Claude Code\n\n');
     process.stderr.write('Usage: summarize.mjs <command>\n');
@@ -2791,6 +2841,7 @@ async function main() {
     process.stderr.write('  search <query>    Search cache + DB for a query\n');
     process.stderr.write('  index-turns       Backfill the verbatim FTS index from transcripts on disk\n');
     process.stderr.write('  index-vectors     Build the semantic index (optional; needs embedding venv)\n');
+    process.stderr.write('  sync              Refresh both indexes in the background (SessionStart hook)\n');
     process.stderr.write('  user-prompt       UserPromptSubmit hook: auto-inject context on recall-style prompts\n');
     process.exit(1);
   }

@@ -235,10 +235,19 @@ their hits are tagged `[said~]` / `[turn~]`.
 The threshold (0.62) drops most invented queries, but anything that survives means
 "similar wording exists", never "this was discussed". Only an FTS5 hit proves that.
 
+Both indexes refresh themselves: `SessionStart` runs `sync`, which spawns a detached
+worker and returns in ~50 ms, so indexing never delays the prompt. The same per-project
+lock as the other background workers keeps concurrent sessions from piling up. Manual
+runs stay available:
+
 ```bash
+node ~/.claude/the-secretary/summarize.mjs sync            # both indexes, in background
 node ~/.claude/the-secretary/summarize.mjs index-turns     # verbatim FTS index (free, per project)
 node ~/.claude/the-secretary/summarize.mjs index-vectors   # semantic index (optional, ~50s/2k turns)
 ```
+
+Both commands are safe to re-run after an interruption: already-indexed turns are
+skipped rather than re-embedded.
 
 The semantic layer is **optional**. Without `sqlite-vec` and the embedding venv, search
 silently stays on FTS5 — nothing breaks. Both indexes live inside the project's own

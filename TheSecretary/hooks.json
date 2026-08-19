@@ -65,7 +65,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/the-secretary/start-llm.sh start > /dev/null 2>&1; node ~/.claude/the-secretary/summarize.mjs restore",
+          "command": "bash ~/.claude/the-secretary/start-llm.sh start > /dev/null 2>&1; node ~/.claude/the-secretary/summarize.mjs restore; node ~/.claude/the-secretary/summarize.mjs sync",
           "timeout": 120
         }
       ]
@@ -75,7 +75,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/the-secretary/start-llm.sh start > /dev/null 2>&1; node ~/.claude/the-secretary/summarize.mjs restore",
+          "command": "bash ~/.claude/the-secretary/start-llm.sh start > /dev/null 2>&1; node ~/.claude/the-secretary/summarize.mjs restore; node ~/.claude/the-secretary/summarize.mjs sync",
           "timeout": 120
         }
       ]
