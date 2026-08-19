@@ -74,26 +74,26 @@ Same as Pattern A but with two servers. See the full multi-process template in t
 **Zero config.** Just run `devproxy` from the project directory:
 
 ```bash
-cd ~/Programacion/MICRO.AutoMkt
+cd ~/Projects/APP.Invoices
 devproxy
 ```
 
 Output:
 ```
-  ✓ automkt registered
-    URL:  http://automkt.localhost
-    Dir:  /Users/.../MICRO.AutoMkt
+  ✓ invoices registered
+    URL:  http://invoices.localhost
+    Dir:  /Users/.../APP.Invoices
     Type: php
     Port: 8000
 ```
 
-Now visit `http://automkt.localhost` — the proxy auto-starts `php -S` pointed at the `public/` directory.
+Now visit `http://invoices.localhost` — the proxy auto-starts `php -S` pointed at the `public/` directory.
 
 ### How auto-detection works
 
 **Subdomain** (from directory name):
-- `LAB.Imager` → `imager` (part after the dot, lowercase)
-- `MICRO.AutoMkt` → `automkt`
+- `LAB.Photos` → `photos` (part after the dot, lowercase)
+- `APP.Invoices` → `invoices`
 - `pepe` → `pepe` (no dot, name as-is)
 
 **Project type** (by files present):
@@ -145,7 +145,7 @@ The proxy accepts JSON commands via Unix socket (`~/.config/devproxy/proxy.sock`
 
 ```bash
 # Register a project (persistent, with auto-start)
-echo '{"action":"register-project","subdomain":"automkt","dir":"/path/to/project","type":"php","port":8000}' | nc -U ~/.config/devproxy/proxy.sock
+echo '{"action":"register-project","subdomain":"invoices","dir":"/path/to/project","type":"php","port":8000}' | nc -U ~/.config/devproxy/proxy.sock
 
 # Register a route (dynamic, non-persistent — for Node projects that manage their own server)
 echo '{"action":"register","subdomain":"myapp","port":3001,"name":"My App"}' | nc -U ~/.config/devproxy/proxy.sock
@@ -154,11 +154,11 @@ echo '{"action":"register","subdomain":"myapp","port":3001,"name":"My App"}' | n
 echo '{"action":"list"}' | nc -U ~/.config/devproxy/proxy.sock
 
 # Start/stop a project's server
-echo '{"action":"start","subdomain":"automkt"}' | nc -U ~/.config/devproxy/proxy.sock
-echo '{"action":"stop","subdomain":"automkt"}' | nc -U ~/.config/devproxy/proxy.sock
+echo '{"action":"start","subdomain":"invoices"}' | nc -U ~/.config/devproxy/proxy.sock
+echo '{"action":"stop","subdomain":"invoices"}' | nc -U ~/.config/devproxy/proxy.sock
 
 # Remove a project permanently
-echo '{"action":"remove-project","subdomain":"automkt"}' | nc -U ~/.config/devproxy/proxy.sock
+echo '{"action":"remove-project","subdomain":"invoices"}' | nc -U ~/.config/devproxy/proxy.sock
 
 # Deregister a dynamic route
 echo '{"action":"deregister","subdomain":"myapp"}' | nc -U ~/.config/devproxy/proxy.sock
@@ -185,7 +185,7 @@ lsof -i :80 -sTCP:LISTEN
 dig +short test.localhost @127.0.0.1
 
 # Test proxy directly
-curl -H "Host: automkt.localhost" http://127.0.0.1:80/
+curl -H "Host: invoices.localhost" http://127.0.0.1:80/
 
 # View proxy logs (includes auto-start output)
 tail -f ~/.config/devproxy/proxy.log

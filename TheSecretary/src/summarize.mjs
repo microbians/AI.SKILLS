@@ -16,9 +16,7 @@
  *   restore      - Inject saved summaries after /clear (SessionStart hook)
  *   force        - Force an immediate summary regardless of counter/threshold (Stop hook or manual)
  *   inject       - Inject arbitrary text as a summary entry (manual use)
- *   recall       - Show all stored memories, notes, reminders and context
- *   recall-notes - Show only notes
- *   recall-reminders - Show only reminders
+ *   recall       - Show the stored index (saved items + context)
  *
  * Reads hook JSON from stdin.
  */
@@ -28,7 +26,7 @@ import { join, basename } from 'path';
 import { homedir, tmpdir } from 'os';
 import { createHash } from 'crypto';
 import { createRequire } from 'module';
-import { execSync, execFile } from 'child_process';
+import { execSync, execFile, execFileSync } from 'child_process';
 import http from 'http';
 
 // ═══════════════════ CONFIG ═══════════════════
@@ -341,12 +339,26 @@ function ensureSchema(db, schema = 'main') {
       updated_at TEXT DEFAULT (datetime('now'))
     );
   `);
-  // Schema migration: add columns for The Secretary features
-  try { db.exec(`ALTER TABLE ${schema}.summaries ADD COLUMN due_at TEXT DEFAULT NULL`); } catch { /* already exists */ }
-  try { db.exec(`ALTER TABLE ${schema}.summaries ADD COLUMN status TEXT DEFAULT 'active'`); } catch { /* already exists */ }
+
+  // Verbatim conversation turns, searchable word-by-word. Summaries lose the exact
+  // wording ("ffmpeg on Railway" becomes "discussed deployment"), so recall questions
+  // about something actually said can only be answered from the raw turns.
+  // unicode61 + remove_diacritics 2 makes "edicion" match "edición" — required for ES.
+  try {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS ${schema}.turns USING fts5(
+        body,
+        role UNINDEXED,
+        session_id UNINDEXED,
+        project_dir UNINDEXED,
+        created_at UNINDEXED,
+        tokenize = 'unicode61 remove_diacritics 2'
+      );
+    `);
+  } catch { /* FTS5 unavailable: search silently falls back to LIKE over summaries */ }
 }
 
-const ITEM_COLS = 'session_id, project_dir, chunk_index, summary, message_count, created_at, due_at, status';
+const ITEM_COLS = 'session_id, project_dir, chunk_index, summary, message_count, created_at';
 const ALL_ITEMS_COLS = `id, ${ITEM_COLS}`;
 
 // One-time seed of a freshly created project DB: copy this project's rows out
@@ -682,6 +694,30 @@ function notify(title, message) {
 
 // ═══════════════════ TRANSCRIPT PARSING ═══════════════════
 
+/**
+ * Harness noise that reaches the transcript as user text but carries no intent:
+ * slash-command plumbing, interruption markers, subagent notifications, hook output.
+ * Stripping it keeps the summarizer's budget for what the user actually said.
+ */
+const NOISE_PATTERNS = [
+  /<command-(?:name|message|args|contents)>[\s\S]*?<\/command-\1>/g,
+  /<local-command-(?:stdout|stderr|caveat)>[\s\S]*?<\/local-command-\1>/g,
+  /<task-notification>[\s\S]*?<\/task-notification>/g,
+  /<system-reminder>[\s\S]*?<\/system-reminder>/g,
+  /<user-prompt-submit-hook>[\s\S]*?<\/user-prompt-submit-hook>/g,
+  /\[Request interrupted by user(?: for tool use)?\]/g,
+  /\[Image(?: #\d+)?(?::[^\]]*)?\]/g,
+];
+
+function stripNoise(text) {
+  let out = text;
+  for (const re of NOISE_PATTERNS) out = out.replace(re, ' ');
+  return out.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** Acknowledgements carry no information worth a slot in the summary budget. */
+const FILLER_RE = /^(?:ok(?:ay)?|vale|dale|sigue|continua|continúa|gracias|thanks|thx|si|sí|no|yes|yep|nope|y|and|perfecto|genial|bien|good|great|👍|ya|listo)[\s.!?]*$/i;
+
 function parseTranscript(transcriptPath, fromOffset = 0) {
   if (!transcriptPath || !existsSync(transcriptPath)) return { messages: [], rawLength: 0 };
 
@@ -693,12 +729,19 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
     try {
       const entry = JSON.parse(lines[i]);
       const msg = entry.message || entry;
-      const role = msg.role || entry.type;
+      // Only real conversation roles. A transcript also carries bookkeeping entries
+      // ('attachment', 'last-prompt', 'mode', 'system', 'queue-operation', …) that have
+      // no message.role; falling back to entry.type filed them all as 'tool', and
+      // 'last-prompt' duplicated the user's own prompt into the index.
+      const role = msg.role;
 
-      if (!role) continue;
+      if (role !== 'user' && role !== 'assistant') continue;
 
       const content = msg.content;
+      // Conversation text and tool traffic are collected apart: they are ranked
+      // separately later, so tool noise can never crowd out what was actually said.
       let text = '';
+      let toolText = '';
 
       if (typeof content === 'string') {
         text = content;
@@ -707,22 +750,26 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
           if (block.type === 'text' && block.text) {
             text += block.text + '\n';
           } else if (block.type === 'tool_use') {
-            text += `[Tool: ${block.name}] ${JSON.stringify(block.input || {}).slice(0, 500)}\n`;
+            toolText += `[Tool: ${block.name}] ${JSON.stringify(block.input || {}).slice(0, 200)}\n`;
           } else if (block.type === 'tool_result') {
             const resultText = typeof block.content === 'string' ? block.content : JSON.stringify(block.content || '');
-            text += `[Result] ${resultText.slice(0, 500)}\n`;
+            toolText += `[Result] ${resultText.slice(0, 200)}\n`;
           }
         }
       }
 
-      if (entry.toolUseResult?.stdout) {
-        text += entry.toolUseResult.stdout.slice(0, 500) + '\n';
-      }
+      text = stripNoise(text);
 
-      text = text.trim();
-      if (text.length > 10) {
-        const mappedRole = role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : 'tool';
-        messages.push({ role: mappedRole, text: text.slice(0, 3000), line: i });
+      const mappedRole = role;
+
+      // The transcript stamps every entry; keeping it lets the index answer
+      // "what were we doing" by recency instead of only by keyword match.
+      const ts = entry.timestamp || '';
+
+      if (text.length > 10 && !FILLER_RE.test(text)) {
+        messages.push({ role: mappedRole, kind: 'talk', text: text.slice(0, 3000), line: i, ts });
+      } else if (toolText.trim().length > 10) {
+        messages.push({ role: 'tool', kind: 'tool', text: toolText.trim().slice(0, 1000), line: i, ts });
       }
     } catch { /* skip malformed lines */ }
   }
@@ -730,102 +777,196 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
   return { messages, rawLength: lines.length };
 }
 
+/**
+ * Build the summarizer input under a char budget.
+ *
+ * Two rules, both learned the hard way from transcripts where the summary came out
+ * describing tool output instead of the work:
+ *  - User turns state the intent and the constraints, so they are admitted first and
+ *    only then assistant turns; tool traffic fills whatever is left, if anything.
+ *  - Selection walks BACKWARDS. The end of a session holds its current state, which is
+ *    what a handoff needs; truncating from the front kept only the stale opening.
+ * Emitted output is restored to chronological order so the model reads a conversation.
+ */
 function messagesToText(messages, maxChars = 8000) {
+  const budget = { used: 0 };
+  const picked = new Set();
+
+  const admit = (list) => {
+    for (const m of list) {
+      const cost = m.text.length + 16;
+      if (budget.used + cost > maxChars) continue;
+      budget.used += cost;
+      picked.add(m);
+    }
+  };
+
+  const recentFirst = [...messages].reverse();
+  admit(recentFirst.filter(m => m.kind === 'talk' && m.role === 'user'));
+  admit(recentFirst.filter(m => m.kind === 'talk' && m.role === 'assistant'));
+  admit(recentFirst.filter(m => m.kind === 'tool'));
+
   let text = '';
   for (const m of messages) {
+    if (!picked.has(m)) continue;
     const prefix = m.role === 'user' ? 'USER' : m.role === 'assistant' ? 'ASSISTANT' : 'TOOL';
-    const line = `[${prefix}]: ${m.text}\n\n`;
-    if (text.length + line.length > maxChars) break;
-    text += line;
+    text += `[${prefix}]: ${m.text}\n\n`;
   }
   return text;
 }
 
-// ═══════════════════ DATE PARSING ═══════════════════
+/**
+ * Store conversation turns verbatim in the FTS index.
+ *
+ * Only `talk` turns are kept — tool traffic is machine chatter nobody recalls in words.
+ * The transcript offset already advances per hook call, so each turn is seen once; a
+ * line-keyed guard in `state` makes re-processing (a replayed hook, a resumed session)
+ * idempotent anyway.
+ */
+function indexTurns(db, messages, { session_id, cwd }) {
+  if (!db || !messages?.length) return 0;
+
+  const talk = messages.filter(m => m.kind === 'talk' && m.text.length >= 20);
+  if (!talk.length) return 0;
+
+  const guardKey = `fts-line:${session_id}`;
+  let lastLine = -1;
+  try {
+    const row = db.prepare('SELECT value FROM state WHERE key = ?').get(guardKey);
+    if (row) lastLine = parseInt(row.value, 10);
+  } catch { return 0; }
+
+  const fresh = talk.filter(m => m.line > lastLine);
+  if (!fresh.length) return 0;
+
+  try {
+    const insert = db.prepare(
+      'INSERT INTO turns (body, role, session_id, project_dir, created_at) VALUES (?, ?, ?, ?, ?)'
+    );
+    // Prefer the turn's own timestamp; fall back to now only for entries that lack one
+    // (older transcript formats). Indexing time is not conversation time: a backfill
+    // would otherwise stamp thousands of turns with one identical instant.
+    const now = new Date().toISOString();
+    const run = db.transaction((rows) => {
+      for (const m of rows) insert.run(m.text, m.role, session_id, cwd || '', m.ts || now);
+    });
+    run(fresh);
+
+    const maxLine = fresh.reduce((a, m) => Math.max(a, m.line), lastLine);
+    db.prepare(`INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, datetime('now'))`)
+      .run(guardKey, String(maxLine));
+    return fresh.length;
+  } catch {
+    return 0; // FTS table missing (old DB, no FTS5) — never break summarization
+  }
+}
 
 /**
- * Parse a due date from natural language text.
- * Returns ISO date string (YYYY-MM-DD) or null if no date found.
+ * Build an FTS5 MATCH expression that degrades gracefully.
+ *
+ * Terms are OR-ed with a prefix wildcard, so a query still returns its best partial
+ * matches instead of nothing when one word is absent — bm25 ranks whatever matched
+ * most. Quotes/operators are stripped: user text must never be read as FTS syntax.
  */
-function parseDueDate(text) {
-  const lower = text.toLowerCase();
-  const now = new Date();
-
-  // ISO format: 2026-04-15
-  let m = lower.match(/(\d{4}-\d{2}-\d{2})/);
-  if (m) return m[1];
-
-  // "mañana" / "tomorrow"
-  if (/\bma[nñ]ana\b/.test(lower) || /\btomorrow\b/.test(lower)) {
-    const d = new Date(now); d.setDate(d.getDate() + 1);
-    return d.toISOString().split('T')[0];
-  }
-
-  // "pasado mañana" / "day after tomorrow"
-  if (/\bpasado\s+ma[nñ]ana\b/.test(lower) || /\bday\s+after\s+tomorrow\b/.test(lower)) {
-    const d = new Date(now); d.setDate(d.getDate() + 2);
-    return d.toISOString().split('T')[0];
-  }
-
-  // "hoy" / "today"
-  if (/\bhoy\b/.test(lower) || /\btoday\b/.test(lower)) {
-    return now.toISOString().split('T')[0];
-  }
-
-  // Day of week
-  const days = {
-    lunes: 1, monday: 1, martes: 2, tuesday: 2, miercoles: 3, 'miércoles': 3, wednesday: 3,
-    jueves: 4, thursday: 4, viernes: 5, friday: 5, sabado: 6, 'sábado': 6, saturday: 6,
-    domingo: 0, sunday: 0
-  };
-  for (const [name, dayNum] of Object.entries(days)) {
-    if (lower.includes(name)) {
-      const d = new Date(now);
-      const diff = (dayNum - d.getDay() + 7) % 7 || 7;
-      d.setDate(d.getDate() + diff);
-      return d.toISOString().split('T')[0];
-    }
-  }
-
-  // "en N días/semanas" / "in N days/weeks"
-  m = lower.match(/(?:en|in)\s+(\d+)\s+(?:d[ií]as?|days?)/);
-  if (m) {
-    const d = new Date(now); d.setDate(d.getDate() + parseInt(m[1]));
-    return d.toISOString().split('T')[0];
-  }
-  m = lower.match(/(?:en|in)\s+(\d+)\s+(?:semanas?|weeks?)/);
-  if (m) {
-    const d = new Date(now); d.setDate(d.getDate() + parseInt(m[1]) * 7);
-    return d.toISOString().split('T')[0];
-  }
-
-  // "el N de MES" / Spanish date
-  const months = {
-    enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5,
-    julio: 6, agosto: 7, septiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
-    january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
-    july: 6, august: 7, september: 8, october: 9, november: 10, december: 11
-  };
-  for (const [mName, mNum] of Object.entries(months)) {
-    const re = new RegExp(`(?:el\\s+)?(\\d{1,2})\\s+(?:de\\s+)?${mName}`, 'i');
-    const mx = lower.match(re);
-    if (mx) {
-      const d = new Date(now.getFullYear(), mNum, parseInt(mx[1]));
-      if (d < now) d.setFullYear(d.getFullYear() + 1);
-      return d.toISOString().split('T')[0];
-    }
-    // Also match "april 15" format
-    const re2 = new RegExp(`${mName}\\s+(\\d{1,2})`, 'i');
-    const mx2 = lower.match(re2);
-    if (mx2) {
-      const d = new Date(now.getFullYear(), mNum, parseInt(mx2[1]));
-      if (d < now) d.setFullYear(d.getFullYear() + 1);
-      return d.toISOString().split('T')[0];
-    }
-  }
-
-  return null;
+function buildMatchQuery(terms) {
+  const safe = terms
+    .map(t => t.replace(/["*()^:-]/g, '').trim())
+    .filter(t => t.length >= 2);
+  if (!safe.length) return null;
+  return safe.map(t => `"${t}"*`).join(' OR ');
 }
+
+// ═══════════════════ SEMANTIC FALLBACK (sqlite-vec + local embeddings) ═══════════════════
+//
+// FTS5 answers the literal question ("did we touch component.css?") exactly, and its
+// zero is meaningful. What it cannot do is bridge vocabulary: "espaciado vertical"
+// never matches the turn that says "les falta gap vertical".
+//
+// Measured on a real 2k-turn project index:
+//   - literal queries: FTS5 finds every occurrence of an identifier; vectors recover 8%
+//   - conceptual queries: FTS5 OR-matching returns 1000+ noise rows; vectors nail it
+//
+// So the two are not interchangeable and neither replaces the other. FTS5 runs first
+// and owns the literal answer; vectors run ONLY when FTS5 came up short, and their
+// hits are tagged `approx` so a semantic neighbour is never mistaken for a quote.
+
+const VEC_DIM = 1024;                       // Qwen3-Embedding-0.6B
+// Calibrated against this index: real topics scored 0.58-0.78, invented ones 0.55-0.65.
+// The ranges OVERLAP — no threshold separates them cleanly, so a vector hit can never
+// prove a topic was discussed. 0.62 drops most invented queries; whatever survives is
+// still reported as `approx`, and the caller must treat it as "similar wording found",
+// never as evidence. Only an FTS5 hit proves something was actually said.
+const VEC_MIN_SIM = 0.62;
+const EMBED_SCRIPT = join(SECRETARY_DIR, 'embed.py');
+
+function embedPython() {
+  return config.embed_python || join(SECRETARY_DIR, 'venv', 'bin', 'python');
+}
+
+/** Semantic search is optional: without the venv and sqlite-vec we simply stay on FTS5. */
+function semanticAvailable() {
+  try {
+    if (!existsSync(EMBED_SCRIPT) || !existsSync(embedPython())) return false;
+    loadVecExtension.probe ??= (() => {
+      try { createRequire(import.meta.url)('sqlite-vec'); return true; } catch { return false; }
+    })();
+    return loadVecExtension.probe;
+  } catch { return false; }
+}
+
+function loadVecExtension(db) {
+  try {
+    const require = createRequire(import.meta.url);
+    require('sqlite-vec').load(db);
+    return true;
+  } catch { return false; }
+}
+
+/** Embed texts via the helper process. Returns Float32Array[] or null on any failure. */
+function embedTexts(texts) {
+  if (!texts?.length || !semanticAvailable()) return null;
+  try {
+    const out = execFileSync(embedPython(), [EMBED_SCRIPT], {
+      input: JSON.stringify({ texts }),
+      maxBuffer: 256 * 1024 * 1024,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    const parsed = JSON.parse(out);
+    if (parsed.error || !parsed.vectors?.length) return null;
+    return parsed.vectors.map(v => new Float32Array(v));
+  } catch { return null; }
+}
+
+/** Nearest turns by cosine similarity. Returns [] whenever the stack is unavailable. */
+function vectorSearch(db, query, limit) {
+  if (!semanticAvailable()) return [];
+  try {
+    if (!loadVecExtension(db)) return [];
+    const has = db.prepare("SELECT count(*) n FROM sqlite_master WHERE name = 'vturns'").get()?.n;
+    if (!has) return [];
+    const [qv] = embedTexts([query]) || [];
+    if (!qv) return [];
+    const rows = db.prepare(`
+      SELECT v.turn_rowid AS rid, v.distance AS distance
+      FROM (SELECT rowid AS turn_rowid, distance FROM vturns
+            WHERE embedding MATCH ? ORDER BY distance LIMIT ?) v
+    `).all(qv, limit * 3);
+    const out = [];
+    for (const r of rows) {
+      // vec0 returns L2 distance over unit vectors: cos = 1 - d²/2.
+      const sim = 1 - (r.distance * r.distance) / 2;
+      if (sim < VEC_MIN_SIM) continue;
+      const t = db.prepare('SELECT body, role, project_dir, created_at FROM turns WHERE rowid = ?').get(r.rid);
+      if (t) out.push({ ...t, sim });
+      if (out.length >= limit) break;
+    }
+    return out;
+  } catch { return []; }
+}
+
+// ═══════════════════ DATE PARSING ═══════════════════
+
 
 // ═══════════════════ INTENT CLASSIFICATION ═══════════════════
 
@@ -843,56 +984,45 @@ function isToolOutputLine(line) {
   if (/\[REMEMBER\]/i.test(line)) return true;        // stored memory
   if (/\[MANUAL\]/i.test(line)) return true;          // stored memory
   if (/\[NOTE\]/i.test(line)) return true;            // stored note
-  if (/\[REMINDER\]/i.test(line)) return true;        // stored reminder
   if (/\[Tool:|^\[Result\]/i.test(line)) return true; // tool markers
   if (/\[secretary\]/i.test(line)) return true;        // secretary log output
   if (/^\{.*\}$/.test(line.trim())) return true;       // JSON objects
   if (/intent:|content:/.test(line)) return true;      // classification output
-  if (/REMEMBER\||FORGET\||NOTE\||REMINDER\||NONE\|/.test(line)) return true; // LLM classification output
+  if (/SAVE\||FORGET\||NONE\|/.test(line)) return true;   // LLM classification output
   if (/^\s*→\s/.test(line)) return true;               // arrow output from tests
   return false;
 }
 
 /**
  * Use the local LLM to classify a user line into an intent.
- * Returns: { intent, content, dueDate? }
+ * Returns: { intent, content }
  *
- * Intents: REMEMBER, FORGET, NOTE, NOTE_DELETE, REMINDER, REMINDER_DONE, NONE
+ * Intents: SAVE, FORGET, NONE — the index is flat, so there is nothing to
+ * classify beyond "write this down" vs "drop this".
  */
 async function classifyIntent(line) {
-  const prompt = `Classify this user message into exactly ONE intent. The user is talking to an AI coding assistant and wants to manage their personal notes, memories, or reminders.
+  const prompt = `Classify this user message into exactly ONE intent. The user is talking to an AI coding assistant that keeps a single flat index of everything worth remembering.
 
 USER MESSAGE: "${line}"
 
 INTENTS:
-- REMEMBER: User wants to save a PERMANENT FACT about themselves, their identity, or preferences. Key signals: "recuerda que" (followed by a fact), "soy...", "mi nombre es...", "prefiero...", "I am...", "my name is...", "I prefer...". These are FACTS, not tasks.
-- FORGET: User wants to delete a previously saved memory/fact. Key signals: "olvida que...", "forget that...", "ya no soy...", "borra la memoria de..."
-- NOTE: User wants to save a note/observation about something. Key signals: "toma nota", "anota", "apunta", "nota:", "note:", "note down". These are observations or info to keep track of.
-- NOTE_DELETE: User wants to delete a note. Key signals: "borra la nota", "delete the note", "quita la nota"
-- REMINDER: User wants to be REMINDED about a FUTURE TASK or event, usually with a time reference. Key signals: "avísame", "recuérdame" (remind ME), "remind me", "set a reminder", "recordatorio". These are TASKS with deadlines, not facts.
-- REMINDER_DONE: User wants to mark a reminder as done or cancel it. Key signals: "ya hice...", "cancela el recordatorio", "mark done", "dismiss"
-- NONE: Not a secretary order, just regular conversation
-
-CRITICAL DISTINCTION:
-- "recuerda que soy developer" = REMEMBER (it's a fact about identity)
-- "recuérdame hacer deploy" = REMINDER (it's a future task)
-- "recuerda que mi editor es neovim" = REMEMBER (it's a preference/fact)
-- "recuérdame actualizar el README" = REMINDER (it's a task to do)
+- SAVE: User wants something written down — a fact about themselves, a preference, an observation, a task, anything. Key signals: "recuerda que", "soy...", "mi nombre es...", "prefiero...", "toma nota", "anota", "apunta", "avísame", "recuérdame", "remember that", "note down", "remind me".
+- FORGET: User wants something dropped from the index. Key signals: "olvida que...", "forget that...", "ya no soy...", "borra la nota...", "cancela el recordatorio...", "ya hice..."
+- NONE: Not an order, just regular conversation
 
 RESPOND WITH ONLY ONE LINE in this exact format:
 INTENT|content text here
 
-Where INTENT is one of: REMEMBER, FORGET, NOTE, NOTE_DELETE, REMINDER, REMINDER_DONE, NONE
-And content is the extracted core content (what to remember/note/remind, without the command words).
+Where INTENT is one of: SAVE, FORGET, NONE
+And content is the extracted core content, without the command words.
 For NONE, content can be empty.
 
 Examples:
-- "recuerda que soy developer senior" → REMEMBER|soy developer senior
+- "recuerda que soy developer senior" → SAVE|soy developer senior
+- "toma nota: el servidor se cae los martes" → SAVE|el servidor se cae los martes
+- "avísame el viernes que hay deploy" → SAVE|hay deploy el viernes
 - "olvida lo del mono" → FORGET|lo del mono
-- "toma nota: el servidor se cae los martes" → NOTE|el servidor se cae los martes
-- "borra la nota del servidor" → NOTE_DELETE|del servidor
-- "avísame el viernes que hay deploy" → REMINDER|hay deploy el viernes
-- "ya hice el deploy" → REMINDER_DONE|el deploy
+- "borra la nota del servidor" → FORGET|del servidor
 - "cambia el color del botón a rojo" → NONE|`;
 
   try {
@@ -904,7 +1034,7 @@ Examples:
     const intent = cleaned.slice(0, pipeIdx).trim().toUpperCase();
     const content = cleaned.slice(pipeIdx + 1).trim();
 
-    const validIntents = ['REMEMBER', 'FORGET', 'NOTE', 'NOTE_DELETE', 'REMINDER', 'REMINDER_DONE', 'NONE'];
+    const validIntents = ['SAVE', 'FORGET', 'NONE'];
     if (!validIntents.includes(intent)) return { intent: 'NONE', content: '' };
 
     return { intent, content };
@@ -919,41 +1049,34 @@ Examples:
 function classifyIntentRegex(line) {
   const t = line.trim();
 
-  // REMEMBER (detect "global" modifier: "recuerda global que...", "remember global that...")
-  if (/(?:recuerda\s+global\s+que|remember\s+global\s+that)\s+(.+)/i.test(t)) return { intent: 'REMEMBER', content: t, global: true };
-  if (/(?:recuerda\s+que|no\s+olvides\s+que|remember\s+that|don'?t\s+forget\s+that)\s+(.+)/i.test(t)) return { intent: 'REMEMBER', content: t };
-  if (/^(?:recuerda|remember)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'REMEMBER', content: t, global: true };
-  if (/^(?:recuerda|remember)[:\s]+(.+)/i.test(t)) return { intent: 'REMEMBER', content: t };
-  if (/(?:^|\.\s*)(?:yo\s+)?soy\s+(?:un[ao]?\s+)?(.+)/i.test(t)) return { intent: 'REMEMBER', content: t };
-  if (/(?:^|\.\s*)(?:i\s+am|i'm)\s+(?:a\s+)?(.+)/i.test(t)) return { intent: 'REMEMBER', content: t };
-  if (/(?:mi\s+nombre\s+es|me\s+llamo|my\s+name\s+is)\s+(.+)/i.test(t)) return { intent: 'REMEMBER', content: t };
-  if (/(?:prefiero|i\s+prefer|me\s+gusta\s+(?:más|mas))\s+(.+)/i.test(t)) return { intent: 'REMEMBER', content: t };
+  // ── SAVE ── every phrasing that used to mean remember / note / remind now
+  // writes one plain item into the session index. No types, no prefixes.
+  if (/(?:recuerda\s+global\s+que|remember\s+global\s+that)\s+(.+)/i.test(t)) return { intent: 'SAVE', content: t, global: true };
+  if (/(?:recuerda\s+que|no\s+olvides\s+que|remember\s+that|don'?t\s+forget\s+that)\s+(.+)/i.test(t)) return { intent: 'SAVE', content: t };
+  if (/^(?:recuerda|remember)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: t, global: true };
+  if (/^(?:recuerda|remember)[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: t };
+  if (/(?:^|\.\s*)(?:yo\s+)?soy\s+(?:un[ao]?\s+)?(.+)/i.test(t)) return { intent: 'SAVE', content: t };
+  if (/(?:^|\.\s*)(?:i\s+am|i'm)\s+(?:a\s+)?(.+)/i.test(t)) return { intent: 'SAVE', content: t };
+  if (/(?:mi\s+nombre\s+es|me\s+llamo|my\s+name\s+is)\s+(.+)/i.test(t)) return { intent: 'SAVE', content: t };
+  if (/(?:prefiero|i\s+prefer|me\s+gusta\s+(?:más|mas))\s+(.+)/i.test(t)) return { intent: 'SAVE', content: t };
+  if (/^(?:toma\s+nota|anota|apunta|nota|take\s+(?:a\s+)?note|note\s+(?:down|this)|note)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, global: true };
+  if (/^(?:toma\s+nota|anota|apunta|nota|take\s+(?:a\s+)?note|note\s+(?:down|this)|note)[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1 };
+  if (/^(?:av[ií]same|recuerd[ae]me|remind\s+me)\s+global\s+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, global: true };
+  if (/^(?:av[ií]same|recuerd[ae]me|remind\s+me)\s+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1 };
+  if (/^(?:pon(?:me)?\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, global: true };
+  if (/^(?:pon(?:me)?\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder)[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1 };
+  if (/^(?:reminder|recordatorio)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, global: true };
+  if (/^(?:reminder|recordatorio)[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1 };
 
-  // FORGET
+  // ── FORGET ── every phrasing that used to delete a memory, a note or
+  // complete a reminder now removes the matching item from the index.
   if (/(?:olvida|forget|olvidar)\s+/i.test(t)) return { intent: 'FORGET', content: t };
-  if (/(?:borra|elimina|delete|remove)\s+(?:la\s+)?(?:memoria|memory|recuerdo)/i.test(t)) return { intent: 'FORGET', content: t };
+  if (/(?:borra|elimina|delete|remove)\s+(?:la\s+)?(?:memoria|memory|recuerdo|nota|note)/i.test(t)) return { intent: 'FORGET', content: t };
   if (/(?:no\s+recuerdes|don'?t\s+remember)\s+/i.test(t)) return { intent: 'FORGET', content: t };
   if (/(?:ya\s+no\s+soy|i'?m\s+no\s+longer)\s+/i.test(t)) return { intent: 'FORGET', content: t };
-
-  // NOTE (detect "global" modifier: "anota global que...", "nota global: ...")
-  if (/^(?:toma\s+nota|anota|apunta|nota|take\s+(?:a\s+)?note|note\s+(?:down|this)|note)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'NOTE', content: RegExp.$1, global: true };
-  if (/^(?:toma\s+nota|anota|apunta|nota|take\s+(?:a\s+)?note|note\s+(?:down|this)|note)[:\s]+(.+)/i.test(t)) return { intent: 'NOTE', content: RegExp.$1 };
-
-  // NOTE_DELETE
-  if (/(?:borra|elimina|delete|remove|quita|tacha)\s+(?:la\s+)?(?:nota|note)/i.test(t)) return { intent: 'NOTE_DELETE', content: t };
-
-  // REMINDER (detect "global" modifier)
-  if (/^(?:av[ií]same|recuerd[ae]me|remind\s+me)\s+global\s+(.+)/i.test(t)) return { intent: 'REMINDER', content: RegExp.$1, global: true };
-  if (/^(?:av[ií]same|recuerd[ae]me|remind\s+me)\s+(.+)/i.test(t)) return { intent: 'REMINDER', content: RegExp.$1 };
-  if (/^(?:pon(?:me)?\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'REMINDER', content: RegExp.$1, global: true };
-  if (/^(?:pon(?:me)?\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder)[:\s]+(.+)/i.test(t)) return { intent: 'REMINDER', content: RegExp.$1 };
-  if (/^(?:reminder|recordatorio)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'REMINDER', content: RegExp.$1, global: true };
-  if (/^(?:reminder|recordatorio)[:\s]+(.+)/i.test(t)) return { intent: 'REMINDER', content: RegExp.$1 };
-
-  // REMINDER_DONE
-  if (/(?:ya\s+(?:hice|hiciste|hicimos)|(?:marca|mark)\s+(?:como\s+)?(?:hecho|done|listo|completed?))/i.test(t)) return { intent: 'REMINDER_DONE', content: t };
-  if (/(?:borra|elimina|delete|remove|cancela?|cancel)\s+(?:el\s+)?(?:recordatorio|reminder)/i.test(t)) return { intent: 'REMINDER_DONE', content: t };
-  if (/(?:dismiss|descartar?)\s+(?:el\s+)?(?:recordatorio|reminder)/i.test(t)) return { intent: 'REMINDER_DONE', content: t };
+  if (/(?:borra|elimina|delete|remove|quita|tacha)\s+(?:la\s+)?(?:nota|note)/i.test(t)) return { intent: 'FORGET', content: t };
+  if (/(?:borra|elimina|delete|remove|cancela?|cancel)\s+(?:el\s+)?(?:recordatorio|reminder)/i.test(t)) return { intent: 'FORGET', content: t };
+  if (/(?:dismiss|descartar?)\s+(?:el\s+)?(?:recordatorio|reminder)/i.test(t)) return { intent: 'FORGET', content: t };
 
   return { intent: 'NONE', content: '' };
 }
@@ -963,9 +1086,9 @@ function classifyIntentRegex(line) {
 /**
  * Process all user messages: detect orders via regex classification,
  * then execute the appropriate action. LLM is used only for flexible
- * matching in deletion/completion actions (forget, note_delete, reminder_done).
+ * matching in the forget action.
  */
-async function processSecretaryOrders(messages, db, cwd) {
+async function processSecretaryOrders(messages, db, cwd, sessionId) {
   if (!db || !messages?.length) return;
 
   const candidateLines = [];
@@ -999,20 +1122,12 @@ async function processSecretaryOrders(messages, db, cwd) {
     // Use '__global__' as project_dir when the "global" modifier is detected
     const effectiveCwd = classification.global ? '__global__' : cwd;
     switch (classification.intent) {
-      // Sync actions (SQLite only, instant):
-      case 'REMEMBER':
-        await actionRemember(classification.content || line, db, effectiveCwd);
+      // Sync action (SQLite only, instant):
+      case 'SAVE':
+        await actionSave(classification.content || line, db, effectiveCwd, sessionId);
         break;
-      case 'NOTE':
-        await actionNote(classification.content || line, db, effectiveCwd);
-        break;
-      case 'REMINDER':
-        await actionReminder(classification.content || line, db, effectiveCwd);
-        break;
-      // LLM-dependent actions — queue for background:
+      // LLM-dependent action — queue for background:
       case 'FORGET':
-      case 'NOTE_DELETE':
-      case 'REMINDER_DONE':
         bgDeletions.push({ intent: classification.intent, content: classification.content || line });
         break;
     }
@@ -1039,131 +1154,44 @@ async function processSecretaryOrders(messages, db, cwd) {
   }
 }
 
-// ── REMEMBER ──
+// ── SAVE (single flat index — no memory types) ──
+//
+// Every explicit memory is just another item in the session's index, stored
+// under the CURRENT session_id exactly like an automatic summary. There are no
+// categories, no prefixes and no lifecycle columns: one index, one shape.
 
-async function actionRemember(content, db, cwd) {
-  const existingManual = db.prepare(`
+async function actionSave(content, db, cwd, sessionId) {
+  const existing = db.prepare(`
     SELECT summary FROM all_items
-    WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'manual' AND status = 'active'
+    WHERE (src = 'p' OR project_dir = '__global__') AND message_count = 0
   `).all().map(r => r.summary.toLowerCase());
 
   const normalized = content.toLowerCase();
-  const isDuplicate = existingManual.some(existing =>
-    existing.includes(normalized) || normalized.includes(existing.replace('[remember] ', ''))
-  );
+  if (existing.some(e => e.includes(normalized) || normalized.includes(e))) return;
 
-  if (!isDuplicate) {
-    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM all_items WHERE session_id = ?').get('manual');
-    const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
-    db.prepare(`INSERT INTO ${itemTable(db, cwd === '__global__')} (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)`).run(
-      'manual', cwd || '', chunkIndex, `[REMEMBER] ${content}`, 0
-    );
-    process.stderr.write(`[secretary] 💾 Memory saved: "${content.slice(0, 80)}"\n`);
-  }
+  const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM all_items WHERE session_id = ?').get(sessionId);
+  const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
+  db.prepare(`INSERT INTO ${itemTable(db, cwd === '__global__')} (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)`).run(
+    sessionId, cwd || '', chunkIndex, content, 0
+  );
+  process.stderr.write(`[secretary] 💾 Saved: "${content.slice(0, 80)}"\n`);
 }
 
 // ── FORGET ──
 
 async function actionForget(content, db, cwd, llmAvailable) {
-  const manualEntries = db.prepare(`
+  const entries = db.prepare(`
     SELECT id, src, summary FROM all_items
-    WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'manual' AND status = 'active'
+    WHERE (src = 'p' OR project_dir = '__global__') AND message_count = 0
   `).all();
 
-  if (manualEntries.length === 0) return;
+  if (entries.length === 0) return;
 
-  const entriesToDelete = await matchItemsForDeletion(content, manualEntries, 'memories', llmAvailable);
+  const toDelete = await matchItemsForDeletion(content, entries, 'items', llmAvailable);
 
-  for (const entry of entriesToDelete) {
+  for (const entry of toDelete) {
     db.prepare(`DELETE FROM ${itemTable(db, entry.src === 'g')} WHERE id = ?`).run(entry.id);
-    process.stderr.write(`[secretary] 🗑️ Memory deleted: "${entry.summary.slice(0, 80)}"\n`);
-  }
-}
-
-// ── NOTE ──
-
-async function actionNote(content, db, cwd) {
-  const existingNotes = db.prepare(`
-    SELECT summary FROM all_items
-    WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'notes' AND status = 'active'
-  `).all().map(r => r.summary.toLowerCase());
-
-  const normalized = content.toLowerCase();
-  const isDuplicate = existingNotes.some(existing =>
-    existing.includes(normalized) || normalized.includes(existing.replace('[note] ', ''))
-  );
-
-  if (!isDuplicate) {
-    const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM all_items WHERE session_id = ?').get('notes');
-    const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
-    db.prepare(`INSERT INTO ${itemTable(db, cwd === '__global__')} (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)`).run(
-      'notes', cwd || '', chunkIndex, `[NOTE] ${content}`, 0
-    );
-    process.stderr.write(`[secretary] 📝 Note saved: "${content.slice(0, 80)}"\n`);
-  }
-}
-
-// ── NOTE DELETE ──
-
-async function actionNoteDelete(content, db, cwd, llmAvailable) {
-  const noteEntries = db.prepare(`
-    SELECT id, src, summary FROM all_items
-    WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'notes' AND status = 'active'
-  `).all();
-
-  if (noteEntries.length === 0) return;
-
-  const entriesToDelete = await matchItemsForDeletion(content, noteEntries, 'notes', llmAvailable);
-
-  for (const entry of entriesToDelete) {
-    db.prepare(`DELETE FROM ${itemTable(db, entry.src === 'g')} WHERE id = ?`).run(entry.id);
-    process.stderr.write(`[secretary] 🗑️ Note deleted: "${entry.summary.slice(0, 80)}"\n`);
-  }
-}
-
-// ── REMINDER ──
-
-async function actionReminder(content, db, cwd) {
-  // Dedup: check if a similar reminder already exists
-  const existingReminders = db.prepare(`
-    SELECT summary FROM all_items
-    WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'active'
-  `).all().map(r => r.summary.toLowerCase());
-
-  const normalized = content.toLowerCase();
-  const isDuplicate = existingReminders.some(existing =>
-    existing.includes(normalized) || normalized.includes(existing.replace('[reminder] ', ''))
-  );
-
-  if (isDuplicate) return;
-
-  const dueDate = parseDueDate(content);
-
-  const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM all_items WHERE session_id = ?').get('reminders');
-  const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
-  db.prepare(`INSERT INTO ${itemTable(db, cwd === '__global__')} (session_id, project_dir, chunk_index, summary, message_count, due_at) VALUES (?, ?, ?, ?, ?, ?)`).run(
-    'reminders', cwd || '', chunkIndex, `[REMINDER] ${content}`, 0, dueDate
-  );
-
-  const dateStr = dueDate ? ` (due: ${dueDate})` : ' (no date)';
-  process.stderr.write(`[secretary] ⏰ Reminder saved: "${content.slice(0, 80)}"${dateStr}\n`);
-}
-
-// ── REMINDER DONE ──
-
-async function actionReminderDone(content, db, cwd, llmAvailable) {
-  const reminderEntries = db.prepare(`
-    SELECT id, src, summary FROM all_items
-    WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'active'
-  `).all();
-
-  if (reminderEntries.length === 0) return;
-
-  const entriesToUpdate = await matchItemsForDeletion(content, reminderEntries, 'reminders', llmAvailable);
-
-  for (const entry of entriesToUpdate) {
-    db.prepare(`UPDATE ${itemTable(db, entry.src === 'g')} SET status = 'done' WHERE id = ?`).run(entry.id);
-    process.stderr.write(`[secretary] ✅ Reminder done: "${entry.summary.slice(0, 80)}"\n`);
+    process.stderr.write(`[secretary] 🗑️ Deleted: "${entry.summary.slice(0, 80)}"\n`);
   }
 }
 
@@ -1250,7 +1278,11 @@ async function incremental(hookInput) {
     const { messages, rawLength } = parseTranscript(transcript_path, lastOffset);
 
     // Process secretary orders on EVERY call (no counter gate) — fast regex, sync
-    await processSecretaryOrders(messages, db, cwd);
+    await processSecretaryOrders(messages, db, cwd, session_id);
+
+    // Index verbatim turns on EVERY call too: the summary gate below runs once every
+    // N calls, and turns skipped here would never be searchable.
+    indexTurns(db, messages, { session_id, cwd });
 
     // Only do full LLM summary every N tool calls
     if (counter % config.summarize_every_n !== 0) return;
@@ -1365,7 +1397,7 @@ async function bootstrapBulletsFromDb(db, cwd) {
 
   const lastSessionRow = db.prepare(`
     SELECT session_id FROM all_items
-    WHERE src = 'p' AND session_id NOT IN ('manual', 'notes', 'reminders')
+    WHERE src = 'p'
     ORDER BY created_at DESC LIMIT 1
   `).get();
   if (!lastSessionRow?.session_id) return false;
@@ -1448,6 +1480,14 @@ async function bgSummarize(sessionId, cwd, messageCount, tmpFile, { notify: shou
 Be specific: include file paths, function names, error messages.
 Keep each item to 1-2 sentences.
 
+ACCURACY RULES (mandatory):
+- Report ONLY what literally happened. Never infer or extrapolate.
+- Searching is NOT implementing. A grep/search/read for symbol X, or confirming X is absent, must NEVER be written as "implemented X" or "added X". Write "verified X does not exist" instead.
+- A failed, reverted, or abandoned attempt must be recorded AS failed — never as an accomplishment.
+- Record negative findings explicitly (not found, not working, still broken, untested).
+- If the assistant corrected an earlier claim, keep the correction and drop the wrong claim.
+- Never invent file paths, function names, versions, or metrics absent from the conversation.
+
 CONVERSATION:
 ${text}`;
 
@@ -1481,6 +1521,14 @@ Rules:
 - Quote exact file paths, function names, command names where relevant.
 - Don't pad. Skip sections that have nothing real to say.
 - Maximum 600 words total.
+
+ACCURACY RULES (mandatory — a wrong handoff misleads the next session for hours):
+- Report ONLY what literally happened. Never infer, extrapolate, or fill gaps with plausible-sounding work.
+- Searching is NOT implementing. A grep/search/read for symbol X, or confirming X is absent, must NEVER become "implemented X" / "added X". Write "verified X does not exist" instead.
+- A failed, reverted, or abandoned attempt goes under what did NOT work — never under "What was accomplished".
+- "Untested" and "unverified" are load-bearing words. If code was written but never run, say so explicitly in Current state.
+- If the assistant corrected an earlier claim during the session, keep the correction and drop the wrong claim entirely.
+- Never invent file paths, function names, versions, or metrics that do not appear in the conversation.
 
 CONVERSATION:
 ${text}`;
@@ -1536,7 +1584,7 @@ async function compact(hookInput) {
 
         const { messages, rawLength } = parseTranscript(transcript_path, lastOffset);
 
-        await processSecretaryOrders(messages, db, cwd);
+        await processSecretaryOrders(messages, db, cwd, session_id);
 
         const text = messagesToText(messages);
 
@@ -1551,6 +1599,14 @@ async function compact(hookInput) {
 
 Be specific: include file paths, function names, error messages.
 Keep each item to 1-2 sentences.
+
+ACCURACY RULES (mandatory):
+- Report ONLY what literally happened. Never infer or extrapolate.
+- Searching is NOT implementing. A grep/search/read for symbol X, or confirming X is absent, must NEVER be written as "implemented X" or "added X". Write "verified X does not exist" instead.
+- A failed, reverted, or abandoned attempt must be recorded AS failed — never as an accomplishment.
+- Record negative findings explicitly (not found, not working, still broken, untested).
+- If the assistant corrected an earlier claim, keep the correction and drop the wrong claim.
+- Never invent file paths, function names, versions, or metrics absent from the conversation.
 
 CONVERSATION:
 ${text}`;
@@ -1606,7 +1662,6 @@ async function restore(hookInput) {
 
   try {
     // ── Gather all data ──
-    const specialSessions = ['manual', 'notes', 'reminders'];
 
     // Resolve the whole project tree (repo root + every nested subfolder a
     // session ran in) so restore never misses today's work just because it was
@@ -1617,48 +1672,26 @@ async function restore(hookInput) {
     const lastSessionRow = cwd
       ? db.prepare(`
           SELECT session_id FROM all_items
-          WHERE ${tree.clause} AND session_id NOT IN ('manual', 'notes', 'reminders')
+          WHERE ${tree.clause}
           ORDER BY created_at DESC LIMIT 1
         `).get(...tree.params)
       : db.prepare(`
           SELECT session_id FROM all_items
-          WHERE session_id NOT IN ('manual', 'notes', 'reminders')
+          WHERE 1=1
           ORDER BY created_at DESC LIMIT 1
         `).get();
 
     const lastSessionId = lastSessionRow?.session_id;
 
-    // Fetch all categories. Memories/notes/reminders match the whole project
-    // tree (root + nested subfolders) so an item anchored to the project is
-    // visible from any subfolder a session opens in — same tree resolution as
-    // the conversation summaries above. '__global__' items are always included.
-    const manualEntries = cwd ? db.prepare(`
+    // Explicit items (message_count = 0) match the whole project tree (root +
+    // nested subfolders) so an item anchored to the project is visible from any
+    // subfolder a session opens in — same tree resolution as the conversation
+    // summaries above. '__global__' items are always included.
+    const savedItems = cwd ? db.prepare(`
       SELECT summary, created_at FROM all_items
-      WHERE (${tree.clause} OR project_dir = '__global__') AND session_id = 'manual' AND status = 'active'
+      WHERE (${tree.clause} OR project_dir = '__global__') AND message_count = 0
       ORDER BY created_at ASC
     `).all(...tree.params) : [];
-
-    const noteEntries = cwd ? db.prepare(`
-      SELECT summary, created_at FROM all_items
-      WHERE (${tree.clause} OR project_dir = '__global__') AND session_id = 'notes' AND status = 'active'
-      ORDER BY created_at ASC
-    `).all(...tree.params) : [];
-
-    const today = new Date().toISOString().split('T')[0];
-    const overdueReminders = cwd ? db.prepare(`
-      SELECT summary, due_at FROM all_items
-      WHERE (${tree.clause} OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'active'
-        AND due_at IS NOT NULL AND due_at <= ?
-      ORDER BY due_at ASC
-    `).all(...tree.params, today) : [];
-
-    const upcomingReminders = cwd ? db.prepare(`
-      SELECT summary, due_at FROM all_items
-      WHERE (${tree.clause} OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'active'
-        AND (due_at IS NULL OR due_at > ?)
-      ORDER BY due_at ASC
-      LIMIT 10
-    `).all(...tree.params, today) : [];
 
     // Get conversation summaries
     let summaries = [];
@@ -1673,7 +1706,7 @@ async function restore(hookInput) {
         const needed = MIN_CHUNKS - summaries.length;
         const backfill = db.prepare(`
           SELECT summary, chunk_index, created_at, session_id FROM all_items
-          WHERE ${tree.clause} AND session_id != ? AND session_id NOT IN ('manual', 'notes', 'reminders')
+          WHERE ${tree.clause} AND session_id != ?
           ORDER BY created_at DESC LIMIT ?
         `).all(...tree.params, lastSessionId, needed);
         backfill.reverse();
@@ -1681,7 +1714,7 @@ async function restore(hookInput) {
       }
     }
 
-    const hasAnything = summaries.length > 0 || manualEntries.length > 0 || noteEntries.length > 0 || overdueReminders.length > 0 || upcomingReminders.length > 0;
+    const hasAnything = summaries.length > 0 || savedItems.length > 0;
     if (!hasAnything) {
       process.stderr.write('☑ Session memory: no previous context found\n');
       return;
@@ -1690,19 +1723,7 @@ async function restore(hookInput) {
     // ── Build output ──
     let output = '';
 
-    // 1. OVERDUE/TODAY REMINDERS (highest priority — shown first)
-    if (overdueReminders.length > 0) {
-      output += `## ⏰ PENDING REMINDERS\n`;
-      for (const r of overdueReminders) {
-        const clean = r.summary.replace(/^\[REMINDER\]\s*/i, '');
-        const isToday = r.due_at === today;
-        const label = isToday ? 'DUE TODAY' : `OVERDUE since ${r.due_at}`;
-        output += `- **[${label}]** ${clean}\n`;
-      }
-      output += '\n';
-    }
-
-    // 2. Conversation context from bullets.md (strictly per-project).
+    // 1. Conversation context from bullets.md (strictly per-project).
     //    bullets.md is built incrementally by updateBulletsCache() after each
     //    chunk summary, so SessionStart just reads a small file — no LLM call,
     //    no blocking, no race with a still-running summarizer.
@@ -1759,7 +1780,6 @@ async function restore(hookInput) {
       const handoffRow = db.prepare(`
         SELECT summary, created_at, session_id FROM all_items
         WHERE ${tree.clause}
-          AND session_id NOT IN ('manual', 'notes', 'reminders')
           AND summary LIKE '[HANDOFF]%'
         ORDER BY created_at DESC
         LIMIT 1
@@ -1783,7 +1803,6 @@ async function restore(hookInput) {
       const recentItems = db.prepare(`
         SELECT summary, created_at FROM all_items
         WHERE ${tree.clause}
-          AND session_id NOT IN ('manual', 'notes', 'reminders')
         ORDER BY created_at DESC
         LIMIT ?
       `).all(...tree.params, N);
@@ -1809,36 +1828,17 @@ async function restore(hookInput) {
     const ctxLabel = handoffBrief ? '## Background — older session bullets' : '## Context from Previous Conversation (auto-injected by The Secretary)';
     output += `${ctxLabel}${cacheLabel}\n\n${finalSummary}\n`;
 
-    // 3. User Memories
-    if (manualEntries.length > 0) {
-      output += `\n## User Memories (NEVER ignore these)\n`;
-      for (const e of manualEntries) {
-        output += `- ${e.summary}\n`;
-      }
-    }
-
-    // 4. Notes
-    if (noteEntries.length > 0) {
-      output += `\n## Notes\n`;
-      for (const e of noteEntries) {
-        const clean = e.summary.replace(/^\[NOTE\]\s*/i, '');
+    // 2. Saved items — one flat list, no categories.
+    if (savedItems.length > 0) {
+      output += `\n## Saved items (NEVER ignore these)\n`;
+      for (const e of savedItems) {
         const date = e.created_at ? new Date(e.created_at + 'Z').toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }) : '';
-        output += `- ${clean}${date ? ` _(${date})_` : ''}\n`;
-      }
-    }
-
-    // 5. Upcoming Reminders
-    if (upcomingReminders.length > 0) {
-      output += `\n## Upcoming Reminders\n`;
-      for (const r of upcomingReminders) {
-        const clean = r.summary.replace(/^\[REMINDER\]\s*/i, '');
-        const dateLabel = r.due_at || 'no date';
-        output += `- [${dateLabel}] ${clean}\n`;
+        output += `- ${e.summary}${date ? ` _(${date})_` : ''}\n`;
       }
     }
 
     // ── Final output ──
-    const totalItems = summaries.length + manualEntries.length + noteEntries.length + overdueReminders.length + upcomingReminders.length;
+    const totalItems = summaries.length + savedItems.length;
 
     if (totalItems === 0) {
       process.stdout.write(`⚠️ **The Secretary: No hay contexto previo para este proyecto.** Si crees que debería haberlo, ejecuta:\n\`\`\`bash\nbash ~/.claude/the-secretary/start-llm.sh start\necho '{"cwd":"${cwd || ''}"}' | node ~/.claude/the-secretary/summarize.mjs recall\n\`\`\`\n`);
@@ -1847,7 +1847,7 @@ async function restore(hookInput) {
 
     output += `\n---\n*${totalItems} items restored by The Secretary.*`;
 
-    const allDates = [...summaries, ...manualEntries, ...noteEntries].map(e => e.created_at).filter(Boolean);
+    const allDates = [...summaries, ...savedItems].map(e => e.created_at).filter(Boolean);
     const lastDate = allDates[allDates.length - 1] || 'unknown';
     const formattedDate = lastDate !== 'unknown' ? new Date(lastDate + 'Z').toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : lastDate;
 
@@ -1898,7 +1898,7 @@ async function force(hookInput, { stopLlm = false, notify: shouldNotify = false 
 
     const { messages, rawLength } = parseTranscript(transcript_path, lastOffset);
 
-    await processSecretaryOrders(messages, db, cwd);
+    await processSecretaryOrders(messages, db, cwd, session_id);
 
     const text = messagesToText(messages);
 
@@ -1968,16 +1968,16 @@ async function inject(hookInput) {
     const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
 
     db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)').run(
-      session_id, cwd, chunkIndex, `[MANUAL] ${text}`, 0
+      session_id, cwd, chunkIndex, text, 0
     );
 
-    process.stderr.write(`[secretary] Injected manual context (chunk ${chunkIndex}).\n`);
+    process.stderr.write(`[secretary] Injected context (chunk ${chunkIndex}).\n`);
   } finally {
     db.close();
   }
 }
 
-async function recall(hookInput, filter = 'all') {
+async function recall(hookInput) {
   const cwd = hookInput.cwd || process.argv[3] || process.cwd();
 
   const db = openDb(cwd);
@@ -1989,95 +1989,58 @@ async function recall(hookInput, filter = 'all') {
   try {
     let output = '';
 
-    // Memories
-    if (filter === 'all' || filter === 'memories') {
-      const entries = db.prepare(`
-        SELECT id, summary, created_at, project_dir FROM all_items
-        WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'manual' AND status = 'active'
-        ORDER BY created_at ASC
-      `).all();
+    // Saved items — one flat list. No categories, no prefixes, no lifecycle.
+    const entries = db.prepare(`
+      SELECT id, summary, created_at, project_dir FROM all_items
+      WHERE (src = 'p' OR project_dir = '__global__') AND message_count = 0
+      ORDER BY created_at ASC
+    `).all();
 
-      if (entries.length > 0) {
-        output += `## Memorias del usuario (${entries.length})\n\n`;
-        for (const e of entries) {
-          const clean = e.summary.replace(/^\[(?:REMEMBER|MANUAL)\]\s*/i, '');
-          const date = e.created_at ? new Date(e.created_at + 'Z').toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
-          const globalTag = e.project_dir === '__global__' ? ' [global]' : '';
-          output += `- ${clean}${date ? ` _(${date})_` : ''}${globalTag}\n`;
-        }
-        output += '\n';
+    if (entries.length > 0) {
+      output += `## Elementos guardados (${entries.length})\n\n`;
+      for (const e of entries) {
+        const date = e.created_at ? new Date(e.created_at + 'Z').toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+        const globalTag = e.project_dir === '__global__' ? ' [global]' : '';
+        output += `- ${e.summary}${date ? ` _(${date})_` : ''}${globalTag}\n`;
       }
+      output += '\n';
     }
 
-    // Notes
-    if (filter === 'all' || filter === 'notes') {
-      const entries = db.prepare(`
-        SELECT id, summary, created_at, project_dir FROM all_items
-        WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'notes' AND status = 'active'
-        ORDER BY created_at ASC
-      `).all();
-
-      if (entries.length > 0) {
-        output += `## Notas (${entries.length})\n\n`;
-        for (const e of entries) {
-          const clean = e.summary.replace(/^\[NOTE\]\s*/i, '');
-          const date = e.created_at ? new Date(e.created_at + 'Z').toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
-          const globalTag = e.project_dir === '__global__' ? ' [global]' : '';
-          output += `- ${clean}${date ? ` _(${date})_` : ''}${globalTag}\n`;
-        }
-        output += '\n';
-      }
-    }
-
-    // Reminders
-    if (filter === 'all' || filter === 'reminders') {
-      const active = db.prepare(`
-        SELECT id, summary, due_at, created_at FROM all_items
-        WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'active'
-        ORDER BY due_at ASC, created_at ASC
-      `).all();
-
-      const done = db.prepare(`
-        SELECT id, summary, due_at, created_at FROM all_items
-        WHERE (src = 'p' OR project_dir = '__global__') AND session_id = 'reminders' AND status = 'done'
-        ORDER BY created_at DESC LIMIT 10
-      `).all();
-
-      if (active.length > 0) {
-        const today = new Date().toISOString().split('T')[0];
-        output += `## Recordatorios activos (${active.length})\n\n`;
-        for (const r of active) {
-          const clean = r.summary.replace(/^\[REMINDER\]\s*/i, '');
-          const isOverdue = r.due_at && r.due_at <= today;
-          const prefix = isOverdue ? '**[OVERDUE]** ' : r.due_at ? `[${r.due_at}] ` : '[sin fecha] ';
-          output += `- ${prefix}${clean}\n`;
-        }
-        output += '\n';
-      }
-
-      if (done.length > 0) {
-        output += `## Recordatorios completados (últimos ${done.length})\n\n`;
-        for (const r of done) {
-          const clean = r.summary.replace(/^\[REMINDER\]\s*/i, '');
-          output += `- ~~${clean}~~\n`;
-        }
-        output += '\n';
-      }
-    }
-
-    // Context summaries (only in 'all' mode)
-    if (filter === 'all') {
+    // Context summaries
+    {
       const lastSessionRow = db.prepare(`
         SELECT session_id FROM all_items
-        WHERE src = 'p' AND session_id NOT IN ('manual', 'notes', 'reminders')
+        WHERE src = 'p'
         ORDER BY created_at DESC LIMIT 1
       `).get();
 
       if (lastSessionRow) {
+        // Last session in full, plus recent handoffs from earlier sessions —
+        // a handoff is the distilled state of a whole session, so dropping the
+        // older ones (LIMIT 1 on the session) threw away most of the history.
         const summaries = db.prepare(`
           SELECT summary, created_at FROM all_items
           WHERE session_id = ? ORDER BY chunk_index ASC
         `).all(lastSessionRow.session_id);
+
+        const priorHandoffs = db.prepare(`
+          SELECT summary, created_at FROM all_items
+          WHERE src = 'p' AND session_id != ?
+            AND summary LIKE '[HANDOFF]%'
+          ORDER BY created_at DESC LIMIT 2
+        `).all(lastSessionRow.session_id);
+
+        if (priorHandoffs.length > 0) {
+          output += `## Handoffs de sesiones anteriores (${priorHandoffs.length})\n\n`;
+          for (const h of priorHandoffs.reverse()) {
+            const date = h.created_at ? new Date(h.created_at + 'Z').toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }) : '';
+            // Truncated: full handoffs are ~600 words each and would dwarf the
+            // rest of the recall. The current session's context follows below.
+            let body = h.summary.replace(/^\[HANDOFF\]\s*/i, '');
+            if (body.length > 900) body = body.slice(0, 900) + '\n…(truncado)';
+            output += `### ${date}\n${body}\n\n---\n\n`;
+          }
+        }
 
         if (summaries.length > 0) {
           output += `## Contexto de conversaciones anteriores (${summaries.length} chunks)\n\n`;
@@ -2085,7 +2048,17 @@ async function recall(hookInput, filter = 'all') {
           if (await isLLMAvailable()) {
             const allSummaries = summaries.map((s, i) => `--- Chunk ${i + 1} (${s.created_at}) ---\n${s.summary}`).join('\n\n');
             try {
-              const prompt = `Merge these ${summaries.length} conversation summaries into ONE readable summary in Spanish. Be concise but include key decisions, files changed, and current state. Use markdown formatting.\n\nSUMMARIES:\n${allSummaries}`;
+              const prompt = `Merge these ${summaries.length} conversation summaries into ONE readable summary in Spanish. Be concise but include key decisions, files changed, and current state. Use markdown formatting.
+
+CRITICAL ACCURACY RULES — violating these makes the summary worse than useless:
+- Report ONLY what the summaries literally state. Never infer, extrapolate, or fill gaps.
+- Searching for a symbol is NOT implementing it. "grep X", "looked for X", "verified X is missing" must NEVER become "implemented X".
+- Preserve negative findings verbatim: if something was NOT found, NOT working, failed, or was reverted, say so explicitly.
+- Preserve explicit corrections: if a summary corrects an earlier claim, the correction wins and the corrected claim must not reappear.
+- If two summaries conflict, keep the LATER one and note the discrepancy.
+- Never invent file paths, function names, version numbers, or metrics that do not appear in the source text.
+
+SUMMARIES:\n${allSummaries}`;
               const consolidated = await callLLM(prompt, 2000);
               if (consolidated && consolidated.length >= 50) {
                 output += consolidated + '\n';
@@ -2145,7 +2118,146 @@ const RECALL_TRIGGERS = [
 
 function isRecallQuery(prompt) {
   if (!prompt || prompt.length > 500) return false;
-  return RECALL_TRIGGERS.some((rx) => rx.test(prompt));
+  return RECALL_TRIGGERS.some((rx) => rx.test(prompt)) || isTemporalQuery(prompt);
+}
+
+/**
+ * "Where were we?" questions ask about a POINT IN TIME, not a topic.
+ *
+ * Keyword search answers them badly by construction: it ranks every turn that happens
+ * to contain "estábamos" from any session, so months-old work outranks this morning's.
+ * These are answered by recency instead — the tail of the conversation, in order.
+ */
+const TEMPORAL_TRIGGERS = [
+  /\b(?:en|por)\s+(?:qu[eé]|donde|d[oó]nde)\s+(?:nos\s+)?(?:hab[ií]amos\s+)?(?:qued|estab|iba)/i,
+  /\bpor\s+d[oó]nde\s+(?:vamos|[ií]bamos|seguimos|segu[ií]a)/i,
+  /\b(?:qu[eé]|cual)\s+(?:es\s+)?(?:lo\s+)?[uú]ltimo\s+que\s+(?:hicimos|hice|hiciste|estab)/i,
+  /\bretomamos?\b/i,
+  /\bd[oó]nde\s+(?:lo\s+)?(?:dejamos|dej[eé])\b/i,
+  /\bwhere\s+(?:were|did)\s+we\s+(?:leave|left|stop|at)\b/i,
+  /\bwhat\s+(?:were|was)\s+(?:we|i)\s+(?:working|doing)\b/i,
+  /\bpick\s+up\s+where\b/i,
+  /\bwhat'?s?\s+the\s+last\s+thing\b/i,
+];
+
+function isTemporalQuery(prompt) {
+  if (!prompt || prompt.length > 500) return false;
+  return TEMPORAL_TRIGGERS.some((rx) => rx.test(prompt));
+}
+
+/**
+ * Ask the local LLM whether a prompt is a "where were we" question.
+ *
+ * Phrasings are open-ended ("sigue con lo de antes", "que estabas haciendo") and no
+ * regex list covers them; a small local model classifies them reliably. Used ONLY as a
+ * second opinion after the regex misses, so the common path stays instant and the model
+ * never sits between the user and an obvious prompt.
+ *
+ * Fails closed to `false`: if the server is down or slow, detection degrades to the
+ * regex tier rather than blocking the hook.
+ */
+async function isTemporalQueryLLM(prompt, { timeoutMs = 2500 } = {}) {
+  const p = (prompt || '').trim();
+  // Only short, question-like prompts are worth a round trip. A long prompt is a task,
+  // not a "where were we".
+  if (p.length < 4 || p.length > 120) return false;
+
+  const system = 'You classify a user message from a coding assistant. Reply with ONE word only.\n'
+    + 'RECENT = the user asks what we were working on, where we left off, or what was done last (any language).\n'
+    + 'OTHER = anything else: a task to do, a code question, a command.';
+
+  try {
+    const answer = await callLLMChat(
+      [{ role: 'system', content: system }, { role: 'user', content: p }],
+      { maxTokens: 4, temperature: 0, timeoutMs }
+    );
+    return /RECENT/i.test(answer || '');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Minimal chat call with an explicit timeout, for latency-sensitive paths that must
+ * never hold up a hook. `callLLM` is tuned for long summaries (60s timeout).
+ */
+function callLLMChat(messages, { maxTokens = 8, temperature = 0, timeoutMs = 2500 } = {}) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(config.llm_url);
+    const body = JSON.stringify({
+      model: detectedModel || config.model,
+      messages,
+      max_tokens: maxTokens,
+      temperature,
+    });
+
+    const req = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      timeout: timeoutMs,
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data).choices?.[0]?.message?.content || '');
+        } catch { reject(new Error('LLM response parse error')); }
+      });
+    });
+
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('LLM timeout')); });
+    req.write(body);
+    req.end();
+  });
+}
+
+/**
+ * Answer a "where were we" question from the tail of the indexed conversation.
+ *
+ * Returns the most recent turns of the most recent session, oldest-first so they read
+ * as a conversation. Consecutive near-duplicates are collapsed: repeated prompts and
+ * retried messages otherwise fill the whole answer with the same line.
+ */
+function recentContext(cwd, { limit = 12 } = {}) {
+  const db = openDb(cwd);
+  if (!db) return [];
+  try {
+    const last = db.prepare(`
+      SELECT session_id, MAX(created_at) AS last_at
+      FROM turns
+      GROUP BY session_id
+      ORDER BY last_at DESC
+      LIMIT 1
+    `).get();
+    if (!last?.session_id) return [];
+
+    const rows = db.prepare(`
+      SELECT body, role, created_at
+      FROM turns
+      WHERE session_id = ?
+      ORDER BY rowid DESC
+      LIMIT ?
+    `).all(last.session_id, limit * 3);
+
+    const seen = new Set();
+    const picked = [];
+    for (const r of rows) {
+      const key = (r.body || '').slice(0, 80).toLowerCase().replace(/\s+/g, ' ');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      picked.push(r);
+      if (picked.length >= limit) break;
+    }
+    return picked.reverse(); // chronological
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -2158,7 +2270,41 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
   const q = (query || '').trim();
   if (q.length < 3) return [];
 
-  const terms = q.split(/\s+/).filter((t) => t.length >= 3).slice(0, 5);
+  // "Where were we?" is a question about time, not about words — answer it from the
+  // tail of the conversation. Keyword ranking would surface any old turn that merely
+  // repeats the phrasing. Regex first (instant, covers the common phrasings); the local
+  // model is consulted only when it misses, since phrasing is open-ended.
+  if (isTemporalQuery(q) || await isTemporalQueryLLM(q)) {
+    const recent = recentContext(cwd, { limit: maxHits * 2 });
+    if (recent.length) {
+      return recent.map((r) => ({
+        source: r.role === 'user' ? 'said' : 'turn',
+        project: basename(cwd) || 'unknown',
+        date: (r.created_at || '').split('T')[0],
+        score: 0,
+        snippet: (r.body || '').slice(0, snippetChars).trim(),
+      }));
+    }
+    // No indexed turns yet: fall through to keyword search rather than answering nothing.
+  }
+
+  // Drop stopwords: a recall question is mostly filler ("que hice hoy en X"),
+  // and scoring by raw term count lets that filler outrank the real subject.
+  const STOPWORDS = new Set([
+    'que', 'qué', 'como', 'cómo', 'cual', 'cuál', 'donde', 'dónde', 'cuando', 'cuándo',
+    'hice', 'hicimos', 'hizo', 'hacer', 'hoy', 'ayer', 'los', 'las', 'del', 'para', 'por',
+    'con', 'sin', 'una', 'uno', 'unos', 'unas', 'esta', 'este', 'esto', 'esos', 'esas',
+    'sobre', 'todo', 'toda', 'todos', 'todas', 'mas', 'más', 'muy', 'ser', 'era', 'son',
+    'the', 'and', 'for', 'what', 'did', 'was', 'were', 'have', 'has', 'with', 'from',
+    'this', 'that', 'these', 'those', 'about', 'into', 'been', 'they', 'you', 'your',
+  ]);
+  let terms = q.split(/\s+/)
+    .map((t) => t.replace(/[.,;:!?()"']/g, ''))
+    .filter((t) => t.length >= 3 && !STOPWORDS.has(t.toLowerCase()));
+  // If the query was ALL stopwords, fall back to the original tokens rather
+  // than returning nothing.
+  if (terms.length === 0) terms = q.split(/\s+/).filter((t) => t.length >= 3);
+  terms = terms.slice(0, 5);
   if (terms.length === 0) return [];
 
   const hits = [];
@@ -2208,9 +2354,72 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
   // Sort by match score desc, then date desc
   hits.sort((a, b) => (b.score - a.score) || b.date.localeCompare(a.date));
 
+  // Always keep room for verbatim hits. The cache holds LLM-written summaries, which
+  // paraphrase; the turns hold what was actually said. Letting the cache fill every
+  // slot meant a question about a literal phrase was answered entirely from summaries
+  // that had already dropped that phrase — and the verbatim stage never even ran.
+  const CACHE_MAX = Math.max(1, Math.floor(maxHits / 2));
+  if (hits.length > CACHE_MAX) hits.length = CACHE_MAX;
+
+  // ── 2. Verbatim turns (FTS5) ──
+  // Runs before the summary fallback: a recall question usually quotes what was said,
+  // and the raw turn keeps that wording where the summary paraphrased it away.
+  try {
+    const db = openDb(cwd);
+    if (db) {
+      try {
+        const match = buildMatchQuery(terms);
+        if (match) {
+          const rows = db.prepare(`
+            SELECT body, role, project_dir, created_at, bm25(turns) AS rank
+            FROM turns
+            WHERE turns MATCH ?
+            ORDER BY rank
+            LIMIT ?
+          `).all(match, maxHits - hits.length);
+
+          for (const row of rows) {
+            const body = row.body || '';
+            const lower = body.toLowerCase();
+            const firstTerm = terms.find(t => lower.includes(t.toLowerCase())) || terms[0];
+            const idx = Math.max(0, lower.indexOf(firstTerm.toLowerCase()));
+            const start = Math.max(0, idx - 120);
+            const end = Math.min(body.length, idx + snippetChars);
+            const snippet = (start > 0 ? '…' : '') + body.slice(start, end) + (end < body.length ? '…' : '');
+            hits.push({
+              source: row.role === 'user' ? 'said' : 'turn',
+              project: basename(row.project_dir || '') || 'unknown',
+              date: (row.created_at || '').split('T')[0],
+              score: 0,
+              snippet: snippet.trim(),
+            });
+          }
+        }
+        // ── 2b. Semantic fallback ──
+        // Only when the literal pass came up short. Tagged `approx` so the caller can
+        // show these as "close in meaning", never as something that was actually said.
+        if (hits.length < maxHits) {
+          for (const row of vectorSearch(db, q, maxHits - hits.length)) {
+            hits.push({
+              source: row.role === 'user' ? 'said~' : 'turn~',
+              approx: true,
+              project: basename(row.project_dir || '') || 'unknown',
+              date: (row.created_at || '').split('T')[0],
+              score: 0,
+              snippet: (row.body || '').slice(0, snippetChars).trim(),
+            });
+          }
+        }
+      } catch { /* no FTS table yet (older DB) — fall through to summaries */ }
+      finally { db.close(); }
+    }
+  } catch (err) {
+    process.stderr.write(`[secretary] fts search error: ${err.message}\n`);
+  }
+
   if (hits.length >= maxHits) return hits.slice(0, maxHits);
 
-  // ── 2. DB fallback (summaries table) ──
+  // ── 3. DB fallback (summaries table) ──
   try {
     const db = openDb(cwd);
     if (db) {
@@ -2220,7 +2429,7 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
         const rows = db.prepare(`
           SELECT project_dir, summary, created_at
           FROM all_items
-          WHERE session_id NOT IN ('manual', 'notes', 'reminders')
+          WHERE 1=1
             AND ${likeClauses}
           ORDER BY created_at DESC
           LIMIT ?
@@ -2255,6 +2464,111 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
 /**
  * CLI command: search <query…> — prints matching context to stdout.
  */
+/**
+ * CLI command: index-turns — backfill the FTS index from transcripts already on disk.
+ *
+ * Claude Code keeps every session at ~/.claude/projects/<slug>/<session-id>.jsonl, where
+ * the slug is the project path with separators replaced by '-'. Sessions that ended
+ * before this index existed are only reachable this way; live sessions self-index via
+ * the PostToolUse hook.
+ */
+/**
+ * CLI command: index-vectors — build the semantic index over turns already in FTS.
+ *
+ * Separate from index-turns on purpose: FTS indexing is free and runs on every hook,
+ * while this loads a 600 MB model and takes ~50 s per 2k turns. It is an explicit,
+ * occasional operation. Re-running it only embeds turns that are not in vturns yet.
+ */
+async function cmdIndexVectors() {
+  const cwd = process.cwd();
+  if (!semanticAvailable()) {
+    process.stdout.write('Semantic index unavailable: needs sqlite-vec (npm) and the embedding venv.\n');
+    process.stdout.write(`Expected helper at ${EMBED_SCRIPT} and python at ${embedPython()}\n`);
+    return;
+  }
+
+  const db = openDb(cwd);
+  if (!db) { process.stderr.write('[secretary] could not open DB\n'); return; }
+
+  try {
+    if (!loadVecExtension(db)) { process.stdout.write('sqlite-vec failed to load.\n'); return; }
+    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vturns USING vec0(embedding float[${VEC_DIM}])`);
+
+    const pending = db.prepare(`
+      SELECT rowid AS rid, body FROM turns
+      WHERE length(body) >= 30 AND rowid NOT IN (SELECT rowid FROM vturns)
+    `).all();
+
+    if (!pending.length) {
+      const n = db.prepare('SELECT count(*) n FROM vturns').get()?.n ?? 0;
+      process.stdout.write(`Semantic index already current (${n} vectors).\n`);
+      return;
+    }
+
+    process.stdout.write(`Embedding ${pending.length} turn(s)…\n`);
+    const insert = db.prepare('INSERT INTO vturns(rowid, embedding) VALUES (?, ?)');
+    let done = 0;
+    const BATCH = 128;
+    for (let i = 0; i < pending.length; i += BATCH) {
+      const slice = pending.slice(i, i + BATCH);
+      const vecs = embedTexts(slice.map(r => r.body));
+      if (!vecs) { process.stderr.write('[secretary] embedding failed — stopping\n'); break; }
+      const tx = db.transaction((rows) => {
+        rows.forEach((r, k) => insert.run(BigInt(r.rid), vecs[k]));
+      });
+      tx(slice);
+      done += slice.length;
+      process.stdout.write(`  ${done}/${pending.length}\n`);
+    }
+    const total = db.prepare('SELECT count(*) n FROM vturns').get()?.n ?? 0;
+    process.stdout.write(`Semantic index: ${done} new vector(s). Total: ${total}\n`);
+  } catch (err) {
+    process.stderr.write(`[secretary] index-vectors error: ${err.message}\n`);
+  } finally {
+    db.close();
+  }
+}
+
+async function cmdIndexTurns() {
+  const cwd = process.cwd();
+  // Claude Code slugifies the project path by replacing every non-alphanumeric run
+  // (separators, dots, spaces) with a single dash: /Users/x/Code/LAB.Foo -> -Users-x-Code-LAB-Foo
+  const slug = cwd.replace(/[^a-zA-Z0-9]+/g, '-');
+  const projectsDir = join(homedir(), '.claude', 'projects', slug);
+
+  if (!existsSync(projectsDir)) {
+    process.stdout.write(`No transcripts found for this project (${projectsDir})\n`);
+    return;
+  }
+
+  const db = openDb(cwd);
+  if (!db) {
+    process.stderr.write('[secretary] could not open DB\n');
+    return;
+  }
+
+  let files = 0, indexed = 0;
+  try {
+    for (const f of readdirSync(projectsDir)) {
+      if (!f.endsWith('.jsonl')) continue;
+      const sessionId = f.replace(/\.jsonl$/, '');
+      let messages;
+      try {
+        ({ messages } = parseTranscript(join(projectsDir, f)));
+      } catch { continue; } // one unreadable transcript must not abort the rest
+      if (!messages.length) continue;
+      files++;
+      indexed += indexTurns(db, messages, { session_id: sessionId, cwd });
+    }
+    const total = db.prepare('SELECT COUNT(*) AS n FROM turns').get()?.n ?? 0;
+    process.stdout.write(`Indexed ${indexed} new turn(s) from ${files} transcript(s). Total in index: ${total}\n`);
+  } catch (err) {
+    process.stderr.write(`[secretary] index-turns error: ${err.message}\n`);
+  } finally {
+    db.close();
+  }
+}
+
 async function cmdSearch() {
   const query = process.argv.slice(3).join(' ');
   if (!query) {
@@ -2336,7 +2650,6 @@ async function checkFreshContextWatermark(hookInput) {
       SELECT summary, created_at, session_id, chunk_index FROM all_items
       WHERE (src = 'p' OR project_dir = '__global__')
         AND created_at > ?
-        AND session_id NOT IN ('manual', 'notes', 'reminders')
         AND session_id != ?
       ORDER BY created_at ASC
       LIMIT 20
@@ -2417,7 +2730,7 @@ async function main() {
     process.exit(0);
   }
 
-  // Background deletion worker (forked child process for FORGET/NOTE_DELETE/REMINDER_DONE)
+  // Background deletion worker (forked child process for FORGET)
   if (command === '_bg_delete') {
     const [, , , cwd, actionsJson] = process.argv;
     try {
@@ -2431,12 +2744,6 @@ async function main() {
             case 'FORGET':
               await actionForget(content, db, cwd, llmAvailable);
               break;
-            case 'NOTE_DELETE':
-              await actionNoteDelete(content, db, cwd, llmAvailable);
-              break;
-            case 'REMINDER_DONE':
-              await actionReminderDone(content, db, cwd, llmAvailable);
-              break;
           }
         }
       } finally {
@@ -2449,10 +2756,20 @@ async function main() {
     process.exit(0);
   }
 
-  const validCommands = ['incremental', 'compact', 'restore', 'force', 'inject', 'recall', 'recall-notes', 'recall-reminders', 'search', 'user-prompt'];
+  const validCommands = ['incremental', 'compact', 'restore', 'force', 'inject', 'recall', 'search', 'index-turns', 'index-vectors', 'user-prompt'];
 
   if (command === 'search') {
     await cmdSearch();
+    return;
+  }
+
+  if (command === 'index-turns') {
+    await cmdIndexTurns();
+    return;
+  }
+
+  if (command === 'index-vectors') {
+    await cmdIndexVectors();
     return;
   }
 
@@ -2464,10 +2781,10 @@ async function main() {
     process.stderr.write('  restore           Inject context into new session (SessionStart hook)\n');
     process.stderr.write('  force             Force immediate summary (Stop hook or manual)\n');
     process.stderr.write('  inject            Inject manual text: --text "your context"\n');
-    process.stderr.write('  recall            Show all: memories, notes, reminders, context\n');
-    process.stderr.write('  recall-notes      Show only notes\n');
-    process.stderr.write('  recall-reminders  Show only reminders\n');
+    process.stderr.write('  recall            Show the whole index: saved items + context\n');
     process.stderr.write('  search <query>    Search cache + DB for a query\n');
+    process.stderr.write('  index-turns       Backfill the verbatim FTS index from transcripts on disk\n');
+    process.stderr.write('  index-vectors     Build the semantic index (optional; needs embedding venv)\n');
     process.stderr.write('  user-prompt       UserPromptSubmit hook: auto-inject context on recall-style prompts\n');
     process.exit(1);
   }
@@ -2489,9 +2806,7 @@ async function main() {
       case 'restore': await restore(hookInput); break;
       case 'force': await force(hookInput, { stopLlm: process.argv.includes('--stop-llm'), notify: process.argv.includes('--notify') }); break;
       case 'inject': await inject(hookInput); break;
-      case 'recall': await recall(hookInput, 'all'); break;
-      case 'recall-notes': await recall(hookInput, 'notes'); break;
-      case 'recall-reminders': await recall(hookInput, 'reminders'); break;
+      case 'recall': await recall(hookInput); break;
       case 'user-prompt': await userPromptHook(hookInput); break;
     }
   } catch (err) {

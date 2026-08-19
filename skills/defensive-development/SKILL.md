@@ -1,6 +1,8 @@
 ---
 name: defensive-development
 description: Verification-first coding practices. Read before edit, grep before assume, verify API names, safe refactoring with reference checks. Never blame external factors.
+version: 1.0.0
+updated: 2026-08-12
 license: MIT
 compatibility: opencode
 metadata:

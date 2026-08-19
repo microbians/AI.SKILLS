@@ -1,6 +1,8 @@
 ---
 name: ascii-art-diagrams
 description: Rules for creating ASCII art diagrams with Unicode box-drawing characters. Covers boxes, trees, flow charts, and visual representations.
+version: 1.0.0
+updated: 2026-08-12
 license: MIT
 compatibility: opencode
 metadata:

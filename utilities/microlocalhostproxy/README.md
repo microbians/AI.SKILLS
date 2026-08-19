@@ -19,8 +19,8 @@ Auto-discovers, registers, and auto-starts dev servers for any project type (PHP
 ├───────────────────────────────────────────────────────────────┤
 │                                                               │
 │  SUBDOMAIN NAMING (from directory name)                       │
-│  ├── LAB.Imager      → imager.localhost                       │
-│  ├── MICRO.AutoMkt   → automkt.localhost                      │
+│  ├── LAB.Photos      → photos.localhost                       │
+│  ├── APP.Invoices    → invoices.localhost                     │
 │  ├── AI.SKILLS       → skills.localhost                       │
 │  └── pepe            → pepe.localhost                         │
 │                                                               │
@@ -37,10 +37,10 @@ Auto-discovers, registers, and auto-starts dev servers for any project type (PHP
 
 ```bash
 # From any project directory:
-cd ~/Programacion/MICRO.AutoMkt
+cd ~/Projects/APP.Invoices
 devproxy
 
-# That's it. Visit http://automkt.localhost
+# That's it. Visit http://invoices.localhost
 # The server auto-starts when you visit the URL.
 ```
 
@@ -48,7 +48,7 @@ devproxy
 
 1. **Register**: Run `devproxy` from your project directory. It auto-detects the project type, derives the subdomain from the directory name, finds a free port, and registers with the central proxy.
 
-2. **Auto-start**: When you visit `automkt.localhost` in the browser, the proxy checks if the server is running. If not, it starts it automatically (`php -S`, `npm run dev`, etc.).
+2. **Auto-start**: When you visit `invoices.localhost` in the browser, the proxy checks if the server is running. If not, it starts it automatically (`php -S`, `npm run dev`, etc.).
 
 3. **Persist**: Projects are saved in `~/.config/devproxy/projects.json`. After a reboot, visiting any registered subdomain auto-starts its server.
 

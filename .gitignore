@@ -7,6 +7,8 @@ Icon?
 # Local backups
 TheSecretary/backups/
 .safe-edit-backups/
+*.bak
+*.bak-*
 
 # Archives (source ZIPs already extracted)
 *.zip
@@ -39,6 +41,9 @@ opencodemlx/turbomlx-src/
 
 # Local-only extras
 others/
+
+# Shelved projects (kept locally, not tracked)
+_old/
 
 # The Secretary per-project data (memory lives with the folder, never in git)
 .claude/the-secretary/

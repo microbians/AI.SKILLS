@@ -1,6 +1,8 @@
 ---
 name: safe-edit
 description: Safer alternative to sed -i / perl -i / awk -i inplace for mass file edits. Use whenever you need to find-and-replace across multiple files, rename a symbol project-wide, bump a version string, or apply a regex transform to many files. A PreToolUse hook automatically blocks in-place sed/perl/awk to prevent accidental file corruption — use this skill instead.
+version: 1.0.0
+updated: 2026-08-12
 license: MIT
 ---
 

@@ -1,6 +1,8 @@
 ---
 name: project-api
 description: Auto-generates and maintains project API documentation. Extracts classes, functions, exports from code. Self-healing, auto-installing.
+version: 1.0.0
+updated: 2026-08-12
 license: MIT
 compatibility: opencode
 metadata:

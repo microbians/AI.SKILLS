@@ -1,6 +1,8 @@
 ---
 name: project-structure
 description: Auto-generates and maintains project structure documentation. Self-healing, auto-installing. Query structure anytime without manual updates.
+version: 1.0.0
+updated: 2026-08-12
 license: MIT
 compatibility: opencode
 metadata:

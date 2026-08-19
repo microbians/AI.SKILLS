@@ -12,6 +12,21 @@ LEGACY_DEST="$HOME/.claude/summarizer"
 SKILL_DEST="$HOME/.claude/skills/the-secretary"
 SETTINGS="$HOME/.claude/settings.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# ─── VERSION ─────────────────────────────────────────────────────
+# Read from the skill's frontmatter — ONE source of truth, so the installer can
+# never announce a version the skill doesn't carry. Reported on install so an
+# upgrade is visible instead of a silent overwrite.
+PKG_VERSION="$(sed -n 's/^version: *//p' "$SCRIPT_DIR/skill/SKILL.md" 2>/dev/null | head -1)"
+[ -n "$PKG_VERSION" ] || PKG_VERSION="0.0.0"
+PKG_INSTALLED="$(sed -n 's/^version: *//p' "$HOME/.claude/skills/the-secretary/SKILL.md" 2>/dev/null | head -1)"
+if [ -z "$PKG_INSTALLED" ]; then
+  echo "the-secretary v$PKG_VERSION — installing..."
+elif [ "$PKG_INSTALLED" != "$PKG_VERSION" ]; then
+  echo "the-secretary — upgrading v$PKG_INSTALLED → v$PKG_VERSION..."
+else
+  echo "the-secretary v$PKG_VERSION — reinstalling (same version)..."
+fi
 MODEL_URL="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
 MODEL_FILE="qwen2.5-3b-instruct-q4_k_m.gguf"
 
@@ -332,9 +347,9 @@ echo "  Database: $DEST/summaries.db (created on first use)"
 echo ""
 echo "  Features:"
 echo "    - Conversation summarization (automatic)"
-echo "    - User memories: \"recuerda que...\" / \"olvida que...\""
-echo "    - Notes: \"toma nota:\" / \"borra la nota de...\""
-echo "    - Reminders: \"avísame el viernes...\" / \"ya hice...\""
+echo "    - One flat index, no memory types"
+echo "    - Save:   \"recuerda que...\" / \"toma nota:\" / \"avísame el viernes...\""
+echo "    - Forget: \"olvida que...\" / \"borra la nota de...\" / \"ya hice...\""
 echo ""
 echo "  Restart Claude Code to activate the hooks."
 echo "  To uninstall: bash $SCRIPT_DIR/install.sh --uninstall"

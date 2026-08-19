@@ -11,6 +11,21 @@ SKILL_DEST="$HOME/.claude/skills/code-index"
 SETTINGS="$HOME/.claude/settings.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# ─── VERSION ─────────────────────────────────────────────────────
+# Read from the skill's frontmatter — ONE source of truth, so the installer can
+# never announce a version the skill doesn't carry. Reported on install so an
+# upgrade is visible instead of a silent overwrite.
+PKG_VERSION="$(sed -n 's/^version: *//p' "$SCRIPT_DIR/skill/SKILL.md" 2>/dev/null | head -1)"
+[ -n "$PKG_VERSION" ] || PKG_VERSION="0.0.0"
+PKG_INSTALLED="$(sed -n 's/^version: *//p' "$HOME/.claude/skills/code-index/SKILL.md" 2>/dev/null | head -1)"
+if [ -z "$PKG_INSTALLED" ]; then
+  echo "code-index v$PKG_VERSION — installing..."
+elif [ "$PKG_INSTALLED" != "$PKG_VERSION" ]; then
+  echo "code-index — upgrading v$PKG_INSTALLED → v$PKG_VERSION..."
+else
+  echo "code-index v$PKG_VERSION — reinstalling (same version)..."
+fi
+
 GREEN="\033[0;32m"; YELLOW="\033[0;33m"; RED="\033[0;31m"; NC="\033[0m"
 info() { echo -e "${GREEN}[✓]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }

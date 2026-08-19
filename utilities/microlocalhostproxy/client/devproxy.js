@@ -18,7 +18,7 @@
 
 	Auto-detection:
 	  - Subdomain: derived from directory name
-	    - "LAB.Imager" → "imager", "MICRO.AutoMkt" → "automkt", "pepe" → "pepe"
+	    - "LAB.Photos" → "photos", "APP.Invoices" → "invoices", "pepe" → "pepe"
 	  - Type: composer.json/index.php → php, package.json → node, *.py → python
 	  - Port: finds a free port starting from 8000 (php) or 3000 (node)
 
@@ -43,7 +43,7 @@ const INSTALLED_MARKER = join(DEVPROXY_DIR, '.installed');
 
 function deriveSubdomain(dir) {
 	const name = basename(dir);
-	// "LAB.Imager" → "imager", "MICRO.AutoMkt" → "automkt"
+	// "LAB.Photos" → "photos", "APP.Invoices" → "invoices"
 	const part = name.includes('.') ? name.split('.').pop() : name;
 	return part.toLowerCase().replace(/[^a-z0-9-]/g, '');
 }

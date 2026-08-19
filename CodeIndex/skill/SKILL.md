@@ -1,6 +1,8 @@
 ---
 name: code-index
 description: Fast symbol lookup for large codebases. Use BEFORE reading files or spawning search agents to locate where a class/function/method is defined and what references it. Backed by an incremental SQLite + universal-ctags index, scoped per project. Answers "where is X?" in milliseconds instead of reading thousands of files.
+version: 1.0.0
+updated: 2026-08-12
 license: MIT
 metadata:
   type: code-intelligence

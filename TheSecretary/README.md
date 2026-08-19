@@ -1,6 +1,8 @@
 # The Secretary
 
-AI-powered context persistence for Claude Code. Preserves conversation context, manages user memories, takes notes, and tracks reminders — all using a small local LLM (Qwen 2.5, auto-sized 1.5B / 3B / 7B by available RAM). Optional `claude_cli` provider available for users with a Claude Max subscription.
+AI-powered context persistence for Claude Code. Preserves conversation context and keeps **one flat index** of everything worth remembering — all using a small local LLM (Qwen 2.5, auto-sized 1.5B / 3B / 7B by available RAM). Optional `claude_cli` provider available for users with a Claude Max subscription.
+
+There are **no memory types**: a fact, a note and a reminder are all the same thing — one item in the session's index.
 
 ```
 ┌───────────────────────────────────────────────────────┐
@@ -12,10 +14,9 @@ AI-powered context persistence for Claude Code. Preserves conversation context, 
 │                                  ▼                    │
 │                            ┌───────────┐              │
 │                            │ SQLite DB │              │
-│                            │ summaries │              │
-│                            │ memories  │              │
-│                            │ notes     │              │
-│                            │ reminders │              │
+│                            │ one index │              │
+│                            │ per       │              │
+│                            │ session   │              │
 │                            └─────┬─────┘              │
 │                                  │                    │
 │             /clear ─────────────▶│                    │
@@ -40,33 +41,21 @@ Each project stores its own database and bullets cache **inside the project** at
 ### Conversation Summarization (automatic)
 Every 15 tool calls, the conversation is summarized by the local LLM and stored. On `/clear` or session restart, context is recovered automatically.
 
-### User Memories
-Permanent facts about the user, detected via regex on every tool call.
+### Saved items (one flat index)
+
+Anything the user asks to keep is written as one item into the current session's index, detected via regex on every tool call. There are no categories, no prefixes and no lifecycle — an item is stored under the `session_id` that created it, exactly like an automatic summary.
 
 ```
-"Remember that I prefer TypeScript"     →  Memory saved
-"I use neovim as my editor"             →  Memory saved
-"Forget about my editor"                →  Memory deleted (LLM matching)
+"Remember that I prefer TypeScript"          →  Saved
+"I use neovim as my editor"                  →  Saved
+"Note: the staging API key expires in June"  →  Saved
+"Remind me on Friday about the deploy"       →  Saved
+"Forget about my editor"                     →  Deleted (LLM matching)
+"Delete the note about the API key"          →  Deleted (LLM matching)
 ```
 
-### Notes
-Project-scoped observations and info to keep track of.
+Because everything lands in the same index, an item is found by searching for what it says — not by knowing which category it was filed under.
 
-```
-"Note: the staging API key expires in June"  →  Note saved
-"Delete the note about the API key"          →  Note deleted (LLM matching)
-```
-
-### Reminders
-Time-sensitive items with natural date parsing.
-
-```
-"Remind me on Friday about the deploy"   →  Reminder saved (due: Friday)
-"Remind me tomorrow to review the tests" →  Reminder saved (due: tomorrow)
-"The deploy is done"                     →  Reminder done (LLM matching)
-```
-
-Supports bilingual date parsing (English and Spanish): "tomorrow", "next friday", "in 3 days", "in 2 weeks", "april 15", ISO dates, "mañana", "el viernes", etc.
 
 ### Recall-on-demand (automatic)
 
@@ -83,9 +72,25 @@ Triggers: `¿recuerdas?`, `te acuerdas?`, `do you remember`, `do you recall`, `r
 
 How it works:
 1. **UserPromptSubmit hook** detects a recall-style question.
-2. Keywords are extracted from the prompt (stopwords stripped, EN + ES).
-3. Search runs first against per-project cache `.md` files (fast file-level grep), then falls back to the `summaries` table if fewer than 5 hits.
+2. Keywords are extracted from the prompt. A recall question is mostly filler (`qué hice hoy en X`), and scoring by raw term count lets that filler outrank the real subject — so an ES/EN **stopword list** is stripped first. If a query is *all* stopwords, the original tokens are used rather than returning nothing.
+3. Search runs in three tiers, stopping once it has enough hits: per-project cache `.md` files (fast file-level grep) → **verbatim turns** (`turns`, FTS5) → the `summaries` table (`LIKE` fallback).
 4. Top matches are printed to stdout and appear as injected context in Claude's next turn.
+
+**Verbatim turn index (FTS5).** Summaries paraphrase — ask "what did I say about ffmpeg on Railway" and the summary only kept "discussed deployment". So every conversation turn is also stored verbatim in an FTS5 table, indexed live by the PostToolUse hook. This makes search flexible in three ways `LIKE` was not:
+
+- **Accent- and case-insensitive** (`unicode61 remove_diacritics 2`) — `edicion` matches `edición`.
+- **Partial matches instead of nothing** — terms are OR-ed with prefix wildcards, so an absent word no longer zeroes the result set; `bm25` ranks whatever matched most. The old `AND` chain returned 0 hits if any single term was missing.
+- **Ranked by relevance**, not just recency.
+
+Results are tagged `[said]` (your own words) or `[turn]` (assistant), so quoting yourself back is easy to spot.
+
+Sessions that ended before the index existed can be backfilled from the transcripts on disk:
+
+```bash
+node ~/.claude/the-secretary/summarize.mjs index-turns
+```
+
+Run it from the project root; it reads `~/.claude/projects/<slug>/*.jsonl` for that project only. It is idempotent — re-running indexes just the new turns. (Reference: 31 sessions → 7,518 turns in ~1.2s.)
 
 For manual searches:
 
@@ -107,6 +112,16 @@ The brief includes (skipping any section that has nothing real to say):
 - **Backups** — paths of any backup folders created.
 - **Key files touched** — paths + one-line summary per file.
 
+**Accuracy rules.** A small local model asked to summarize will happily turn a search into an achievement — a session that only ran `grep X` gets written up as "implemented X", and the next session starts from a fiction. Every summarization prompt (incremental, handoff, pre-compact and the consolidation merge) therefore carries explicit accuracy constraints:
+
+- Report only what literally happened — never infer, extrapolate, or fill gaps with plausible-sounding work.
+- **Searching is not implementing.** A grep/read for symbol `X`, or confirming `X` is absent, must be written as "verified X does not exist", never as "added X".
+- Failed, reverted or abandoned attempts are recorded *as* failures, never under "What was accomplished".
+- Negative findings are preserved verbatim (not found, not working, still broken, **untested**).
+- If the assistant corrected an earlier claim, the correction wins and the wrong claim is dropped.
+- Never invent file paths, function names, versions or metrics absent from the conversation.
+- On conflict between two summaries, the later one wins and the discrepancy is noted.
+
 Stored in the same `summaries` table tagged with a `[HANDOFF]` prefix. On the next `SessionStart`, **the most recent handoff for the current project is shown FIRST**, before the older bullet summaries, under a `📋 Session handoff — resume here` heading. The bullet cache stays available below as background.
 
 This is additive — incremental summaries, memories, notes and reminders all keep working as before. The handoff is what the next session reads first; the rest is context.
@@ -115,7 +130,7 @@ This is additive — incremental summaries, memories, notes and reminders all ke
 
 A single project is saved under **many** `project_dir` values — a session indexes by whatever cwd it ran in, so summaries land under the project root *and* every subfolder a session happened to start in (`repo/`, `repo/apps/web/`, `repo/packages/...`). The Secretary keys purely on the cwd path; it has nothing to do with git.
 
-If restore matched `project_dir = cwd` exactly, a session opened in one folder would never see context saved under a sibling or parent path — so it could surface a **stale** handoff while today's real work sat invisible under another prefix. To prevent this, the **project root is resolved from the filesystem** (see *Per-project storage* above): climb the cwd's ancestors until a generic container folder (`Code`, `Programacion`, `Documents`, `AI.SKILLS`, home, …; see `GENERIC_CONTAINERS` in `summarize.mjs`), anchoring on any ancestor that already holds secretary data or a `.claude/` dir. Every query then runs against that root's own DB — which contains the whole project tree — so a session sees the project's latest activity regardless of which subfolder it opened in: the handoff, the latest-N items, the conversation summaries, and the user memories / notes / reminders. A memory anchored to a project is visible from any of its subfolders but never leaks to a sibling project. `__global__` items are always included on top via the attached global DB.
+If restore matched `project_dir = cwd` exactly, a session opened in one folder would never see context saved under a sibling or parent path — so it could surface a **stale** handoff while today's real work sat invisible under another prefix. To prevent this, the **project root is resolved from the filesystem** (see *Per-project storage* above): climb the cwd's ancestors until a generic container folder (`Code`, `Programacion`, `Documents`, `AI.SKILLS`, home, …; see `GENERIC_CONTAINERS` in `summarize.mjs`), anchoring on any ancestor that already holds secretary data or a `.claude/` dir. Every query then runs against that root's own DB — which contains the whole project tree — so a session sees the project's latest activity regardless of which subfolder it opened in: the handoff, the latest-N items, the conversation summaries, and the saved items. An item anchored to a project is visible from any of its subfolders but never leaks to a sibling project. `__global__` items are always included on top via the attached global DB.
 
 #### Latest-N items (the literal "what just happened" view)
 
@@ -135,17 +150,20 @@ The check is cheap (a single SQLite query per prompt) and fires only when there 
 
 ## How it works
 
-1. **PostToolUse hook** — On every tool call, scans user messages for secretary orders (remember/forget/note/reminder) via regex. Every N calls (default: 15), summarizes conversation via local LLM.
+1. **PostToolUse hook** — On every tool call, scans user messages for secretary orders (save / forget) via regex. Every N calls (default: 15), summarizes conversation via local LLM.
+   - **Transcript extraction** — Summaries are built from Claude Code's own session transcript (`~/.claude/projects/<slug>/<session-id>.jsonl`), passed to the hook as `transcript_path`. Since that file is mostly tool traffic and attachments (a typical session: 1.3 MB raw, of which conversation is under 5%), the extractor filters before summarizing:
+     - **Noise stripped** — slash-command plumbing (`<command-*>`, `<local-command-stdout>`), `<task-notification>`, `<system-reminder>`, interruption markers and image placeholders never reach the model. Bare acknowledgements (`ok`, `dale`, `sigue`, `thanks`) are dropped too.
+     - **Budget by role** — user turns are admitted first, then assistant turns, and tool traffic only fills what is left over. Tool output can no longer crowd out what was actually said.
+     - **Newest-first selection** — the budget is filled walking backwards from the end of the session, so the summary reflects the *current* state rather than the stale opening. The selected turns are re-emitted in chronological order.
 2. **UserPromptSubmit hook** — On every user prompt, detects recall-style questions (`¿recuerdas?`, `do you remember`, etc.) and auto-injects matching snippets from cache + DB.
 3. **PreCompact hook** — Forces a final summary before Claude's compaction, then blocks it and suggests `/clear`.
 4. **SessionStart hook** — On `/clear`, `startup`, or `resume`, restores context from the project's own DB (root resolved from the filesystem, so it matches the whole project tree, not just the exact cwd):
-   - **Overdue reminders** shown first (highest priority)
+   - **Manually injected context** — items added with `inject` are printed **verbatim**, never LLM-consolidated: they are hand-curated, so paraphrasing them only loses detail
    - **Session handoff brief** (📋) from the previous session's Stop hook — the dense "how to resume" doc
+   - **Handoffs from earlier sessions** — the 2 previous handoffs, truncated to 900 chars each. A handoff is the distilled state of an entire session, so restoring only the last one (`LIMIT 1`) discarded most of the project history; truncation keeps them from dwarfing the rest of the recall
    - **Latest N items** (🕑) — the N most recent summaries across the project tree, newest-first (`restore_recent_items`, default 15)
    - Consolidated conversation summary (loaded from per-project cache — see below) as background
-   - User memories
-   - Active notes
-   - Upcoming reminders
+   - Saved items — one flat list, oldest first
 5. **Stop hook** — Generates a session **handoff brief** (richer than the regular summary, structured so the next session can resume without explanation), then shuts down the LLM server.
 
 ### Incremental bullets cache (per-project)
@@ -157,7 +175,7 @@ To keep SessionStart instant and avoid racing with still-running summarizers aft
 - **Per-session caps:** max **20 bullets** or **4000 chars**, FIFO when exceeded (oldest bullets drop first).
 - **Global caps:** last **2 sessions** kept (current + previous); older sessions are discarded when a new one starts.
 - **Dedup:** the LLM is told the existing bullets of the current session and asked to output only genuinely new info; exact duplicates are filtered on append.
-- **Strictly per-project:** each `cwd` has its own `bullets.md`; content is never mixed across projects. Only the explicit `global` memories/notes/reminders cross project boundaries.
+- **Strictly per-project:** each `cwd` has its own `bullets.md`; content is never mixed across projects. Only items explicitly marked `global` cross project boundaries.
 - **Bootstrap:** if `bullets.md` is missing but the DB has chunks, `SessionStart` falls back to raw concatenation for that one turn and spawns a background `_bg_regenerate` worker that distills the last session's chunks into bullets — so the next SessionStart hits the new format.
 - **Non-blocking restore:** SessionStart never calls the LLM inline. The cache is ready because bullets were appended incrementally during the previous session, not generated at restore time.
 
@@ -179,21 +197,52 @@ Override with env var `SECRETARY_MLX_MODEL=<repo>` (e.g. force 7B on a 16 GB mac
 
 ### Flexible matching via LLM
 
-Deletion and completion actions (forget memory, delete note, complete reminder) use the local LLM for flexible matching. This means:
-- "forget about my editor" matches "[REMEMBER] I use neovim as my editor"
-- "delete the note about staging" matches "[NOTE] staging server goes down on Tuesdays"
-- "the deploy is done" matches "[REMINDER] deploy to production on Friday"
+Deletion uses the local LLM for flexible matching against the index. This means:
+- "forget about my editor" matches "I use neovim as my editor"
+- "delete the note about staging" matches "staging server goes down on Tuesdays"
+- "the deploy is done" matches "deploy to production on Friday"
 
 Cross-language matching works too (Spanish request matches English memory, and vice versa).
 
-### Data categories
+### Data shape
 
-| Category | `session_id` | Prefix | Persistence |
-|----------|-------------|--------|-------------|
-| Memories | `manual` | `[REMEMBER]` | Until explicitly forgotten |
-| Notes | `notes` | `[NOTE]` | Until explicitly deleted |
-| Reminders | `reminders` | `[REMINDER]` | Until done/cancelled |
-| Summaries | UUID | (none) | Per-session, auto-managed |
+One table, one shape. `session_id` is always the session that produced the row; `message_count` distinguishes an explicit item from an auto-generated summary.
+
+| Kind | `session_id` | `message_count` | Persistence |
+|------|-------------|-----------------|-------------|
+| Saved item | session UUID | `0` | Until explicitly forgotten |
+| Summary | session UUID | `> 0` | Per-session, auto-managed |
+
+There are no type prefixes, no `due_at` and no `status` column.
+
+## Search: literal first, semantic only as a fallback
+
+Two indexes, because they fail in opposite ways. Measured on a real 1.8k-turn project:
+
+| Query kind | FTS5 | Vectors |
+|---|---|---|
+| a bare identifier (17 real occurrences) | finds all 17 | recovers **0** |
+| a short keyword (52 occurrences) | finds all 52 | recovers **0** |
+| literal recall overall | exact | **8%** |
+| "espaciado vertical" → the turn saying *"les falta gap vertical"* | 0 hits (or 1000+ OR-noise) | **finds it** |
+
+So FTS5 runs first and owns the literal answer — and its **zero is meaningful**: it means
+the phrase is genuinely not in the memory. Vectors run only when FTS5 came up short, and
+their hits are tagged `[said~]` / `[turn~]`.
+
+**A vector hit is not evidence.** Calibrating the threshold showed real topics scoring
+0.58–0.78 and *invented* ones 0.55–0.65 — the ranges overlap, so no cutoff separates them.
+The threshold (0.62) drops most invented queries, but anything that survives means
+"similar wording exists", never "this was discussed". Only an FTS5 hit proves that.
+
+```bash
+node ~/.claude/the-secretary/summarize.mjs index-turns     # verbatim FTS index (free, per project)
+node ~/.claude/the-secretary/summarize.mjs index-vectors   # semantic index (optional, ~50s/2k turns)
+```
+
+The semantic layer is **optional**. Without `sqlite-vec` and the embedding venv, search
+silently stays on FTS5 — nothing breaks. Both indexes live inside the project's own
+`summaries.db`, so they travel with the folder like the rest of the memory.
 
 ## Requirements
 
@@ -240,14 +289,8 @@ node ~/.claude/the-secretary/summarize.mjs force
 # Inject arbitrary context
 node ~/.claude/the-secretary/summarize.mjs inject --text "your context here"
 
-# Show everything: memories, notes, reminders, context
+# Show the whole index: saved items + context
 echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/the-secretary/summarize.mjs recall
-
-# Show only notes
-echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/the-secretary/summarize.mjs recall-notes
-
-# Show only reminders
-echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/the-secretary/summarize.mjs recall-reminders
 
 # Search cache + DB for any query (on-demand)
 node ~/.claude/the-secretary/summarize.mjs search "template 691"

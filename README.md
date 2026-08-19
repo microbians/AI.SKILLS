@@ -23,6 +23,7 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 │    - defensive-development/  Verify-first coding practices      │
 │    - project-structure/      Auto-gen directory structure docs  │
 │    - project-api/            Auto-gen API reference docs        │
+│    - secure-coding/          Security + data-integrity rules    │
 │                                                                 │
 │  others/                                                        │
 │    - microbrain/             Persistent SQLite memory system    │
@@ -52,6 +53,7 @@ A collection of drop-in components that give AI agents persistent memory, safer 
   - [ASCII Art Diagrams](#ascii-art-diagrams)
   - [Project Structure](#project-structure)
   - [Project API](#project-api)
+  - [Secure Coding](#secure-coding)
 - [Others](#others)
   - [Microbrain](#microbrain)
   - [Block Destructive](#block-destructive)
@@ -263,6 +265,35 @@ Self-healing skill that auto-generates and maintains a `.claude/api.md` referenc
 │                                                           │
 └───────────────────────────────────────────────────────────┘
 ```
+
+**Includes:** `SKILL.md`, `README.md`
+
+---
+
+### Secure Coding
+
+> [`skills/secure-coding/`](skills/secure-coding/)
+
+Security and data-integrity rules for server-side code. Distilled from a real audit that found a one-click admin-takeover CSRF, a `..` that reached a recursive delete, and three separate bugs that destroyed user content. Every rule is shown twice — **PHP** (classic server app) and **TypeScript / Next.js** (App Router, Drizzle) — because the same failure wears different clothes in each stack.
+
+```
+┌───────────────────────────────────────────────────────────┐
+│                                                           │
+│  FAIL CLOSED — missing info is never permission to act    │
+│                                                           │
+│  Writes    Empty payload never overwrites stored data     │
+│  Auth      Unmapped action = strictest permission         │
+│  CSRF      GET read-only, enforced by allowlist           │
+│  Paths     Validate, resolve, verify containment          │
+│  SQL       Allowlist identifiers, sync with live schema   │
+│  Escape    Per-context: HTML is not JS is not URL         │
+│                                                           │
+│  Every rule maps to a bug that actually existed           │
+│                                                           │
+└───────────────────────────────────────────────────────────┘
+```
+
+Also covers the auditing method itself: fan out over independent vectors, verify by reading the code before reporting, and reproduce before believing — a draft-leak finding tested false at first only because the database had no drafts.
 
 **Includes:** `SKILL.md`, `README.md`
 
