@@ -686,6 +686,26 @@ function clearBgWorkerForProject(cwd) {
 
 // ═══════════════════ NOTIFICATIONS ═══════════════════
 
+/**
+ * Short project name for notification titles.
+ * Prefers the git repo root so every subdirectory of one repo notifies under the
+ * same name; resolveProjectRoot() anchors on any nested .claude/ marker, which
+ * would otherwise title the same project differently depending on the cwd.
+ */
+function projectLabel(cwd) {
+  try {
+    if (!cwd || cwd === '__global__') return '';
+    try {
+      const gitRoot = execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {
+        encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (gitRoot) return basename(gitRoot);
+    } catch { /* not a repo, or git unavailable */ }
+    const root = resolveProjectRoot(cwd);
+    return root ? basename(root) : '';
+  } catch { return ''; }
+}
+
 function notify(title, message) {
   try {
     execSync(`osascript -e 'display notification "${message.replace(/"/g, '\\"')}" with title "${title.replace(/"/g, '\\"')}"'`, { timeout: 3000, stdio: 'ignore' });
@@ -1573,7 +1593,8 @@ ${text}`;
       blurb = (raw || '').replace(/^["'`]+|["'`]+$/g, '').replace(/\s+/g, ' ').trim();
       if (blurb.length > 120) blurb = blurb.slice(0, 117) + '...';
     } catch { /* notify without blurb */ }
-    notify('Claude Code — Session saved', blurb || 'Context stored by The Secretary');
+    const proj = projectLabel(cwd);
+    notify(proj ? `${proj} — Session saved` : 'Claude Code — Session saved', blurb || 'Context stored by The Secretary');
   }
 }
 
@@ -1858,7 +1879,8 @@ async function restore(hookInput) {
     const formattedDate = lastDate !== 'unknown' ? new Date(lastDate + 'Z').toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : lastDate;
 
     process.stdout.write(output + `\n\n☑ Session memory recovered from ${formattedDate} (${totalItems} items restored)`);
-    notify('The Secretary', `Memory recovered from ${formattedDate} (${totalItems} items)`);
+    const proj = projectLabel(cwd);
+    notify(proj ? `${proj} — Memory recovered` : 'The Secretary — Memory recovered', `From ${formattedDate} (${totalItems} items)`);
 
     // ── Fresh-context watermark ──
     // Record max(created_at) of summaries known at restore-time for this project.
