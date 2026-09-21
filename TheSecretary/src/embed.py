@@ -44,17 +44,32 @@ def main():
 
     out = []
     batch = int(payload.get("batch") or 32)
-    for i in range(0, len(texts), batch):
-        chunk = [t[:512] for t in texts[i:i + batch]]
-        emb = generate(model, tokenizer, texts=chunk).text_embeds
-        # mlx may hand back bfloat16, which numpy cannot view directly.
-        arr = np.array(emb.astype(mx.float32))
-        out.append(arr)
+    try:
+        for i in range(0, len(texts), batch):
+            chunk = [t[:512] for t in texts[i:i + batch]]
+            emb = generate(model, tokenizer, texts=chunk).text_embeds
+            # mlx may hand back bfloat16, which numpy cannot view directly.
+            cast = emb.astype(mx.float32)
+            # Force the command buffer to complete HERE. Without this the GPU
+            # error surfaces inside Metal's completion handler, where MLX throws
+            # a C++ exception no Python handler can reach: std::terminate calls
+            # abort() and the process dies with buffers still in flight, which
+            # is what leaks IOGPU resources and corrupts the display.
+            mx.eval(cast)
+            mx.synchronize()
+            out.append(np.array(cast))
+    except Exception as e:
+        json.dump({"error": f"embedding failed: {e}"}, sys.stdout)
+        return 1
 
-    V = np.vstack(out).astype("float32")
-    norms = np.linalg.norm(V, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    V = V / norms
+    try:
+        V = np.vstack(out).astype("float32")
+        norms = np.linalg.norm(V, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        V = V / norms
+    except Exception as e:
+        json.dump({"error": f"normalisation failed: {e}"}, sys.stdout)
+        return 1
 
     json.dump({"dim": int(V.shape[1]), "vectors": V.tolist()}, sys.stdout)
     return 0

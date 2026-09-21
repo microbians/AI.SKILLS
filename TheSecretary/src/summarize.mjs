@@ -21,7 +21,7 @@
  * Reads hook JSON from stdin.
  */
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, rmSync } from 'fs';
 import { join, basename } from 'path';
 import { homedir, tmpdir } from 'os';
 import { createHash } from 'crypto';
@@ -361,25 +361,93 @@ function ensureSchema(db, schema = 'main') {
 const ITEM_COLS = 'session_id, project_dir, chunk_index, summary, message_count, created_at';
 const ALL_ITEMS_COLS = `id, ${ITEM_COLS}`;
 
-// One-time seed of a freshly created project DB: copy this project's rows out
-// of the old global DB so existing memory shows up in the new per-project
-// storage. The global DB is left untouched (non-destructive); reads only look
-// at the project DB + '__global__' rows, so nothing is duplicated.
+// MOVE this project's rows out of the global DB into the project's own DB, so a
+// project carries its memory with it and the global file keeps only '__global__'
+// items. Insert and delete run in one transaction: a copy that left the source
+// behind used to duplicate every row, and the old "skip if the project DB has
+// any row" guard meant a project already in use never migrated its history at
+// all. Runs on every open and is a no-op once the global DB holds nothing for
+// this tree.
 function migrateFromGlobalDb(db, root) {
   try {
-    if (db.prepare('SELECT 1 FROM main.summaries LIMIT 1').get()) return;
     const { clause, params } = projectTreeClause(root);
-    const count = db.prepare(
-      `SELECT COUNT(*) AS c FROM g.summaries WHERE ${clause} AND project_dir != '__global__'`
-    ).get(...params)?.c || 0;
+    const where = `${clause} AND project_dir != '__global__'`;
+    const count = db.prepare(`SELECT COUNT(*) AS c FROM g.summaries WHERE ${where}`).get(...params)?.c || 0;
     if (!count) return;
-    db.prepare(`
-      INSERT INTO main.summaries (${ITEM_COLS})
-      SELECT ${ITEM_COLS}
-      FROM g.summaries WHERE ${clause} AND project_dir != '__global__'
-    `).run(...params);
-    process.stderr.write(`[secretary] Migrated ${count} item(s) from the global DB into ${projectDbPath(root)}\n`);
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO main.summaries (${ITEM_COLS})
+        SELECT ${ITEM_COLS} FROM g.summaries WHERE ${where}
+      `).run(...params);
+      db.prepare(`DELETE FROM g.summaries WHERE ${where}`).run(...params);
+    })();
+    process.stderr.write(`[secretary] Moved ${count} item(s) from the global DB into ${projectDbPath(root)}\n`);
   } catch { /* best effort */ }
+}
+
+// Empties the global DB of per-project rows in one pass, instead of waiting for
+// each project to be opened. Every project's items are moved into that project's
+// own DB (created if needed) and deleted from the global one, so a project stays
+// portable and the global file keeps only '__global__' items. A project whose
+// directory no longer exists cannot be given a home, so its rows are left alone
+// and reported rather than silently dropped.
+function cmdDrainGlobal(dryRun = false) {
+  if (!Database) { process.stderr.write('better-sqlite3 unavailable\n'); return; }
+  const g = new Database(config.db_path);
+  ensureSchema(g);
+
+  const roots = new Map(); // project root -> [project_dir, ...]
+  const orphans = [];
+  for (const { project_dir: dir } of g.prepare(
+    "SELECT DISTINCT project_dir FROM summaries WHERE project_dir != '__global__'"
+  ).all()) {
+    if (!dir || !existsSync(dir)) { orphans.push(dir); continue; }
+    // Scratch directories are not projects: giving /private/tmp a DB would write
+    // one into /private/.claude (unwritable anyway) and litter the filesystem.
+    if (/^(?:\/private)?\/(?:tmp|var)(?:\/|$)/.test(dir)) { orphans.push(dir); continue; }
+    const root = resolveProjectRoot(dir);
+    if (!root) { orphans.push(dir); continue; }
+    if (!roots.has(root)) roots.set(root, []);
+    roots.get(root).push(dir);
+  }
+
+  let moved = 0;
+  for (const root of roots.keys()) {
+    const { clause, params } = projectTreeClause(root);
+    const where = `${clause} AND project_dir != '__global__'`;
+    const count = g.prepare(`SELECT COUNT(*) AS c FROM summaries WHERE ${where}`).get(...params)?.c || 0;
+    if (!count) continue;
+    process.stdout.write(`${dryRun ? 'would move' : 'moving'} ${String(count).padStart(6)} → ${projectDbPath(root)}\n`);
+    moved += count;
+    if (dryRun) continue;
+
+    ensureProjectDataDir(root);
+    const p = new Database(projectDbPath(root));
+    p.pragma('journal_mode = WAL');
+    ensureSchema(p);
+    p.exec(`ATTACH DATABASE '${config.db_path.replace(/'/g, "''")}' AS g`);
+    try {
+      p.transaction(() => {
+        p.prepare(`INSERT INTO main.summaries (${ITEM_COLS}) SELECT ${ITEM_COLS} FROM g.summaries WHERE ${where}`).run(...params);
+        p.prepare(`DELETE FROM g.summaries WHERE ${where}`).run(...params);
+      })();
+    } finally {
+      p.close();
+    }
+  }
+
+  const left = g.prepare("SELECT COUNT(*) AS c FROM summaries WHERE project_dir != '__global__'").get()?.c || 0;
+  const globals = g.prepare("SELECT COUNT(*) AS c FROM summaries WHERE project_dir = '__global__'").get()?.c || 0;
+  if (!dryRun) g.exec('VACUUM');
+  g.close();
+
+  process.stdout.write(`\n${dryRun ? 'would move' : 'moved'} ${moved} item(s) into ${roots.size} project DB(s)\n`);
+  process.stdout.write(`global keeps ${globals} '__global__' item(s); ${left} per-project row(s) still there\n`);
+  if (orphans.length) {
+    process.stdout.write(`\n${orphans.length} directory/ies no longer exist — left in the global DB:\n`);
+    for (const o of orphans.slice(0, 20)) process.stdout.write(`  ${o}\n`);
+    if (orphans.length > 20) process.stdout.write(`  ... and ${orphans.length - 20} more\n`);
+  }
 }
 
 // Opens the PROJECT database (<root>/.claude/the-secretary/summaries.db) and
@@ -427,7 +495,61 @@ function itemTable(db, isGlobal) {
 
 // ═══════════════════ LLM ═══════════════════
 
-function callLLM(prompt, maxTokens = 1500) {
+// A degenerate loop is not a bad summary, it is a non-answer: storing it costs
+// the real content of that chunk and then re-injects the garbage on every
+// SessionStart. Callers already treat an empty string as "nothing to save"
+// (they exit without writing), so collapsing degeneration to '' routes it
+// through the path that already exists instead of adding a second one.
+// Detection is structural, not a word list: a looping generation reuses a tiny
+// vocabulary over a long output, which no real summary does.
+function isDegenerate(text) {
+  const clean = (text || '').trim();
+  // Short outputs (intent classifications, one-word blurbs) are legitimately
+  // low-variety; the ratio only means something once there is enough text.
+  if (clean.length < 400) return false;
+
+  const words = clean.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  // Enough words to judge variety. Too few for that is not a pass: a separator-less
+  // loop collapses into one huge "word", so it falls through to the periodicity
+  // check below rather than being cleared here.
+  if (words.length >= 60) {
+    const unique = new Set(words);
+    if (unique.size / words.length < 0.12) return true;
+
+    // A cycle short enough to fit the same word repeatedly, e.g. "dev:dev:dev:".
+    const top = new Map();
+    for (const w of words) top.set(w, (top.get(w) || 0) + 1);
+    const maxCount = Math.max(...top.values());
+    if (maxCount / words.length > 0.35) return true;
+  }
+
+  // Cycles with no separators ("CallsCountCallsCount…") tokenize as one huge
+  // word, so the ratios above never see them. Look for a repeating unit
+  // directly: if the tail is periodic with some short period, every character
+  // equals the one a period earlier. Checked over the last stretch only, so a
+  // summary that merely ends in a list is not mistaken for a loop.
+  const tail = clean.slice(-1200);
+  for (let period = 2; period <= 80; period++) {
+    if (tail.length < period * 10) break;
+    let matches = 0;
+    for (let i = period; i < tail.length; i++) {
+      if (tail[i] === tail[i - period]) matches++;
+    }
+    if (matches / (tail.length - period) > 0.95) return true;
+  }
+  return false;
+}
+
+async function callLLM(prompt, maxTokens = 1500) {
+  const raw = await requestLLM(prompt, maxTokens);
+  if (isDegenerate(raw)) {
+    process.stderr.write('the-secretary: discarded degenerate LLM output (repetition loop)\n');
+    return '';
+  }
+  return raw;
+}
+
+function requestLLM(prompt, maxTokens = 1500) {
   if (config.provider === 'claude_cli') {
     return callClaudeCLI(prompt, maxTokens);
   }
@@ -441,6 +563,17 @@ function callLLM(prompt, maxTokens = 1500) {
       ],
       max_tokens: maxTokens,
       temperature: 0.1,
+      // A 4-bit quantized model at near-zero temperature always takes the most
+      // likely token, so once it enters a repeating cycle ("CallsCountCallsCount…")
+      // nothing breaks it and it fills the whole token budget with garbage. The
+      // MLX server defaults both penalties to 0.0 (none), so they must be sent
+      // explicitly. Names are MLX's own — `repeat_penalty` (llama.cpp's spelling)
+      // is silently ignored here. The context sizes default to 20 tokens, far too
+      // short to notice a long loop, hence the wider windows.
+      repetition_penalty: 1.1,
+      repetition_context_size: 256,
+      frequency_penalty: 0.3,
+      frequency_context_size: 256,
     });
 
     const req = http.request({
@@ -948,20 +1081,73 @@ function loadVecExtension(db) {
   } catch { return false; }
 }
 
+// Serialises every Metal workload this tool owns. embed.py opens its own Metal
+// context while the mlx_lm server already holds one; running both at once made
+// a command buffer come back with an error, and MLX turns that into an abort()
+// from Metal's completion queue. The process then dies with buffers in flight,
+// leaking IOGPU resources until the display itself corrupts. One GPU consumer
+// at a time — the same mkdir-based lock start-llm.sh uses for its spawn race.
+const GPU_LOCK_DIR = join(tmpdir(), 'the-secretary-gpu.lock');
+const GPU_LOCK_STALE_MS = 5 * 60_000;
+const GPU_LOCK_WAIT_MS = 90_000;
+
+let gpuLockDepth = 0;
+
+function acquireGpuLock() {
+  // Reentrant: index-vectors holds it across every batch so the mlx_lm server
+  // cannot slip a Metal context in between two embed runs.
+  if (gpuLockDepth > 0) { gpuLockDepth++; return true; }
+  const deadline = Date.now() + GPU_LOCK_WAIT_MS;
+  for (;;) {
+    try { mkdirSync(GPU_LOCK_DIR); gpuLockDepth = 1; return true; } catch { /* held */ }
+    try {
+      const age = Date.now() - statSync(GPU_LOCK_DIR).mtimeMs;
+      if (age > GPU_LOCK_STALE_MS) {
+        // Holder died without releasing (an abort leaves the dir behind).
+        rmSync(GPU_LOCK_DIR, { recursive: true, force: true });
+        continue;
+      }
+    } catch { continue; }
+    if (Date.now() > deadline) return false;
+    try { execFileSync('sleep', ['0.25'], { stdio: 'ignore' }); } catch { return false; }
+  }
+}
+
+function releaseGpuLock() {
+  if (gpuLockDepth > 1) { gpuLockDepth--; return; }
+  gpuLockDepth = 0;
+  try { rmSync(GPU_LOCK_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+}
+
 /** Embed texts via the helper process. Returns Float32Array[] or null on any failure. */
 function embedTexts(texts) {
   if (!texts?.length || !semanticAvailable()) return null;
+  if (!acquireGpuLock()) {
+    process.stderr.write('[secretary] embed skipped: GPU lock busy\n');
+    return null;
+  }
   try {
     const out = execFileSync(embedPython(), [EMBED_SCRIPT], {
       input: JSON.stringify({ texts }),
       maxBuffer: 256 * 1024 * 1024,
       encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'ignore'],
+      // stderr inherited on purpose: swallowing it is what hid six consecutive
+      // Metal aborts behind a silent fallback to FTS5.
+      stdio: ['pipe', 'pipe', 'inherit'],
     });
     const parsed = JSON.parse(out);
-    if (parsed.error || !parsed.vectors?.length) return null;
+    if (parsed.error) {
+      process.stderr.write(`[secretary] embed failed: ${parsed.error}\n`);
+      return null;
+    }
+    if (!parsed.vectors?.length) return null;
     return parsed.vectors.map(v => new Float32Array(v));
-  } catch { return null; }
+  } catch (e) {
+    process.stderr.write(`[secretary] embed helper crashed: ${e?.message || e}\n`);
+    return null;
+  } finally {
+    releaseGpuLock();
+  }
 }
 
 /** Nearest turns by cosine similarity. Returns [] whenever the stack is unavailable. */
@@ -1519,13 +1705,24 @@ ${text}`;
 
   const handoffPrompt = `You are writing a session handoff so the NEXT session can resume this work WITHOUT the user explaining anything again. The reader will be a fresh assistant with no memory of what just happened.
 
-Output Markdown with these sections (skip a section only if truly nothing applies):
+FIRST, read the CONVERSATION below and judge whether it actually contains a session's
+work. If it is only a line or two, or holds no identifiable files, decisions or problems,
+output exactly this and nothing else:
+
+NOTHING TO REPORT
+
+That is a valid, expected answer. An empty handoff costs the next session nothing, while
+an invented one misleads it for hours. NEVER fill the sections below with plausible but
+unstated content — no example file paths, no assumed servers or ports, no typical project
+structure. Every path, name and number you write must appear literally in the CONVERSATION.
+
+Otherwise, output Markdown with these sections (skip a section only if truly nothing applies):
 
 ## What was accomplished
 2-5 bullets. Concrete: feature names, file paths, what now works that didn't before.
 
 ## Current state
-Where things stand at session close. What's running, what's broken, what's untested. Mention the active branch, server URL, or any process worth knowing.
+Where things stand at session close. What's running, what's broken, what's untested. Mention the active branch, a server URL, or a running process ONLY if the CONVERSATION states it — asking for these is not a reason to invent them. A handoff that claimed "the server URL is http://localhost:3000" in a project that runs no server came from this line; omit what was never said.
 
 ## Next step
 The single most likely first action when the user returns. Be specific (a file to open, a function to write, a bug to verify).
@@ -1563,6 +1760,15 @@ ${text}`;
   // Handoffs benefit from a higher token budget so all sections fit.
   const summary = await callLLM(prompt, isHandoff ? 1500 : undefined);
   if (!summary || summary.length < 50) {
+    process.exit(0);
+  }
+
+  // The model was given an explicit way out when the transcript holds no real
+  // work; honour it instead of storing the refusal as if it were a brief.
+  // Matched on the opening only, so a genuine handoff that happens to contain
+  // the phrase in a quoted line is not discarded.
+  if (/^\W*nothing to report\b/i.test(summary)) {
+    process.stderr.write('the-secretary: handoff skipped (transcript held no reportable work)\n');
     process.exit(0);
   }
 
@@ -1924,13 +2130,32 @@ async function force(hookInput, { stopLlm = false, notify: shouldNotify = false 
     const stateRow = db.prepare('SELECT value FROM state WHERE key = ?').get(stateKey);
     const lastOffset = stateRow ? parseInt(stateRow.value, 10) : 0;
 
-    const { messages, rawLength } = parseTranscript(transcript_path, lastOffset);
+    // A handoff is the state of the WHOLE session, so it reads the whole
+    // transcript — not the unprocessed tail. Reading from `lastOffset` made the
+    // brief depend on how much the incremental summarizer had already consumed:
+    // at session close that is usually everything, so the handoff was written
+    // from the last message or two. A model asked to fill eight mandatory
+    // sections from one line does not refuse, it invents a plausible project —
+    // one real handoff described `src/controllers/userController.js` and
+    // `localhost:3000` in a repo containing neither, generated from the single
+    // line "Commiteado en `main` como `08becc2`, working tree limpio."
+    // Incremental summaries keep using the offset; only the handoff reads it all.
+    const fromOffset = stopLlm ? 0 : lastOffset;
+    const { messages, rawLength } = parseTranscript(transcript_path, fromOffset);
 
     await processSecretaryOrders(messages, db, cwd, session_id);
 
-    const text = messagesToText(messages);
+    // The whole session needs more room than an incremental chunk, or the
+    // budget would drop precisely the early turns that state the session's goal.
+    const text = messagesToText(messages, stopLlm ? 16000 : 8000);
 
-    if (text.length < 100) {
+    // A handoff needs enough substance to be worth writing. Below this floor the
+    // model has nothing to summarize and fabricates instead, so writing nothing
+    // is strictly better: the reader falls back to the older bullets, which are
+    // at least true. The incremental path keeps the lower bar — a thin chunk
+    // there is just a thin chunk, not a fabricated session state.
+    const minChars = stopLlm ? 600 : 100;
+    if (text.length < minChars) {
       process.stderr.write('☑ Session memory: nothing new to save\n');
       return;
     }
@@ -1998,6 +2223,16 @@ async function inject(hookInput) {
     db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)').run(
       session_id, cwd, chunkIndex, text, 0
     );
+
+    // Also index it verbatim, so an injected item is searchable exactly like a
+    // normal one. `turns` is fed from transcripts, and an injected item has no
+    // transcript behind it — without this it would reach the FTS stage never,
+    // and be findable only by the weaker LIKE fallback.
+    try {
+      db.prepare('INSERT INTO turns (body, role, session_id, project_dir, created_at) VALUES (?, ?, ?, ?, ?)').run(
+        text, 'assistant', session_id, cwd, new Date().toISOString()
+      );
+    } catch { /* no FTS table (older DB): the summaries row alone still works */ }
 
     process.stderr.write(`[secretary] Injected context (chunk ${chunkIndex}).\n`);
   } finally {
@@ -2452,14 +2687,19 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
     const db = openDb(cwd);
     if (db) {
       try {
-        const likeClauses = terms.map(() => 'summary LIKE ?').join(' AND ');
+        // Rank by how many terms match, like the cache and FTS stages do, instead
+        // of requiring ALL of them: an ANDed LIKE hid any row that matched 4 of 5
+        // terms, so an item was reachable only by a query whose every word it
+        // happened to contain. Items written by `inject` live only in this table
+        // (no transcript backs them, so FTS never sees them), which made them look
+        // unsearchable when the real cause was the stricter matching here.
+        const scoreExpr = terms.map(() => '(summary LIKE ?)').join(' + ');
         const params = terms.map((t) => `%${t}%`);
         const rows = db.prepare(`
-          SELECT project_dir, summary, created_at
+          SELECT project_dir, summary, created_at, ${scoreExpr} AS matches
           FROM all_items
-          WHERE 1=1
-            AND ${likeClauses}
-          ORDER BY created_at DESC
+          WHERE matches > 0
+          ORDER BY matches DESC, created_at DESC
           LIMIT ?
         `).all(...params, maxHits - hits.length);
 
@@ -2474,7 +2714,7 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
             source: 'db',
             project: basename(row.project_dir || '') || 'unknown',
             date: (row.created_at || '').split(' ')[0],
-            score: 0,
+            score: row.matches || 0,
             snippet: snippet.trim(),
           });
         }
@@ -2564,6 +2804,11 @@ async function cmdIndexVectors() {
     const alreadyIndexed = db.prepare('SELECT 1 FROM vturns WHERE rowid = ?');
     let done = 0;
     const BATCH = 128;
+    if (!acquireGpuLock()) {
+      process.stderr.write('[secretary] index-vectors: GPU busy, try again later\n');
+      return;
+    }
+    try {
     for (let i = 0; i < pending.length; i += BATCH) {
       const slice = pending.slice(i, i + BATCH);
       const vecs = embedTexts(slice.map(r => r.body));
@@ -2578,6 +2823,7 @@ async function cmdIndexVectors() {
       done += slice.length;
       process.stdout.write(`  ${done}/${pending.length}\n`);
     }
+    } finally { releaseGpuLock(); }
     const total = db.prepare('SELECT count(*) n FROM vturns').get()?.n ?? 0;
     process.stdout.write(`Semantic index: ${done} new vector(s). Total: ${total}\n`);
   } catch (err) {
@@ -2829,7 +3075,12 @@ async function main() {
     process.exit(0);
   }
 
-  const validCommands = ['incremental', 'compact', 'restore', 'force', 'inject', 'recall', 'search', 'index-turns', 'index-vectors', 'sync', 'user-prompt'];
+  const validCommands = ['incremental', 'compact', 'restore', 'force', 'inject', 'recall', 'search', 'index-turns', 'index-vectors', 'sync', 'user-prompt', 'drain-global'];
+
+  if (command === 'drain-global') {
+    cmdDrainGlobal(process.argv.includes('--dry-run'));
+    return;
+  }
 
   if (command === 'search') {
     await cmdSearch();

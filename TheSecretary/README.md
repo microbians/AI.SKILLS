@@ -122,6 +122,16 @@ The brief includes (skipping any section that has nothing real to say):
 - Never invent file paths, function names, versions or metrics absent from the conversation.
 - On conflict between two summaries, the later one wins and the discrepancy is noted.
 
+**Enough input to summarize (v2.3.2).** Accuracy rules only bind a model that has something to describe; starved of input it invents regardless. The handoff used to read the transcript from the *unprocessed offset* — the tail the incremental summarizer had not yet consumed — and at session close that is usually nothing. One real handoff was generated from a single 112-character line ("Commiteado en `main` como `08becc2`, working tree limpio") and, told to fill eight mandatory sections, produced a fluent brief about `src/controllers/userController.js`, `src/config.json` and a server on `localhost:3000` — none of which exist in this repo. That is worse than a corrupted summary: it reads as authoritative, so the next session acts on it.
+
+Three changes, each covering a different part of the failure:
+
+- **The handoff reads the whole session**, not the unprocessed tail (`parseTranscript(path, 0)` when `--stop-llm`), with a 16000-char budget so early turns stating the session's goal survive. Incremental summaries still use the offset. On the case above, the model's input went from 112 chars / 1 message to 15755 chars / 148 messages.
+- **A floor of 600 chars** for handoffs specifically. Below it nothing is written: the reader falls back to older bullets, which are at least true. The incremental path keeps the 100-char bar — a thin chunk there is just a thin chunk, not a fabricated session state.
+- **An explicit way out.** The prompt lets the model answer `NOTHING TO REPORT` when the transcript holds no real work, and a guard in `bgSummarize` discards that answer instead of storing it. Verified against the local model: the same 112-char input that produced the fiction now returns exactly `NOTHING TO REPORT`.
+
+Also fixed a prompt tic that asked for "server URL" unconditionally, which made the model assert `http://localhost:3000` in projects that run no server — it appeared in 7 otherwise-legitimate stored handoffs. The line now says to mention a branch, URL or process *only if the conversation states it*.
+
 Stored in the same `summaries` table tagged with a `[HANDOFF]` prefix. On the next `SessionStart`, **the most recent handoff for the current project is shown FIRST**, before the older bullet summaries, under a `📋 Session handoff — resume here` heading. The bullet cache stays available below as background.
 
 This is additive — incremental summaries, memories, notes and reminders all keep working as before. The handoff is what the next session reads first; the rest is context.
@@ -303,7 +313,23 @@ echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/the-secretary/summarize.mjs recall
 
 # Search cache + DB for any query (on-demand)
 node ~/.claude/the-secretary/summarize.mjs search "template 691"
+
+# Move every per-project row out of the global DB into each project's own DB.
+# Each project keeps its memory inside itself (portable); the global DB is left
+# holding only '__global__' notes. Rows whose directory no longer exists cannot
+# be given a home, so they are reported and left alone. --dry-run shows the plan.
+node ~/.claude/the-secretary/summarize.mjs drain-global --dry-run
+node ~/.claude/the-secretary/summarize.mjs drain-global
 ```
+
+## Where the data lives
+
+Each project stores its own memory in `<project>/.claude/the-secretary/summaries.db`,
+so moving or copying the project takes its history with it. The global DB
+(`~/.claude/the-secretary/summaries.db`) holds only `__global__` notes — items
+you saved that are not tied to any project. Opening a project moves any of its
+rows still sitting in the global DB into the project's DB, deleting them from
+the global one in the same transaction so nothing accumulates there.
 
 ## Configuration
 

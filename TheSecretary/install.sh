@@ -167,9 +167,11 @@ mkdir -p "$DEST/models"
 # 2. Copy source files
 info "Copying source files..."
 cp "$SCRIPT_DIR/src/summarize.mjs" "$DEST/"
+cp "$SCRIPT_DIR/src/embed.py" "$DEST/"
 cp "$SCRIPT_DIR/src/start-llm.sh" "$DEST/"
 cp "$SCRIPT_DIR/src/config.json" "$DEST/"
 cp "$SCRIPT_DIR/src/package.json" "$DEST/"
+cp "$SCRIPT_DIR/src/inject-claude-md.mjs" "$DEST/"
 chmod +x "$DEST/start-llm.sh"
 
 # 2b. Install skill
@@ -268,32 +270,23 @@ inject_snippet() {
   local target="$1"
   local label="$2"
 
+  # Every branch must emit the version marker, or check-versions.sh cannot see
+  # which version is installed.
+  local marked
+  marked="$(printf '<!-- skill: the-secretary v%s -->\n' "$PKG_VERSION"; cat "$SNIPPET")"
+
   if [ ! -f "$target" ]; then
-    cat "$SNIPPET" > "$target"
+    printf '%s\n' "$marked" > "$target"
     info "Created $label with The Secretary docs"
     return
   fi
 
   # Remove any existing section (legacy ClaudeSumarizer / The Secretary, or current Memory/notes/reminders)
   if grep -qE "ClaudeSumarizer|The Secretary|Memory / notes / reminders" "$target" 2>/dev/null; then
-    node -e "
-      const fs = require('fs');
-      let md = fs.readFileSync('$target', 'utf-8');
-      const snippet = fs.readFileSync('$SNIPPET', 'utf-8');
-      // Remove legacy ClaudeSumarizer section
-      md = md.replace(/## ClaudeSumarizer[\\s\\S]*?(?=\\n## [^C]|\\n## \$|\$)/, '');
-      // Remove legacy 'The Secretary' section
-      md = md.replace(/## The Secretary[\\s\\S]*?(?=\\n## [^T]|\\n## \$|\$)/, '');
-      // Remove current 'Memory / notes / reminders / recall' section (re-install case)
-      md = md.replace(/## Memory \\/ notes \\/ reminders[\\s\\S]*?(?=\\n## [^M]|\\n## \$|\$)/, '');
-      md = md.trimEnd() + '\\n\\n' + snippet.trim() + '\\n';
-      fs.writeFileSync('$target', md);
-    "
+    node "$SCRIPT_DIR/src/inject-claude-md.mjs" "$target" "$SNIPPET" "$PKG_VERSION"
     info "Updated The Secretary section in $label"
   else
-    echo "" >> "$target"
-    cat "$SNIPPET" >> "$target"
-    echo "" >> "$target"
+    printf '\n%s\n' "$marked" >> "$target"
     info "Added The Secretary section to $label"
   fi
 }
