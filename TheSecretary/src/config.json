@@ -6,7 +6,7 @@
   "model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
   "summarize_every_n": 15,
   "min_new_chars": 2000,
-  "max_summary_tokens": 1500,
+  "max_summary_tokens": 800,
   "restore_recent_items": 15,
   "db_path": "~/.claude/the-secretary/summaries.db"
 }

@@ -43,7 +43,7 @@ function loadConfig() {
     model: 'qwen2.5-3b-instruct-q4_k_m.gguf',
     summarize_every_n: 15,
     min_new_chars: 2000,
-    max_summary_tokens: 1500,
+    max_summary_tokens: 800,
     restore_recent_items: 15,
     db_path: join(SECRETARY_DIR, 'summaries.db'),
   };
@@ -521,6 +521,25 @@ function isDegenerate(text) {
     for (const w of words) top.set(w, (top.get(w) || 0) + 1);
     const maxCount = Math.max(...top.values());
     if (maxCount / words.length > 0.35) return true;
+
+    // Degeneration is usually LOCAL: the model writes real prose, falls into a
+    // loop ("svgsvgsvg…", "asset asset asset"), and the loop is diluted by the
+    // healthy half, so the whole-text ratios above stay respectable (measured
+    // 0.13-0.20 on known-bad summaries, inside the legitimate range that starts
+    // at 0.186). A sliding window finds the collapse the average hides: over
+    // 29k stored summaries the worst 80-word window scores 0.66-0.81 on good
+    // output and 0.04-0.10 on looping output, with a wide empty gap between.
+    const W = 80;
+    for (let i = 0; i + W <= words.length; i += 10) {
+      if (new Set(words.slice(i, i + W)).size / W < 0.15) return true;
+    }
+  } else {
+    // A loop made of punctuation (":\n:\n:\n", "：\n：\n") yields no words at all,
+    // so every word ratio above is skipped and the alternating period defeats
+    // the exact periodicity check below. Character variety still exposes it:
+    // these score 0.0007-0.004 unique chars, any real summary far higher.
+    const chars = clean.replace(/\s+/g, '');
+    if (chars.length >= 200 && new Set(chars).size / chars.length < 0.02) return true;
   }
 
   // Cycles with no separators ("CallsCountCallsCount…") tokenize as one huge
@@ -540,9 +559,39 @@ function isDegenerate(text) {
   return false;
 }
 
-async function callLLM(prompt, maxTokens = 1500) {
+// Degeneration often strikes a brief that was fine until it wasn't: a complete
+// handoff whose last section loops the same two lines until the token budget
+// runs out. Dropping the whole answer throws away real work, so cut at the
+// point the loop starts and keep what came before — the same call the
+// NOTHING-TO-REPORT guard makes (trim the noise, keep the brief).
+// Returns '' when there is no healthy prefix to save.
+function trimDegenerateTail(text) {
+  const clean = (text || '').trim();
+  if (!isDegenerate(clean)) return clean;
+
+  // Walk forward over line boundaries and keep the longest prefix that is
+  // still clean. Line granularity keeps the kept part readable markdown.
+  const lines = clean.split('\n');
+  let good = '';
+  for (let i = 1; i <= lines.length; i++) {
+    const candidate = lines.slice(0, i).join('\n');
+    if (candidate.length >= 400 && isDegenerate(candidate)) break;
+    good = candidate;
+  }
+  const trimmed = good.trim();
+  // A prefix shorter than the handoff floor is not a brief, it is a fragment;
+  // callers treat '' as "nothing to save" and fall back to older bullets.
+  return trimmed.length >= 600 && !isDegenerate(trimmed) ? trimmed : '';
+}
+
+async function callLLM(prompt, maxTokens = config.max_summary_tokens) {
   const raw = await requestLLM(prompt, maxTokens);
   if (isDegenerate(raw)) {
+    const salvaged = trimDegenerateTail(raw);
+    if (salvaged) {
+      process.stderr.write('the-secretary: trimmed degenerate tail (kept the clean prefix)\n');
+      return salvaged;
+    }
     process.stderr.write('the-secretary: discarded degenerate LLM output (repetition loop)\n');
     return '';
   }
@@ -1757,8 +1806,11 @@ CONVERSATION:
 ${text}`;
 
   const prompt = isHandoff ? handoffPrompt : incrementalPrompt;
-  // Handoffs benefit from a higher token budget so all sections fit.
-  const summary = await callLLM(prompt, isHandoff ? 1500 : undefined);
+  // Handoffs need room for all sections, but headroom is where the 4-bit model
+  // degenerates: once the content runs out before the budget does, it keeps
+  // emitting and fills the remainder by repeating. Real output measures
+  // 460-921 chars, so max_summary_tokens (800) clears it with margin to spare.
+  const summary = await callLLM(prompt, config.max_summary_tokens);
   if (!summary || summary.length < 50) {
     process.exit(0);
   }
