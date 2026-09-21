@@ -1764,10 +1764,16 @@ ${text}`;
   }
 
   // The model was given an explicit way out when the transcript holds no real
-  // work; honour it instead of storing the refusal as if it were a brief.
-  // Matched on the opening only, so a genuine handoff that happens to contain
-  // the phrase in a quoted line is not discarded.
-  if (/^\W*nothing to report\b/i.test(summary)) {
+  // work. It uses it two ways, and they mean opposite things:
+  //   - As the whole answer → there was nothing to report; store nothing.
+  //   - Appended after a real brief → a stray echo of the instruction. The
+  //     brief is good; only the trailing line is noise, so trim it rather
+  //     than throw away a valid handoff (observed on a 208-message session).
+  // Both are anchored, so the phrase quoted mid-text in a genuine brief survives.
+  // \W* on both sides so markdown emphasis around the phrase ("**NOTHING TO
+  // REPORT**") is matched too, not just a bare line.
+  let finalSummary = summary.replace(/\n+\W*nothing to report\W*$/i, '').trim();
+  if (/^\W*nothing to report\W*$/i.test(finalSummary) || finalSummary.length < 50) {
     process.stderr.write('the-secretary: handoff skipped (transcript held no reportable work)\n');
     process.exit(0);
   }
@@ -1781,12 +1787,12 @@ ${text}`;
 
     // Tag handoff entries with a [HANDOFF] prefix so the SessionStart hook
     // can surface them prominently. Plain summaries stay untagged.
-    const summaryRow = isHandoff ? `[HANDOFF] ${summary}` : summary;
+    const summaryRow = isHandoff ? `[HANDOFF] ${finalSummary}` : finalSummary;
     db.prepare('INSERT INTO summaries (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)').run(
       sessionId, cwd, chunkIndex, summaryRow, parseInt(messageCount, 10)
     );
 
-    try { await updateBulletsCache(db, cwd, sessionId, summary); } catch { /* cache failure must not break summarization */ }
+    try { await updateBulletsCache(db, cwd, sessionId, finalSummary); } catch { /* cache failure must not break summarization */ }
   } finally {
     db.close();
   }
@@ -1794,7 +1800,7 @@ ${text}`;
   if (shouldNotify) {
     let blurb = '';
     try {
-      const blurbPrompt = `From this coding session summary, write ONE short sentence in ENGLISH (max 90 characters, no quotes, no markdown) describing what was accomplished or the current state. Be concrete — mention the main thing done. Output only the sentence, nothing else.\n\nSUMMARY:\n${summary}`;
+      const blurbPrompt = `From this coding session summary, write ONE short sentence in ENGLISH (max 90 characters, no quotes, no markdown) describing what was accomplished or the current state. Be concrete — mention the main thing done. Output only the sentence, nothing else.\n\nSUMMARY:\n${finalSummary}`;
       const raw = await callLLM(blurbPrompt, 60);
       blurb = (raw || '').replace(/^["'`]+|["'`]+$/g, '').replace(/\s+/g, ' ').trim();
       if (blurb.length > 120) blurb = blurb.slice(0, 117) + '...';
