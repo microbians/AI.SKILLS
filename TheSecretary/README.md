@@ -160,6 +160,21 @@ Verified end to end against the live model on a real transcript: invented files 
 
 Also fixed while measuring: `detectedModel` took `data[0]` from `/v1/models`, which lists the whole local cache alphabetically rather than the loaded model — so every request asked for `Qwen2.5-3B-Instruct-4bit` and `config.model` was silently ignored, whatever it said. Autodetection now only applies when the configured model is genuinely not served.
 
+**Summaries that report nothing (v2.4.1).** Three rows landed in the DB in one afternoon, each a different wording of the same condition, each injected into the next session as if it were context:
+
+- `Please provide the **CONVERSATION** text you would like me to summarize. I have noted your strict accuracy rules and the FILES TOUCHED list…` — the model asking for its own input.
+- `Since no substantive coding activity occurred in the provided segment beyond a user greeting ("ok"), there are no decisions… **STATE:** Waiting for instructions.`
+- `DECISIONS: - None made. CHANGES: - /proj/src/app.js: No changes. STATE: - Waiting for instructions.`
+
+All three clear the 600-char floor and none matches `NOTHING TO REPORT`, so nothing caught them. The cause was structural: only the *handoff* prompt offered an explicit way out, so on a thin segment the incremental prompt left the model no option but to write prose *about* there being nothing to write.
+
+Two changes, and deliberately not three more regexes — these were three phrasings of one condition in a single session, so matching phrasings is a losing game:
+
+- **The incremental prompt gets the same way out** the handoff has, plus an explicit ban on the failure mode: no "None" sections, no "no substantive activity occurred", no "waiting for instructions", because those get stored and read back as context.
+- **One `reportsNothing()` check in `callLLM`** — the single function every generation passes through, so summaries, handoffs, bullets and consolidation are all covered by one mechanism instead of a guard per call site. It strips the scaffolding the prompt itself dictates (section headers, empty-value words, the clauses that frame the segment rather than the work) and measures what is left. Threshold 120 chars, measured rather than guessed: the three bad outputs leave 18 and 95 chars of residue, real summaries leave 174 and 259. Verified against the live model on the input that produced the junk: `discarded LLM output (reports no content)`, 0 rows written; and against 11 stored cases, including a legitimate brief that opens `DECISIONS: - None made yet; the user is still choosing…`, which survives.
+
+A note on the debugging, because it cost a round: The Secretary writes to the **project-local** DB (`<project>/.claude/the-secretary/summaries.db`), not the global one. Checking the global DB showed "0 rows written" and the guard looked like it worked while the junk was being stored all along — a passing check against the wrong target is worse than no check.
+
 Stored in the same `summaries` table tagged with a `[HANDOFF]` prefix. On the next `SessionStart`, **the most recent handoff for the current project is shown FIRST**, before the older bullet summaries, under a `📋 Session handoff — resume here` heading. The bullet cache stays available below as background.
 
 This is additive — incremental summaries, memories, notes and reminders all keep working as before. The handoff is what the next session reads first; the rest is context.

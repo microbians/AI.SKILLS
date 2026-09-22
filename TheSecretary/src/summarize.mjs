@@ -584,8 +584,61 @@ function trimDegenerateTail(text) {
   return trimmed.length >= 600 && !isDegenerate(trimmed) ? trimmed : '';
 }
 
+/**
+ * Output that reports nothing, however it is worded.
+ *
+ * Both prompts offer an explicit way out (`NOTHING TO REPORT`) for a segment with
+ * no work in it, and the model often ignores it: instead of the phrase it writes
+ * *prose about* there being nothing — "Please provide the CONVERSATION text you
+ * would like me to summarize", "Since no substantive coding activity occurred…
+ * STATE: Waiting for instructions", "DECISIONS: - None made. CHANGES: - No
+ * changes." Each clears every size floor, so all three got stored and were then
+ * injected into the next session as if they were context.
+ *
+ * Chasing the phrasings one regex at a time is a losing game — these three were
+ * three different wordings of one condition in a single afternoon. What they share
+ * is that nothing survives once the scaffolding is removed: strip the section
+ * headers the prompt itself dictates, the empty-value words, and the boilerplate
+ * about the request, and a real summary still has sentences left while these do not.
+ */
+function reportsNothing(text) {
+  const t = (text || '').trim();
+  if (!t) return true;
+  if (/^\W*nothing to report\W*$/i.test(t)) return true;
+
+  // A reply that opens by asking for the input is never a summary.
+  if (/^\W*(?:please\s+(?:provide|paste|share)|(?:it\s+looks\s+like|i\s+(?:don'?t|do\s+not))\s+(?:you\s+)?(?:have\s+)?(?:n[o']?t\s+)?(?:provided|see|received)|i'?m\s+ready\s+(?:to|when)|once\s+you\s+(?:paste|provide))/i.test(t)) return true;
+
+  const stripped = t
+    // section scaffolding the prompt asks for, in both flavours
+    .replace(/^#{1,4}\s.*$/gim, '')
+    .replace(/\b(?:DECISIONS|CHANGES|PROBLEMS|STATE|FILES TOUCHED)\b\s*:?/gi, '')
+    // empty-value words and the phrases that only restate the absence
+    .replace(/\b(?:none|n\/?a|nothing|no\s+(?:changes?|decisions?|problems?|errors?|files?|substantive|identifiable|reportable)\w*|not\s+applicable|empty|unchanged|made|occurred|reported|to\s+report)\b/gi, '')
+    .replace(/\b(?:waiting\s+for\s+instructions?|no\s+further\s+action|awaiting\s+input)\b/gi, '')
+    // Sentences ABOUT the segment rather than about the work. A real summary
+    // describes what happened; these describe the absence of it, so the clause
+    // that frames the segment itself is scaffolding too.
+    .replace(/\b(?:since|because|as)\s+(?:there\s+(?:is|are|was|were)\s+)?[^.]*?\b(?:segment|conversation|transcript|provided|excerpt)\b[^.]*\.?/gi, '')
+    .replace(/\bthere\s+(?:is|are|was|were)\s+[^.]*\.?/gi, '')
+    .replace(/\b(?:in\s+)?the\s+(?:provided\s+)?(?:segment|conversation|transcript|excerpt)\b/gi, '')
+    .replace(/\b(?:beyond|apart\s+from|other\s+than)\s+a?\s*(?:user\s+)?(?:greeting|acknowledgement|acknowledgment)\b[^.]*/gi, '')
+    // markdown/list punctuation carries no content on its own
+    .replace(/[*_`~#>\-–—:;,.!?()\[\]{}"'|\/\\]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Real summaries leave plenty behind (measured: 400+ chars of residue on a
+  // genuine brief); the three bad ones above leave under 60.
+  return stripped.length < 60;
+}
+
 async function callLLM(prompt, maxTokens = config.max_summary_tokens) {
   const raw = await requestLLM(prompt, maxTokens);
+  if (reportsNothing(raw)) {
+    process.stderr.write('the-secretary: discarded LLM output (reports no content)\n');
+    return '';
+  }
   if (isDegenerate(raw)) {
     const salvaged = trimDegenerateTail(raw);
     if (salvaged) {
@@ -1787,7 +1840,19 @@ async function bgSummarize(sessionId, cwd, messageCount, tmpFile, { notify: shou
   //   - Handoff (Stop hook — session is closing): a denser brief written so
   //     the next session can resume WITHOUT the user re-explaining anything.
   //     Mirrors the manual context the user used to inject by hand.
-  const incrementalPrompt = `Summarize this coding conversation segment. Extract:
+  const incrementalPrompt = `Summarize this coding conversation segment.
+
+FIRST, judge whether the segment contains actual work. If it holds no identifiable
+decisions, file changes or problems — a bare acknowledgement, a greeting, a question
+with no answer yet — output exactly this and nothing else:
+
+NOTHING TO REPORT
+
+Do NOT write a summary that says there is nothing to summarize: no "None" sections,
+no "no substantive activity occurred", no "waiting for instructions". Those get stored
+and then read back as if they were session context. Use the line above instead.
+
+Otherwise extract:
 
 - DECISIONS: What was decided and why (max 3)
 - CHANGES: Files modified and how (max 5). If a FILES TOUCHED list opens the conversation, take paths ONLY from it, verbatim; "read" there means inspected, not modified.
@@ -1888,6 +1953,7 @@ ${text}`;
     process.stderr.write('the-secretary: handoff skipped (transcript held no reportable work)\n');
     process.exit(0);
   }
+
 
   const db = openDb(cwd);
   if (!db) process.exit(1);
