@@ -761,7 +761,13 @@ function isLLMAvailable() {
         if (res.statusCode === 200) {
           try {
             const parsed = JSON.parse(data);
-            if (parsed.data?.[0]?.id) detectedModel = parsed.data[0].id;
+            // /v1/models lists EVERY model in the HF cache, not the loaded one,
+            // and its order is alphabetical — data[0] was picking
+            // Qwen2.5-3B-Instruct-4bit regardless of what config.model asked
+            // for, so the configured model was silently ignored. Only fall back
+            // to autodetection when the configured model isn't served at all.
+            const ids = (parsed.data || []).map(m => m.id).filter(Boolean);
+            detectedModel = ids.includes(config.model) ? null : (ids[0] || null);
           } catch {}
           resolve(true);
         } else {
@@ -926,12 +932,30 @@ function stripNoise(text) {
 /** Acknowledgements carry no information worth a slot in the summary budget. */
 const FILLER_RE = /^(?:ok(?:ay)?|vale|dale|sigue|continua|continúa|gracias|thanks|thx|si|sí|no|yes|yep|nope|y|and|perfecto|genial|bien|good|great|👍|ya|listo)[\s.!?]*$/i;
 
+/**
+ * Tools whose file_path means the file was MODIFIED vs merely inspected. A handoff
+ * that calls a file "changed" when it was only read is the same class of error as
+ * inventing the path, so the verb is taken from the tool, never guessed.
+ */
+const FILE_WRITERS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
+const FILE_READERS = new Set(['Read', 'Grep', 'Glob']);
+
 function parseTranscript(transcriptPath, fromOffset = 0) {
-  if (!transcriptPath || !existsSync(transcriptPath)) return { messages: [], rawLength: 0 };
+  if (!transcriptPath || !existsSync(transcriptPath)) {
+    return { messages: [], rawLength: 0, filesTouched: new Map() };
+  }
 
   const raw = readFileSync(transcriptPath, 'utf-8');
   const lines = raw.split('\n').filter(l => l.trim());
   const messages = [];
+  // Ground truth for "Key files touched". Tool traffic is admitted to the summary
+  // budget LAST (see messagesToText), and on a real session the talk turns consume
+  // all of it — measured: 7980 of 8000 chars, leaving 20, so 0 of 178 tool turns got
+  // in and the model saw ZERO file paths while being told to "quote exact paths".
+  // It filled the gap with plausible inventions (26 fabricated paths across three
+  // projects). This manifest is built straight from tool_use blocks, costs ~300
+  // chars for a whole session, and is passed to the model as authoritative.
+  const filesTouched = new Map();
 
   for (let i = fromOffset; i < lines.length; i++) {
     try {
@@ -959,6 +983,14 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
             text += block.text + '\n';
           } else if (block.type === 'tool_use') {
             toolText += `[Tool: ${block.name}] ${JSON.stringify(block.input || {}).slice(0, 200)}\n`;
+            const fp = block.input?.file_path || block.input?.notebook_path;
+            if (fp) {
+              const verb = FILE_WRITERS.has(block.name) ? 'changed'
+                : FILE_READERS.has(block.name) ? 'read' : 'used';
+              // A write outranks an earlier read of the same file.
+              const prev = filesTouched.get(fp);
+              if (!prev || (prev !== 'changed' && verb === 'changed')) filesTouched.set(fp, verb);
+            }
           } else if (block.type === 'tool_result') {
             const resultText = typeof block.content === 'string' ? block.content : JSON.stringify(block.content || '');
             toolText += `[Result] ${resultText.slice(0, 200)}\n`;
@@ -982,7 +1014,7 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
     } catch { /* skip malformed lines */ }
   }
 
-  return { messages, rawLength: lines.length };
+  return { messages, rawLength: lines.length, filesTouched };
 }
 
 /**
@@ -996,7 +1028,26 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
  *    what a handoff needs; truncating from the front kept only the stale opening.
  * Emitted output is restored to chronological order so the model reads a conversation.
  */
-function messagesToText(messages, maxChars = 8000) {
+/**
+ * Render the files-touched manifest that prefixes the summarizer input.
+ * Writes come first: a handoff cares about what changed, and a long read-only
+ * list would otherwise push the changes out of view.
+ */
+function filesTouchedBlock(filesTouched, maxChars = 1200) {
+  if (!filesTouched?.size) return '';
+  const rank = { changed: 0, used: 1, read: 2 };
+  const rows = [...filesTouched].sort((a, b) => (rank[a[1]] ?? 3) - (rank[b[1]] ?? 3));
+  let out = '';
+  for (const [path, verb] of rows) {
+    const line = `- ${path} (${verb})\n`;
+    if (out.length + line.length > maxChars) break;
+    out += line;
+  }
+  if (!out) return '';
+  return `FILES TOUCHED (from this session's tool calls — authoritative; do NOT list any file absent from here):\n${out}\n`;
+}
+
+function messagesToText(messages, maxChars = 8000, filesTouched = null) {
   const budget = { used: 0 };
   const picked = new Set();
 
@@ -1009,6 +1060,11 @@ function messagesToText(messages, maxChars = 8000) {
     }
   };
 
+  // The manifest is charged to the budget so a long file list can't silently
+  // push the conversation itself out of the prompt.
+  const manifest = filesTouchedBlock(filesTouched);
+  budget.used += manifest.length;
+
   const recentFirst = [...messages].reverse();
   admit(recentFirst.filter(m => m.kind === 'talk' && m.role === 'user'));
   admit(recentFirst.filter(m => m.kind === 'talk' && m.role === 'assistant'));
@@ -1020,7 +1076,7 @@ function messagesToText(messages, maxChars = 8000) {
     const prefix = m.role === 'user' ? 'USER' : m.role === 'assistant' ? 'ASSISTANT' : 'TOOL';
     text += `[${prefix}]: ${m.text}\n\n`;
   }
-  return text;
+  return manifest ? `${manifest}\n${text}` : text;
 }
 
 /**
@@ -1536,7 +1592,7 @@ async function incremental(hookInput) {
 
     db.prepare(`INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, datetime('now'))`).run(counterKey, String(counter));
 
-    const { messages, rawLength } = parseTranscript(transcript_path, lastOffset);
+    const { messages, rawLength, filesTouched } = parseTranscript(transcript_path, lastOffset);
 
     // Process secretary orders on EVERY call (no counter gate) — fast regex, sync
     await processSecretaryOrders(messages, db, cwd, session_id);
@@ -1548,7 +1604,7 @@ async function incremental(hookInput) {
     // Only do full LLM summary every N tool calls
     if (counter % config.summarize_every_n !== 0) return;
 
-    const text = messagesToText(messages);
+    const text = messagesToText(messages, 8000, filesTouched);
     if (text.length < config.min_new_chars) return;
 
     // Update offset NOW so next call doesn't re-process these messages
@@ -1734,7 +1790,7 @@ async function bgSummarize(sessionId, cwd, messageCount, tmpFile, { notify: shou
   const incrementalPrompt = `Summarize this coding conversation segment. Extract:
 
 - DECISIONS: What was decided and why (max 3)
-- CHANGES: Files modified and how (max 5)
+- CHANGES: Files modified and how (max 5). If a FILES TOUCHED list opens the conversation, take paths ONLY from it, verbatim; "read" there means inspected, not modified.
 - PROBLEMS: Errors encountered and their solutions (max 3)
 - STATE: Current task status and next steps
 
@@ -1786,7 +1842,10 @@ Constraints repeated by the user this session: backups required, naming conventi
 Paths of any backup folders created this session.
 
 ## Key files touched
-File paths + one-line description of what changed in each.
+File paths + one-line description of what changed in each. If the conversation opens
+with a FILES TOUCHED list, that list is the ONLY valid source for this section: every
+path must come from it verbatim, and a file it marks "read" was inspected, NOT changed.
+Never add a file that is absent from it.
 
 Rules:
 - Be concrete, name things. No vague language ("we worked on improvements").
@@ -1873,18 +1932,18 @@ async function compact(hookInput) {
         const stateRow = db.prepare('SELECT value FROM state WHERE key = ?').get(stateKey);
         const lastOffset = stateRow ? parseInt(stateRow.value, 10) : 0;
 
-        const { messages, rawLength } = parseTranscript(transcript_path, lastOffset);
+        const { messages, rawLength, filesTouched } = parseTranscript(transcript_path, lastOffset);
 
         await processSecretaryOrders(messages, db, cwd, session_id);
 
-        const text = messagesToText(messages);
+        const text = messagesToText(messages, 8000, filesTouched);
 
         if (text.length >= 500) {
           if (await ensureLLMRunning()) {
             const prompt = `Summarize this coding conversation segment. Extract:
 
 - DECISIONS: What was decided and why (max 3)
-- CHANGES: Files modified and how (max 5)
+- CHANGES: Files modified and how (max 5). If a FILES TOUCHED list opens the conversation, take paths ONLY from it, verbatim; "read" there means inspected, not modified.
 - PROBLEMS: Errors encountered and their solutions (max 3)
 - STATE: Current task status and next steps
 
@@ -2199,13 +2258,13 @@ async function force(hookInput, { stopLlm = false, notify: shouldNotify = false 
     // line "Commiteado en `main` como `08becc2`, working tree limpio."
     // Incremental summaries keep using the offset; only the handoff reads it all.
     const fromOffset = stopLlm ? 0 : lastOffset;
-    const { messages, rawLength } = parseTranscript(transcript_path, fromOffset);
+    const { messages, rawLength, filesTouched } = parseTranscript(transcript_path, fromOffset);
 
     await processSecretaryOrders(messages, db, cwd, session_id);
 
     // The whole session needs more room than an incremental chunk, or the
     // budget would drop precisely the early turns that state the session's goal.
-    const text = messagesToText(messages, stopLlm ? 16000 : 8000);
+    const text = messagesToText(messages, stopLlm ? 16000 : 8000, filesTouched);
 
     // A handoff needs enough substance to be worth writing. Below this floor the
     // model has nothing to summarize and fabricates instead, so writing nothing

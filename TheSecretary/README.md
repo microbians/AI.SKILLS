@@ -142,6 +142,24 @@ The budget was cut, though, because that one is measurable. `max_summary_tokens`
 
 Also fixed a prompt tic that asked for "server URL" unconditionally, which made the model assert `http://localhost:3000` in projects that run no server — it appeared in 7 otherwise-legitimate stored handoffs. The line now says to mention a branch, URL or process *only if the conversation states it*.
 
+**Invented file paths (v2.4.0).** The handoff kept naming files that were never touched — 26 fabricated paths across three real sessions, plus a `http://localhost:8000/` that no one had mentioned. The prompt already forbade it; the cause was that the model was never shown a single real path. `messagesToText` admits tool traffic *last*, after user and assistant turns, and on a real session there is nothing left for it: measured at the 8000-char budget, user turns took 315 chars and assistant turns 7665, leaving 20 — so **0 of 178 tool turns got in and the model saw zero file paths** while being told to quote exact ones. Given eight mandatory sections and no paths, it produced plausible ones: `src/models/gemini-3-pro-image.py` alongside `.js`, the same file in two languages, neither real.
+
+Raising the budget does not fix it (assistant prose simply takes more: 16588 chars at a 32000 budget, still only 13 of 24 paths visible). Instead a **files-touched manifest** is built straight from the transcript's `tool_use` blocks and prefixed to the summarizer input as authoritative:
+
+- The **verb comes from the tool**, never guessed — `Edit`/`Write`/`NotebookEdit` mean `changed`, `Read`/`Grep`/`Glob` mean `read`, and a write outranks an earlier read of the same file. This also enforces "searching is not implementing" structurally instead of by instruction.
+- It costs ~300 chars for a whole session (two files, in the measured case) versus the 34669 chars of raw tool traffic it replaces, and it is **charged to the same budget** so a long file list cannot silently push out the conversation.
+- Writes are listed first, and the block is capped at 1200 chars.
+- Both prompts now state that when the input opens with a FILES TOUCHED list, that list is the only valid source of paths.
+
+Verified end to end against the live model on a real transcript: invented files went **1 → 0** on the same session, and the two files it does name are exactly the two that were edited, each with the right description. Without the manifest that same run cited `CLAUDE.md` and `.gitignore`, neither of which the session touched.
+
+**Model: gemma-4-26B-A4B (v2.4.0).** Benchmarked against the incumbent Qwen2.5-7B on The Secretary's own prompts, 5 rounds over 3 real transcripts: fabricated paths in handoffs 26 → 10, invented URLs 1 → 0, intent classification 60% → 90%, total time 49.2s → 52.6s (and *more* stable per summary: 7-10s versus the 7B's 5-13s). A MoE activates ~4B parameters per token, so 26B costs RAM (~14 GB), not speed; the `≥48 GB` tier picks it and smaller machines keep the 7B. Two things are mandatory for it:
+
+- **`--chat-template-args '{"enable_thinking":false}'`.** Gemma-4's chat template emits a pre-closed thought channel only when thinking is off. Left on, the model spends the entire token budget in a `reasoning` field and returns no `content` at all — every summary came back empty, 10/10, which initially looked like the model being unusable.
+- **`mlx_lm >= 0.31.3`.** 0.31.1 rejects the architecture outright with `Model type gemma4 not supported`; 0.31.3 ships `models/gemma4.py`.
+
+Also fixed while measuring: `detectedModel` took `data[0]` from `/v1/models`, which lists the whole local cache alphabetically rather than the loaded model — so every request asked for `Qwen2.5-3B-Instruct-4bit` and `config.model` was silently ignored, whatever it said. Autodetection now only applies when the configured model is genuinely not served.
+
 Stored in the same `summaries` table tagged with a `[HANDOFF]` prefix. On the next `SessionStart`, **the most recent handoff for the current project is shown FIRST**, before the older bullet summaries, under a `📋 Session handoff — resume here` heading. The bullet cache stays available below as background.
 
 This is additive — incremental summaries, memories, notes and reminders all keep working as before. The handoff is what the next session reads first; the rest is context.

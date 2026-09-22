@@ -135,7 +135,7 @@ For any ASCII box-drawing content (diagrams, tables, boxes using `│ ┌ ┐ �
 
 ---
 
-<!-- skill: the-secretary v2.3.3 -->
+<!-- skill: the-secretary v2.4.0 -->
 ## Memory / notes / reminders / recall
 
 For all context persistence (anything worth remembering, recall questions, conversation summaries), STRICTLY follow the `the-secretary` skill rules. Never use Claude's built-in memory system.

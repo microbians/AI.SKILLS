@@ -5,8 +5,9 @@
 #
 # stop-if-idle is what the Stop hook should call: it keeps the server alive
 # between turns (TokenGuard needs it on every prompt, and a cold start costs
-# 15-30s) but still reclaims the model's ~8 GB once the machine has genuinely
-# stopped using it. Callers mark usage with `touch`.
+# 15-30s) but still reclaims the model's RAM (~14 GB for gemma-4-26B, ~4 GB for
+# the 7B) once the machine has genuinely stopped using it. Callers mark usage
+# with `touch`.
 
 PORT=8922
 LOG="/tmp/the-secretary-llm.log"
@@ -17,10 +18,21 @@ IDLE_TIMEOUT_MIN="${SECRETARY_LLM_IDLE_MIN:-45}"
 # Auto-select MLX model by unified memory size (Apple Silicon).
 # Override with env var SECRETARY_MLX_MODEL=<repo> to force a specific model.
 # Benchmarked on The Secretary's own workloads (intent classification, summaries,
-# handoffs — no code): 7B ran the set in 5.0s vs 12.0s for Coder-14B at half the
-# RAM, with identical accuracy on the handoff rules. A coder-tuned model buys
-# nothing here, so size is chosen for summarization quality alone.
-#   ≥32 GB → Qwen2.5-7B-Instruct-4bit (~4 GB RAM, best accuracy/speed balance)
+# handoffs — no code), 5 rounds each over 3 real transcripts. A coder-tuned model
+# buys nothing here (7B ran the set in 5.0s vs 12.0s for Coder-14B at half the
+# RAM, same accuracy), so the choice is about summarization quality alone.
+#
+# Gemma-4-26B-A4B vs Qwen2.5-7B on the same prompts:
+#   invented file paths in handoffs  26 → 10   (the worst failure: the next
+#                                               session reads those paths)
+#   invented server URLs              1 →  0
+#   intent classification            60% → 90%
+#   total time                      49.2s → 52.6s   (per summary MORE stable:
+#                                               7-10s vs the 7B's 5-13s)
+# A MoE activates ~4B params per token, so 26B costs RAM, not speed.
+#
+#   ≥48 GB → gemma-4-26B-A4B-it-qat-4bit (~14 GB RAM, fewest hallucinations)
+#   32–47 GB → Qwen2.5-7B-Instruct-4bit (~4 GB RAM, good accuracy/speed balance)
 #   16–31 GB → Qwen2.5-3B-Instruct-4bit (~2 GB RAM, ~80 tok/s, balanced)
 #   <16 GB / Linux / Intel → Qwen2.5-1.5B-Instruct-4bit (~1 GB RAM, fastest)
 pick_mlx_model() {
@@ -29,7 +41,8 @@ pick_mlx_model() {
     local bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
     ram_gb=$(( bytes / 1024 / 1024 / 1024 ))
   fi
-  if   [ "$ram_gb" -ge 32 ]; then echo "mlx-community/Qwen2.5-7B-Instruct-4bit"
+  if   [ "$ram_gb" -ge 48 ]; then echo "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+  elif [ "$ram_gb" -ge 32 ]; then echo "mlx-community/Qwen2.5-7B-Instruct-4bit"
   elif [ "$ram_gb" -ge 16 ]; then echo "mlx-community/Qwen2.5-3B-Instruct-4bit"
   else                            echo "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
   fi
@@ -38,6 +51,8 @@ MLX_MODEL="${SECRETARY_MLX_MODEL:-$(pick_mlx_model)}"
 GGUF_MODEL="$HOME/.claude/the-secretary/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 
 # Detect backend: prefer MLX on Apple Silicon, fallback to llama.cpp
+# Needs mlx_lm >= 0.31.3 for gemma-4 (0.31.1 rejects it with
+# "Model type gemma4 not supported"; 0.31.3 ships models/gemma4.py).
 detect_backend() {
   if python3 -c "import mlx_lm" 2>/dev/null; then
     echo "mlx"
@@ -112,12 +127,18 @@ case "${1:-start}" in
       # macOS has no setsid(1), hence the Python one-liner.
       # Cap the prompt cache: it grows per distinct conversation and is never
       # reclaimed on its own (observed climbing past 2 GB on top of the model's
-      # own ~8 GB during a single session). Bounding it keeps a long-lived
+      # own weights during a single session). Bounding it keeps a long-lived
       # server from drifting into memory pressure.
+      # enable_thinking=false is REQUIRED for gemma-4: its chat template emits a
+      # pre-closed thought channel only when thinking is off. Left on, the model
+      # spends the whole token budget in a `reasoning` field and returns NO
+      # content at all — every summary came back empty (10/10) until this flag
+      # was passed. Harmless for models whose template ignores the kwarg.
       MLX_MPI_LIBNAME=mlx-mpi-disabled.dylib \
       nohup python3 -c "import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])" \
         python3 -m mlx_lm server \
         --model "$MLX_MODEL" \
+        --chat-template-args '{"enable_thinking":false}' \
         --port $PORT \
         --prompt-cache-size 4 \
         --prompt-cache-bytes 1073741824 \
