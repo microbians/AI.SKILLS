@@ -15,6 +15,64 @@ PID_FILE="/tmp/the-secretary-llm.pid"
 ACTIVITY_FILE="/tmp/the-secretary-llm.activity"
 IDLE_TIMEOUT_MIN="${SECRETARY_LLM_IDLE_MIN:-45}"
 
+# PIDs LISTENING on the port — the server only. A bare `lsof -ti:$PORT` also
+# lists every process with a connection TO the port, so killing its output
+# took down the summarizer workers that had a request in flight (a handoff
+# worker vanished with no error and no summary whenever another one stopped
+# the server), and adopting its first line could record a client as the server.
+port_listener_pids() {
+  lsof -nP -iTCP:$PORT -sTCP:LISTEN -t 2>/dev/null
+}
+
+# Local hooks: optional machine-specific behaviour in local/hooks.sh next to
+# this script (summarize.mjs has its twin, local/hooks.mjs). The folder is never
+# shipped and install.sh never touches it, so it survives upgrades. The file may
+# redefine any of these; all are no-ops by default:
+#   local_before_start    runs before a server is spawned; may `exit` to veto it
+#   local_on_server_up    runs whenever a live server is found, adopted or started
+#   local_command <name>  handles a command this script does not know
+local_before_start() { :; }
+local_on_server_up() { :; }
+local_command() { :; }
+LOCAL_HOOKS="$(cd "$(dirname "$0")" && pwd)/local/hooks.sh"
+[ -f "$LOCAL_HOOKS" ] && . "$LOCAL_HOOKS"
+
+# Provider from config.json, same default as summarize.mjs. With `claude_cli`
+# the summaries run remotely and nothing ever talks to the local server, so
+# starting it only burns RAM and CPU.
+secretary_provider() {
+  local cfg p
+  cfg="$(cd "$(dirname "$0")" && pwd)/config.json"
+  p=$(sed -n 's/.*"provider"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$cfg" 2>/dev/null | head -1)
+  echo "${p:-claude_cli}"
+}
+
+# Idle reaper: the only thing that stops the server on its own. One per server,
+# alive as long as something listens on the port; once a minute it runs
+# stop-if-idle. Summarizer workers used to `stop` the server when they were
+# done, which cut off every other worker's request in flight (two sessions, or
+# one session's Stop and SessionEnd handoffs) and lost their summaries.
+IDLE_REAPER_PID_FILE="/tmp/the-secretary-llm-idlereaper.pid"
+start_idle_reaper() {
+  if [ -f "$IDLE_REAPER_PID_FILE" ] && kill -0 "$(cat "$IDLE_REAPER_PID_FILE")" 2>/dev/null; then return; fi
+  local self
+  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  (
+    while [ -n "$(port_listener_pids)" ]; do
+      sleep 60
+      bash "$self" stop-if-idle
+    done
+    rm -f "$IDLE_REAPER_PID_FILE"
+  ) > /dev/null 2>&1 &
+  echo $! > "$IDLE_REAPER_PID_FILE"
+  disown 2>/dev/null
+}
+
+on_server_up() {
+  start_idle_reaper
+  local_on_server_up
+}
+
 # Auto-select MLX model by unified memory size (Apple Silicon).
 # Override with env var SECRETARY_MLX_MODEL=<repo> to force a specific model.
 # Benchmarked on The Secretary's own workloads (intent classification, summaries,
@@ -65,11 +123,19 @@ detect_backend() {
 
 case "${1:-start}" in
   start)
+    if [ "$(secretary_provider)" = "claude_cli" ]; then
+      echo "Provider is claude_cli: local LLM server not needed"
+      exit 0
+    fi
+
     # Check if already running
     if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+      on_server_up
       echo "LLM server already running on port $PORT (PID $(cat "$PID_FILE"))"
       exit 0
     fi
+
+    local_before_start
 
     # Mutual exclusion around the whole start sequence. Several callers race to
     # run this (TokenGuard's restart, The Secretary's ensureLLMRunning, manual
@@ -98,14 +164,15 @@ case "${1:-start}" in
     # killing it because the PID file drifted is what made the port look like
     # it "crashed on its own". Adopt it instead: record its PID and leave it be.
     if curl -s --max-time 3 "http://localhost:$PORT/v1/models" > /dev/null 2>&1; then
-      RUNNING_PID=$(lsof -ti:$PORT | head -1)
+      RUNNING_PID=$(port_listener_pids | head -1)
       [ -n "$RUNNING_PID" ] && echo "$RUNNING_PID" > "$PID_FILE"
+      on_server_up
       echo "LLM server already serving on port $PORT (adopted PID ${RUNNING_PID:-unknown})"
       exit 0
     fi
 
     # Nothing serving: clear whatever is squatting the port and start fresh.
-    lsof -ti:$PORT | xargs kill -9 2>/dev/null
+    port_listener_pids | xargs kill -9 2>/dev/null
 
     # Run from our own dir so port monitors attribute the server to
     # "the-secretary" instead of whatever project invoked the hook.
@@ -167,6 +234,7 @@ case "${1:-start}" in
       sleep 1
       if curl -s http://localhost:$PORT/v1/models > /dev/null 2>&1; then
         date +%s > "$ACTIVITY_FILE"
+        on_server_up
         echo "LLM server running on port $PORT (PID $(cat "$PID_FILE"), backend: $BACKEND, model: $MLX_MODEL)"
         exit 0
       fi
@@ -175,8 +243,9 @@ case "${1:-start}" in
         # Losing an "Address already in use" race means someone else's server
         # is serving the port — adopt it rather than reporting a failure.
         if curl -s --max-time 2 "http://localhost:$PORT/v1/models" > /dev/null 2>&1; then
-          RUNNING_PID=$(lsof -ti:$PORT | head -1)
+          RUNNING_PID=$(port_listener_pids | head -1)
           [ -n "$RUNNING_PID" ] && echo "$RUNNING_PID" > "$PID_FILE"
+          on_server_up
           echo "LLM server already serving on port $PORT (adopted PID ${RUNNING_PID:-unknown})"
           exit 0
         fi
@@ -201,7 +270,7 @@ case "${1:-start}" in
     else
       echo "No PID file found"
     fi
-    lsof -ti:$PORT | xargs kill -9 2>/dev/null
+    port_listener_pids | xargs kill -9 2>/dev/null
     rm -f "$ACTIVITY_FILE"
     ;;
 
@@ -228,7 +297,7 @@ case "${1:-start}" in
       kill "$(cat "$PID_FILE")" 2>/dev/null
       rm -f "$PID_FILE"
     fi
-    lsof -ti:$PORT | xargs kill -9 2>/dev/null
+    port_listener_pids | xargs kill -9 2>/dev/null
     rm -f "$ACTIVITY_FILE"
     echo "LLM server stopped after ${IDLE_S}s idle"
     ;;
@@ -239,5 +308,9 @@ case "${1:-start}" in
     else
       echo "not running"
     fi
+    ;;
+
+  *)
+    local_command "$1"
     ;;
 esac

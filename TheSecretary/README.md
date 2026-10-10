@@ -1,6 +1,6 @@
 # The Secretary
 
-AI-powered context persistence for Claude Code. Preserves conversation context and keeps **one flat index** of everything worth remembering — all using a small local LLM (Qwen 2.5, auto-sized 1.5B / 3B / 7B by available RAM). Optional `claude_cli` provider available for users with a Claude Max subscription.
+AI-powered context persistence for Claude Code. Stores **every conversation verbatim** (read from Claude Code's own transcripts, screenshots included, kept beyond their 30-day cleanup), searchable by words and by meaning, and keeps **one flat index** of everything worth remembering plus LLM summaries on top — all local (summaries by gemma-4 / Qwen 2.5 auto-sized by RAM, vectors by Qwen3-Embedding). Optional `claude_cli` provider available for users with a Claude Max subscription.
 
 There are **no memory types**: a fact, a note and a reminder are all the same thing — one item in the session's index.
 
@@ -73,10 +73,10 @@ Triggers: `¿recuerdas?`, `te acuerdas?`, `do you remember`, `do you recall`, `r
 How it works:
 1. **UserPromptSubmit hook** detects a recall-style question.
 2. Keywords are extracted from the prompt. A recall question is mostly filler (`qué hice hoy en X`), and scoring by raw term count lets that filler outrank the real subject — so an ES/EN **stopword list** is stripped first. If a query is *all* stopwords, the original tokens are used rather than returning nothing.
-3. Search runs in three tiers, stopping once it has enough hits: per-project cache `.md` files (fast file-level grep) → **verbatim turns** (`turns`, FTS5) → the `summaries` table (`LIKE` fallback).
+3. Search runs in three tiers, stopping once it has enough hits: per-project cache `.md` files (fast file-level grep) → **verbatim turns** (FTS5 and vectors, fused — see [Search](#search-literal-and-semantic-fused)) → the `summaries` table (`LIKE` fallback).
 4. Top matches are printed to stdout and appear as injected context in Claude's next turn.
 
-**Verbatim turn index (FTS5).** Summaries paraphrase — ask "what did I say about ffmpeg on Railway" and the summary only kept "discussed deployment". So every conversation turn is also stored verbatim in an FTS5 table, indexed live by the PostToolUse hook. This makes search flexible in three ways `LIKE` was not:
+**Verbatim turn index (FTS5).** Summaries paraphrase — ask "what did I say about ffmpeg on Railway" and the summary only kept "discussed deployment". So every conversation turn is also stored verbatim in an FTS5 table, read straight from Claude Code's transcript by every hook (PostToolUse, Stop, PreCompact) and at SessionStart. This makes search flexible in three ways `LIKE` was not:
 
 - **Accent- and case-insensitive** (`unicode61 remove_diacritics 2`) — `edicion` matches `edición`.
 - **Partial matches instead of nothing** — terms are OR-ed with prefix wildcards, so an absent word no longer zeroes the result set; `bm25` ranks whatever matched most. The old `AND` chain returned 0 hits if any single term was missing.
@@ -87,10 +87,21 @@ Results are tagged `[said]` (your own words) or `[turn]` (assistant), so quoting
 Sessions that ended before the index existed can be backfilled from the transcripts on disk:
 
 ```bash
-node ~/.claude/the-secretary/summarize.mjs index-turns
+node ~/.claude/the-secretary/summarize.mjs index-turns            # only what is new
+node ~/.claude/the-secretary/summarize.mjs index-turns --rebuild  # re-read every transcript from line 0
 ```
 
-Run it from the project root; it reads `~/.claude/projects/<slug>/*.jsonl` for that project only. It is idempotent — re-running indexes just the new turns. (Reference: 31 sessions → 7,518 turns in ~1.2s.)
+Run it from the project root; it reads `~/.claude/projects/<slug>/*.jsonl` for that project only. It is idempotent — re-running indexes just the new turns. `--rebuild` replaces the rows (and their vectors) of every session whose transcript is still on disk; sessions whose transcript Claude Code already deleted keep their rows, since the index is by then their only copy. (Reference: 14 sessions → 8,559 chunks in ~1.2s.)
+
+### The transcript is the source of truth (v2.5.0)
+
+The summaries are a layer on top; the verbatim index is the memory. Three things made it lossy before, all fixed:
+
+- **Pure-chat turns were dropped.** The indexer was fed the messages the *summarizer* had not consumed yet, and the `Stop` hook — which fires after every reply — advanced that cursor without indexing. Any exchange with no tool call in between (a question and its answer) was skipped for good, and the next backfill could not recover it either, because its line guard had already moved past. On one real session 9 of 11 turns in a 7-minute stretch were missing, including the one the user later asked about. The index now reads the transcript from its **own cursor** (`fts-line:<session>`), independent of the summarizer, and every hook calls it.
+- **Long turns were cut at 3000 chars.** Rows are now **800-char chunks** split at paragraph / line / sentence breaks, so nothing is lost and each chunk fits the embedder whole (its cap went from 512 to 1000 chars).
+- **Screenshots vanished.** A pasted image lives in the transcript as base64; Claude Code's own copy sits in `/private/tmp` and dies with the session. It is now saved to `<projectRoot>/.claude/the-secretary/images/<sha1>.<ext>` (deduplicated by content) and the turn carries `[imagen: <path>]`, so a later session can open it. The answer to "which site did I show you?" was only in a screenshot.
+
+Claude Code deletes transcripts after 30 days (`cleanupPeriodDays`); the index keeps them for good.
 
 For manual searches:
 
@@ -171,7 +182,8 @@ All three clear the 600-char floor and none matches `NOTHING TO REPORT`, so noth
 Two changes, and deliberately not three more regexes — these were three phrasings of one condition in a single session, so matching phrasings is a losing game:
 
 - **The incremental prompt gets the same way out** the handoff has, plus an explicit ban on the failure mode: no "None" sections, no "no substantive activity occurred", no "waiting for instructions", because those get stored and read back as context.
-- **One `reportsNothing()` check in `callLLM`** — the single function every generation passes through, so summaries, handoffs, bullets and consolidation are all covered by one mechanism instead of a guard per call site. It strips the scaffolding the prompt itself dictates (section headers, empty-value words, the clauses that frame the segment rather than the work) and measures what is left. Threshold 120 chars, measured rather than guessed: the three bad outputs leave 18 and 95 chars of residue, real summaries leave 174 and 259. Verified against the live model on the input that produced the junk: `discarded LLM output (reports no content)`, 0 rows written; and against 11 stored cases, including a legitimate brief that opens `DECISIONS: - None made yet; the user is still choosing…`, which survives.
+- **One `reportsNothing()` check for every summary** — summaries, handoffs, bullets and consolidation all go through `callLLMForSummary`, so one mechanism covers them instead of a guard per call site. It strips the scaffolding the prompt itself dictates (section headers, empty-value words, the clauses that frame the segment rather than the work) and measures what is left: under 60 chars of residue means nothing was reported. Verified against the live model on the input that produced the junk: `discarded LLM output (reports no content)`, 0 rows written; and against 11 stored cases, including a legitimate brief that opens `DECISIONS: - None made yet; the user is still choosing…`, which survives.
+- **Short answers are not summaries (v2.9.8).** The check first lived in `callLLM` itself, which every generation passes through — including the ones whose answer is one line by design: the intent classifier (`SAVE|…`), the list of ids to forget, the notification blurb. Each of those leaves almost no residue, so the guard returned `''` and the caller fell back to "nothing matched" (13 of 20 intents came back `NONE` in a benchmark, every one of them a `SAVE` or `FORGET`). `callLLM` now only handles degenerate output; the "reports nothing" check sits in `callLLMForSummary`, and only prompts that ask for a summary call it.
 
 A note on the debugging, because it cost a round: The Secretary writes to the **project-local** DB (`<project>/.claude/the-secretary/summaries.db`), not the global one. Checking the global DB showed "0 rows written" and the guard looked like it worked while the junk was being stored all along — a passing check against the wrong target is worse than no check.
 
@@ -201,6 +213,8 @@ The Secretary handles this automatically:
 
 The check is cheap (a single SQLite query per prompt) and fires only when there is genuinely new content to show. No-op for sessions that had nothing pending.
 
+**Waiting for the handoff without a prompt (v2.8.0).** The notice above needs the user to type something first. On `/clear` an async SessionStart hook (`await-handoff --rewake`, `asyncRewake`) waits for the previous session's handoff worker instead, and when that worker exits it wakes Claude with what was stored — or with a one-line notice that the handoff added nothing, so every `/clear` ends with a visible answer. While it waits, the status line (`handoff-status`, [`statusline.json`](statusline.json)) shows `⏳ The Secretary: waiting for the previous handoff` plus a spinner, and goes blank once it is done. If the user does type first, the prompt hook prints the pending notice together with the `await-handoff` command for Claude to run in the background.
+
 ## How it works
 
 1. **PostToolUse hook** — On every tool call, scans user messages for secretary orders (save / forget) via regex. Every N calls (default: 15), summarizes conversation via local LLM.
@@ -209,7 +223,7 @@ The check is cheap (a single SQLite query per prompt) and fires only when there 
      - **Budget by role** — user turns are admitted first, then assistant turns, and tool traffic only fills what is left over. Tool output can no longer crowd out what was actually said.
      - **Newest-first selection** — the budget is filled walking backwards from the end of the session, so the summary reflects the *current* state rather than the stale opening. The selected turns are re-emitted in chronological order.
 2. **UserPromptSubmit hook** — On every user prompt, detects recall-style questions (`¿recuerdas?`, `do you remember`, etc.) and auto-injects matching snippets from cache + DB.
-3. **PreCompact hook** — Forces a final summary before Claude's compaction, then blocks it and suggests `/clear`.
+3. **PreCompact hook** — Indexes the pending turns and forces a final summary before Claude's compaction. The compaction itself still proceeds; when the session has summaries stored, the hook notes that `/clear` would load them instead.
 4. **SessionStart hook** — On `/clear`, `startup`, or `resume`, restores context from the project's own DB (root resolved from the filesystem, so it matches the whole project tree, not just the exact cwd):
    - **Manually injected context** — items added with `inject` are printed **verbatim**, never LLM-consolidated: they are hand-curated, so paraphrasing them only loses detail
    - **Session handoff brief** (📋) from the previous session's Stop hook — the dense "how to resume" doc
@@ -217,7 +231,7 @@ The check is cheap (a single SQLite query per prompt) and fires only when there 
    - **Latest N items** (🕑) — the N most recent summaries across the project tree, newest-first (`restore_recent_items`, default 15)
    - Consolidated conversation summary (loaded from per-project cache — see below) as background
    - Saved items — one flat list, oldest first
-5. **Stop hook** — Generates a session **handoff brief** (richer than the regular summary, structured so the next session can resume without explanation), then shuts down the LLM server.
+5. **Stop hook** — Generates a session **handoff brief** (richer than the regular summary, structured so the next session can resume without explanation). The LLM server is shared by every session and is left running; `start-llm.sh`'s idle reaper stops it after `SECRETARY_LLM_IDLE_MIN` minutes (default 45) without use.
 
 ### Incremental bullets cache (per-project)
 
@@ -240,11 +254,14 @@ PostToolUse fires on every tool call, which on slower machines (e.g. base M1) ca
 
 `start-llm.sh` picks the MLX model based on total unified memory (`sysctl hw.memsize`):
 
-| Unified memory | Model | RAM use | Speed (M-series) | Hallucination |
-|---|---|---|---|---|
-| ≥ 32 GB | `mlx-community/Qwen2.5-7B-Instruct-4bit` | ~4.5 GB | ~50 tok/s | very low |
-| 16 – 31 GB | `mlx-community/Qwen2.5-3B-Instruct-4bit` | ~2 GB | ~80 tok/s | low |
-| < 16 GB | `mlx-community/Qwen2.5-1.5B-Instruct-4bit` | ~1 GB | ~120 tok/s | medium |
+| Unified memory | Model | RAM use | Notes |
+|---|---|---|---|
+| ≥ 48 GB | `mlx-community/gemma-4-26B-A4B-it-qat-4bit` | ~14 GB | fewest hallucinations; needs `mlx_lm >= 0.31.3` |
+| 32 – 47 GB | `mlx-community/Qwen2.5-7B-Instruct-4bit` | ~4 GB | good accuracy/speed balance |
+| 16 – 31 GB | `mlx-community/Qwen2.5-3B-Instruct-4bit` | ~2 GB | ~80 tok/s |
+| < 16 GB | `mlx-community/Qwen2.5-1.5B-Instruct-4bit` | ~1 GB | fastest |
+
+With `provider: claude_cli` no local model is loaded at all: `start-llm.sh start` exits without starting a server.
 
 Override with env var `SECRETARY_MLX_MODEL=<repo>` (e.g. force 7B on a 16 GB machine if you have RAM headroom).
 
@@ -268,7 +285,7 @@ One table, one shape. `session_id` is always the session that produced the row; 
 
 There are no type prefixes, no `due_at` and no `status` column.
 
-## Search: literal first, semantic only as a fallback
+## Search: literal and semantic, fused
 
 Two indexes, because they fail in opposite ways. Measured on a real 1.8k-turn project:
 
@@ -279,14 +296,37 @@ Two indexes, because they fail in opposite ways. Measured on a real 1.8k-turn pr
 | literal recall overall | exact | **8%** |
 | "espaciado vertical" → the turn saying *"les falta gap vertical"* | 0 hits (or 1000+ OR-noise) | **finds it** |
 
-So FTS5 runs first and owns the literal answer — and its **zero is meaningful**: it means
-the phrase is genuinely not in the memory. Vectors run only when FTS5 came up short, and
-their hits are tagged `[said~]` / `[turn~]`.
+Until v2.4 vectors ran only when FTS5 came up short. On a 10k-turn index that never
+happens: an OR query always fills every slot with rows that merely share a word, so the
+semantic half never ran. Asked "the site I said was similar to X", it returned five rows
+containing "similar" or "X" and never the one saying "a site like X". Both lists now run
+on every search and are merged:
+
+- **FTS5 order:** rows covering more *distinct* query terms first, `bm25` only breaking
+  ties. `bm25` alone let a short row holding one filler word ("mentioned") outrank rows
+  matching the real subjects.
+- **Reciprocal rank fusion** (`1/(60+rank)` summed over both lists): a row that ranks
+  well in both rises to the top.
+- **Exact rows stay first.** A row holding *every* query term is the literal answer (an
+  identifier, a quoted phrase); vectors recover ~0% of those, so no vector hit outranks it.
+- A row found only by vectors is tagged `[said~]` / `[turn~]`. No `[said]`/`[turn]` hit
+  still means the phrase is genuinely not in the memory.
+- The query embedding costs ~1.8 s and runs only on recall-style prompts. It waits at
+  most 2 s for the GPU lock (the prompt hook has a 10 s budget); if `index-vectors` holds
+  it, the search returns the literal half instead of timing out with nothing.
 
 **A vector hit is not evidence.** Calibrating the threshold showed real topics scoring
 0.58–0.78 and *invented* ones 0.55–0.65 — the ranges overlap, so no cutoff separates them.
-The threshold (0.62) drops most invented queries, but anything that survives means
-"similar wording exists", never "this was discussed". Only an FTS5 hit proves that.
+Anything a vector finds means "similar wording exists", never "this was discussed". Only
+an FTS5 hit proves that. The old cutoff (0.62) made sense for a standalone fallback; fused,
+the *rank* decides, and 0.62 threw real answers away — the turn a recall question was
+about ranked 9th of 10k at 0.582. The floor is now 0.5 and only drops the plainly unrelated.
+
+Set `SECRETARY_DEBUG=1` to print both lists and the fused order to stderr:
+
+```bash
+echo '{"prompt":"do you remember X?","cwd":"'$PWD'"}' | SECRETARY_DEBUG=1 node ~/.claude/the-secretary/summarize.mjs user-prompt
+```
 
 Both indexes refresh themselves: `SessionStart` runs `sync`, which spawns a detached
 worker and returns in ~50 ms, so indexing never delays the prompt. The same per-project
@@ -311,7 +351,7 @@ silently stays on FTS5 — nothing breaks. Both indexes live inside the project'
 - **macOS or Linux**
 - **Node.js** ≥ 18
 - **LLM backend**: MLX (recommended for Apple Silicon) or llama.cpp
-- **~1–5 GB disk space** for the model (auto-downloaded by MLX on first run, or GGUF path)
+- **~1–15 GB disk space** for the model (auto-downloaded by MLX on first run, or GGUF path; ~15 GB is gemma-4-26B on machines with ≥ 48 GB). None with `provider: claude_cli`
 - **Claude Code** CLI
 
 ### Installing a backend
@@ -334,11 +374,18 @@ The installer will:
 1. Migrate any legacy install from `~/.claude/summarizer/` to `~/.claude/the-secretary/` (preserves DB, models, watermarks, cache)
 2. Create `~/.claude/the-secretary/` with all files
 3. Install the `the-secretary` skill at `~/.claude/skills/the-secretary/` (defines the behavior rules Claude must follow)
-4. Install `better-sqlite3` dependency
-5. Download a Qwen 2.5 model sized to your machine (MLX downloads on first run; llama.cpp uses the bundled 3B GGUF)
-6. Merge hooks into `~/.claude/settings.json`
+4. Install the `better-sqlite3` and `sqlite-vec` dependencies
+5. Set up the summary model: MLX downloads the one sized to your machine on first run (see [Model auto-selection by RAM](#model-auto-selection-by-ram)); without MLX, the 3B GGUF for llama.cpp is downloaded now
+6. Merge hooks into `~/.claude/settings.json` and set its `statusLine` (an existing status line of yours is kept)
 7. Inject a pointer to the skill into `~/.claude/CLAUDE.md`
 8. Start the LLM server and verify
+
+Two steps stay manual (both in [INSTALL.md](INSTALL.md)):
+
+- **Semantic index (optional):** create the embedding venv (`python3 -m venv ~/.claude/the-secretary/venv && ~/.claude/the-secretary/venv/bin/pip install mlx-embeddings numpy`). Without it search stays literal.
+- **Backfill each project:** from each project root, `index-turns` then `index-vectors`. After that `SessionStart` keeps both indexes current.
+
+**Upgrading from v2.4.x:** re-run `install.sh`, then once per project run `index-turns --rebuild` and `index-vectors`. That fills the gaps older versions left in the index (see [The transcript is the source of truth](#the-transcript-is-the-source-of-truth-v250) and [INSTALL.md → Upgrading](INSTALL.md#upgrading-from-v24x-to-v250)).
 
 For manual installation, see [INSTALL.md](INSTALL.md).
 
@@ -357,6 +404,15 @@ echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/the-secretary/summarize.mjs recall
 # Search cache + DB for any query (on-demand)
 node ~/.claude/the-secretary/summarize.mjs search "template 691"
 
+# Same search with both ranked lists and the fused order printed to stderr
+SECRETARY_DEBUG=1 node ~/.claude/the-secretary/summarize.mjs search "template 691"
+
+# Verbatim index, from the project root (reads ~/.claude/projects/<slug>/*.jsonl)
+node ~/.claude/the-secretary/summarize.mjs index-turns            # only what is new
+node ~/.claude/the-secretary/summarize.mjs index-turns --rebuild  # re-read every transcript on disk
+node ~/.claude/the-secretary/summarize.mjs index-vectors          # embed rows that have no vector yet
+node ~/.claude/the-secretary/summarize.mjs sync                   # both, detached (what SessionStart runs)
+
 # Move every per-project row out of the global DB into each project's own DB.
 # Each project keeps its memory inside itself (portable); the global DB is left
 # holding only '__global__' notes. Rows whose directory no longer exists cannot
@@ -368,7 +424,22 @@ node ~/.claude/the-secretary/summarize.mjs drain-global
 ## Where the data lives
 
 Each project stores its own memory in `<project>/.claude/the-secretary/summaries.db`,
-so moving or copying the project takes its history with it. The global DB
+so moving or copying the project takes its history with it.
+
+```
+<project>/.claude/the-secretary/
+├── .gitignore        ← "*": nothing here is ever committed
+├── summaries.db
+│   ├── summaries     ← LLM summaries + saved items (notes, reminders)
+│   ├── turns         ← FTS5: every user/assistant message, verbatim, in ≤800-char chunks
+│   ├── vturns        ← sqlite-vec: one 1024-d vector per chunk (rowid = turns.rowid)
+│   └── state         ← cursors: fts-line:<session> (index), offset:<session> (summarizer)
+├── bullets.md        ← distilled bullets injected at SessionStart
+└── images/           ← screenshots pasted in the chat, <sha1>.<ext>
+```
+
+The two cursors are independent on purpose: the summarizer may skip ahead, the index
+never does. The global DB
 (`~/.claude/the-secretary/summaries.db`) holds only `__global__` notes — items
 you saved that are not tied to any project. Opening a project moves any of its
 rows still sitting in the global DB into the project's DB, deleting them from
@@ -383,23 +454,85 @@ Edit `~/.claude/the-secretary/config.json`:
 | `provider` | `local` | `local` (MLX/llama.cpp server) or `claude_cli` (uses your Claude Max subscription via the `claude` CLI) |
 | `summarize_every_n` | `15` | Summarize every N tool calls |
 | `min_new_chars` | `2000` | Minimum new content before summarizing |
-| `max_summary_tokens` | `1500` | Max tokens for summary output |
+| `max_summary_tokens` | `800` | Max tokens for summary output |
 | `restore_recent_items` | `15` | How many recent items the `🕑 Latest N items` restore block shows (newest-first, across the whole project tree) |
 | `llm_url` | `http://localhost:8922/v1/chat/completions` | OpenAI-compatible endpoint (used when `provider=local`) |
-| `claude_bin` | `/opt/homebrew/bin/claude` | Path to the `claude` binary (used when `provider=claude_cli`) |
+| `claude_bin` | `~/.local/bin/claude` | Path to the `claude` binary (used when `provider=claude_cli`). Defaults to the native installer's copy, the one that updates itself. If it does not exist, `~/.local/bin/claude`, `/opt/homebrew/bin/claude` and `/usr/local/bin/claude` are tried |
 | `claude_model` | `claude-haiku-4-5` | Model passed to `claude -p --model` |
 | `db_path` | `~/.claude/the-secretary/summaries.db` | GLOBAL SQLite DB path (only `__global__` items; per-project data lives in `<projectRoot>/.claude/the-secretary/summaries.db`) |
+| `embed_python` | `~/.claude/the-secretary/venv/bin/python` | Interpreter with `mlx-embeddings` for the semantic index (optional key) |
+
+Environment: `SECRETARY_DEBUG=1` traces the search ranking to stderr; `SECRETARY_MLX_MODEL` forces the summary model.
 
 ### Provider: `claude_cli` (Claude Max)
 
-When set, summaries are generated by spawning `claude -p --model <claude_model> --output-format json` instead of hitting the local MLX server. No API key is needed — it reuses the authenticated session of your `claude` CLI (Max / Pro subscription).
+When set, summaries are generated by spawning `claude -p --model <claude_model> --output-format json --no-session-persistence --settings '{"disableAllHooks":true}'` instead of hitting the local MLX server, and `start-llm.sh start` leaves the local server down. Hooks are off for that call on purpose: it is a Claude session too, and with hooks on its Stop hook would run The Secretary again. No API key is needed — it reuses the authenticated session of your `claude` CLI (Max / Pro subscription).
 
 Built-in safeguards:
 
 - **Strict success parsing.** A response is only accepted if `subtype === 'success'`, `errors[]` is empty, and `result` is a non-empty string. Any other shape is treated as a failure (no silent passes).
 - **Cooldown after repeated failures.** After 2 consecutive failures the provider is marked degraded for 10 minutes (state persisted at `/tmp/secretary-claude-cli-degraded.json`), so the secretary stops retrying on every tool call.
 
-> **Note (May 2026):** `claude -p --model claude-haiku-4-5` currently returns `subtype: "error_during_execution"` due to an upstream bug in `@anthropic-ai/claude-code` (see issue [#52178](https://github.com/anthropics/claude-code/issues/52178)). Until that ships a fix, use `provider=local` or set `claude_model` to `claude-sonnet-4-5` (more expensive, consumes more of your Max quota).
+> **Note:** on Claude Code 2.1.x before the fix for issue [#52178](https://github.com/anthropics/claude-code/issues/52178), `claude -p --model claude-haiku-4-5` returned `subtype: "error_during_execution"`. It works as of 2.1.289; on an older CLI use `provider=local` or a different `claude_model`.
+
+## Local hooks (machine-specific behaviour)
+
+Behaviour that only makes sense on one machine does not belong in the shipped files: the next `install.sh` would overwrite it, and everybody else would get code they never asked for. It goes in `~/.claude/the-secretary/local/` instead. That folder is never shipped and `install.sh` never writes into it, so it survives every upgrade (only `--uninstall` removes it, together with the rest of the install directory). Without it nothing changes: every hook is a no-op.
+
+Two files, one per runtime, both optional:
+
+| File | Loaded by | Hooks it may define |
+|---|---|---|
+| `local/hooks.mjs` | `summarize.mjs` (ES module, loaded once at startup) | `export function gpuHeldExternally()` |
+| `local/hooks.sh` | `start-llm.sh` (sourced before the command runs) | `local_before_start`, `local_on_server_up`, `local_command` |
+
+**`summarize.mjs` hooks**
+
+- `gpuHeldExternally()` — synchronous, returns `true` while something outside The Secretary needs the GPU to itself. While it holds, the GPU lock counts as taken (embeddings wait), the background summarizer waits before it starts (its text stays in memory, nothing is dropped or sent online), and a request to the local LLM that failed meanwhile is retried up to three times once the hold ends. A hook that throws counts as `false`; a file that fails to load is reported on stderr and ignored.
+
+**`start-llm.sh` hooks**
+
+- `local_before_start` — runs before a server is spawned. `exit` with a non-zero status to veto the start; callers treat that as "no LLM available".
+- `local_on_server_up` — runs every time a live server is found, adopted or freshly started. The place to attach a watcher to it.
+- `local_command <name>` — receives any command `start-llm.sh` does not know, so the file can add its own (`bash start-llm.sh <name>`).
+
+The file is sourced after `PORT`, `LOG`, `PID_FILE` and `ACTIVITY_FILE` are set, so the hooks can use them.
+
+**Example — yield the GPU to a benchmark.** Another program creates a reservation file while it measures; The Secretary stays off the GPU until the file goes away:
+
+```js
+// ~/.claude/the-secretary/local/hooks.mjs
+import { statSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
+
+const RESERVATION = join(homedir(), '.claude', 'gpu-busy.lock');
+const STALE_MS = 20 * 60 * 1000; // its holder died: ignore it
+
+export function gpuHeldExternally() {
+  try { return Date.now() - statSync(RESERVATION).mtimeMs < STALE_MS; }
+  catch { return false; }
+}
+```
+
+```bash
+# ~/.claude/the-secretary/local/hooks.sh
+RESERVATION="$HOME/.claude/gpu-busy.lock"
+
+gpu_reserved() {
+  [ -f "$RESERVATION" ] && [ -n "$(find "$RESERVATION" -mmin -20 2>/dev/null)" ]
+}
+
+# Don't load the model while the reservation holds
+local_before_start() {
+  if gpu_reserved; then
+    echo "GPU reserved: not starting the LLM server"
+    exit 3
+  fi
+}
+```
+
+`local_on_server_up` can go one step further and start a watcher that freezes a server that is already up (`kill -STOP`) while the reservation holds and resumes it afterwards (`kill -CONT`): the model stays in memory but leaves the GPU at once.
 
 ## Uninstalling
 
@@ -414,14 +547,42 @@ TheSecretary/
 ├── README.md           ← You are here
 ├── INSTALL.md          ← Manual installation guide
 ├── install.sh          ← Automatic installer/uninstaller
-├── hooks.json          ← Hook definitions
+├── hooks.json          ← Hook definitions (single source of truth)
+├── statusline.json     ← Status line definition (handoff wait notice)
+├── skill/
+│   └── SKILL.md        ← Behavior rules; its `version:` is the package version
+├── backups/            ← Previous versions (gitignored)
 └── src/
     ├── summarize.mjs   ← Main secretary script
+    ├── embed.py        ← Embedding helper (Qwen3-Embedding-0.6B via MLX)
     ├── start-llm.sh    ← LLM server manager
     ├── config.json     ← Default configuration
-    ├── package.json    ← Node.js dependencies
+    ├── package.json    ← Node.js dependencies (better-sqlite3, sqlite-vec)
+    ├── inject-claude-md.mjs ← Writes the versioned CLAUDE.md section
     └── claude-md-snippet.md ← CLAUDE.md docs snippet
+
+~/.claude/the-secretary/local/   ← Optional, yours: never shipped, never overwritten
+├── hooks.mjs           ← Local hooks for summarize.mjs
+└── hooks.sh            ← Local hooks for start-llm.sh
 ```
+
+## Changelog
+
+| Version | Date | Change |
+|---|---|---|
+| 2.9.8 | 2026-10-10 | Short LLM answers reach their caller again: the "reports nothing" guard sat in `callLLM` and discarded every one-line answer (intent `SAVE`/`FORGET`, ids to forget, notification blurb) as an empty summary, so saves and deletions detected by the LLM fell back to `NONE`. The guard moved to `callLLMForSummary`, which only summary prompts call |
+| 2.9.7 | 2026-10-09 | A recall question now loads the skill every time: the `UserPromptSubmit` hook prints an order to call `Skill` with `the-secretary` as the first tool call of the turn, before any other branch, and the `CLAUDE.md` snippet states the same. With the handoff already in context Claude answered straight from it and skipped the skill |
+| 2.9.6 | 2026-10-09 | "Where were we" questions ("por dónde vamos", "dónde lo dejamos", "where were we") are answered from the session handoff alone: the rule is in the `CLAUDE.md` snippet and in the skill's "Trust injected context" triggers, so Claude no longer runs `git status` or grep to rebuild the state the handoff already holds |
+| 2.9.5 | 2026-10-08 | `claude_bin` defaults to `~/.local/bin/claude` (the native installer's copy) instead of `/opt/homebrew/bin/claude`. A global npm install left behind next to the native one stays at its old version, and an old CLI warms up its built-in agents on every start: each summary carried an extra request on the user's main model and another on the previous Haiku, several times the cost of the summary itself |
+| 2.9.4 | 2026-10-05 | `provider: claude_cli` no longer feeds on itself: every `claude -p` The Secretary spawned was a session of its own, whose Stop hook ran The Secretary again and spawned the next one — an unbounded chain of summaries of summaries (28 sessions in three minutes). The call now runs with `--settings '{"disableAllHooks":true}'` and `--no-session-persistence`, so it fires no hooks and leaves no transcript in the project folder. `start-llm.sh start` does nothing when the provider is `claude_cli` (the SessionStart and PreCompact hooks used to launch a local server nothing talked to). `claude_bin` falls back to the known install locations (`~/.local/bin`, Homebrew, `/usr/local/bin`) when the configured path does not exist. `install.sh` keeps an existing `config.json` instead of overwriting it |
+| 2.9.3 | 2026-10-05 | The wait for the previous session's handoff after `/clear` is now visible: a `statusLine` command (`handoff-status`, `statusline.json`, `refreshInterval: 1`) prints `⏳ The Secretary: waiting for the previous handoff` plus an animated spinner while it is being written; `install.sh` sets it unless a status line of your own is already configured, and removes it on uninstall |
+| 2.9.2 | 2026-10-05 | Handoffs no longer vanish when two summarizer workers overlap: `start-llm.sh` killed everything returned by `lsof -ti:$PORT`, which includes the workers connected to the server, so a worker with a request in flight died with no error and no summary (`port_listener_pids` now targets the listener only); workers no longer stop the shared LLM server, an idle reaper started with the server runs `stop-if-idle` once a minute and `ensureLLMRunning` records each use with `touch`; a dropped summary now logs why |
+| 2.9.1 | 2026-10-05 | `await-handoff --rewake` wakes Claude after every `/clear`, also when the previous session's handoff added nothing (it used to exit silently, so a short session looked like the hook never ran); `rewakeSummary` / `rewakeMessage` label the wake-up; with `SECRETARY_DEBUG` the handoff worker's stderr and the raw LLM answer go to `$TMPDIR/secretary-worker-debug.log` |
+| 2.9.0 | 2026-10-05 | Local hooks: optional `~/.claude/the-secretary/local/hooks.mjs` and `hooks.sh` hold machine-specific behaviour (`gpuHeldExternally`, `local_before_start`, `local_on_server_up`, `local_command`) outside the shipped files, so it survives `install.sh` |
+| 2.8.0 | 2026-10-05 | After `/clear`, an async SessionStart hook (`await-handoff --rewake`, `asyncRewake`) waits for the previous session's handoff and wakes Claude with it, so the user no longer has to type a first prompt to get the fresh context |
+| 2.5.0 | 2026-09-25 | Transcript is the source of truth: the index reads the transcripts with its own cursor from every hook (pure-chat turns were being dropped), stores full turns in 800-char chunks (no 3000-char cut), saves pasted screenshots to `images/`; `index-turns --rebuild`; search fuses FTS5 and vectors (coverage-ranked FTS, reciprocal rank fusion, exact rows first, duplicates collapsed); vector floor 0.62 → 0.5; 2 s GPU-lock wait during search; embedder cap 512 → 1000 chars; `SECRETARY_DEBUG` |
+| 2.4.1 | 2026-09-21 | Discard summaries that report nothing |
+| 2.4.0 | 2026-09-21 | Files-touched manifest stops the handoff inventing paths; gemma-4-26B-A4B on ≥48 GB |
 
 ## Troubleshooting
 

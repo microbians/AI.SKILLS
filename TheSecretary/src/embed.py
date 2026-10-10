@@ -46,7 +46,9 @@ def main():
     batch = int(payload.get("batch") or 32)
     try:
         for i in range(0, len(texts), batch):
-            chunk = [t[:512] for t in texts[i:i + batch]]
+            # Turns are stored in ≤800-char chunks (TURN_CHUNK_CHARS in summarize.mjs);
+            # this cap only guards against rows written before chunking existed.
+            chunk = [t[:1000] for t in texts[i:i + batch]]
             emb = generate(model, tokenizer, texts=chunk).text_embeds
             # mlx may hand back bfloat16, which numpy cannot view directly.
             cast = emb.astype(mx.float32)

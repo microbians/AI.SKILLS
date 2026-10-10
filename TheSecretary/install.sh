@@ -71,6 +71,8 @@ if [ "$1" = "--uninstall" ]; then
         }
         if (Object.keys(s.hooks).length === 0) delete s.hooks;
       }
+      // Remove our status line (never someone else's)
+      if (s.statusLine?.command?.includes('summarize')) delete s.statusLine;
       // Remove permissions
       if (s.permissions?.allow) {
         s.permissions.allow = s.permissions.allow.filter(p => !p.includes('summarize') && !p.includes('start-llm'));
@@ -169,7 +171,10 @@ info "Copying source files..."
 cp "$SCRIPT_DIR/src/summarize.mjs" "$DEST/"
 cp "$SCRIPT_DIR/src/embed.py" "$DEST/"
 cp "$SCRIPT_DIR/src/start-llm.sh" "$DEST/"
-cp "$SCRIPT_DIR/src/config.json" "$DEST/"
+# config.json holds the user's choices (provider, model, thresholds): only a
+# fresh install gets the shipped one. Keys added later need no merge here,
+# summarize.mjs fills any missing key from its own defaults.
+[ -f "$DEST/config.json" ] || cp "$SCRIPT_DIR/src/config.json" "$DEST/"
 cp "$SCRIPT_DIR/src/package.json" "$DEST/"
 cp "$SCRIPT_DIR/src/inject-claude-md.mjs" "$DEST/"
 chmod +x "$DEST/start-llm.sh"
@@ -188,7 +193,7 @@ info "Dependencies installed."
 
 # 4. Download model
 if [ "$HAS_MLX" = true ]; then
-  info "MLX will download the model automatically on first use (mlx-community/Qwen2.5-3B-Instruct-4bit)"
+  info "MLX will download the model automatically on first use (picked by unified memory, see start-llm.sh)"
   info "Skipping GGUF model download."
 elif [ ! -f "$DEST/models/$MODEL_FILE" ]; then
   echo ""
@@ -223,12 +228,14 @@ if [ ! -f "$SETTINGS" ]; then
 fi
 
 HOOKS_FILE="$SCRIPT_DIR/hooks.json"
+STATUSLINE_FILE="$SCRIPT_DIR/statusline.json"
 
 node -e "
   const fs = require('fs');
 
   const settings = JSON.parse(fs.readFileSync('$SETTINGS', 'utf-8'));
   const newHooks = JSON.parse(fs.readFileSync('$HOOKS_FILE', 'utf-8'));
+  const newStatusLine = JSON.parse(fs.readFileSync('$STATUSLINE_FILE', 'utf-8'));
 
   if (!settings.hooks) settings.hooks = {};
 
@@ -241,6 +248,14 @@ node -e "
     );
 
     settings.hooks[event].push(...matchers);
+  }
+
+  // The status line shows the wait for the previous session's handoff after
+  // /clear. Claude Code has ONE status line: a foreign one is left alone.
+  if (!settings.statusLine || settings.statusLine.command?.includes('summarize')) {
+    settings.statusLine = newStatusLine;
+  } else {
+    console.log('[!] settings.json already has a statusLine — kept as is; the handoff wait will not be shown (see INSTALL.md step 5)');
   }
 
   if (!settings.permissions) settings.permissions = {};
@@ -336,14 +351,28 @@ echo "════════════════════════�
 echo ""
 echo "  Files:    $DEST/"
 echo "  Config:   $DEST/config.json"
-echo "  Database: $DEST/summaries.db (created on first use)"
+echo "  Data:     <project>/.claude/the-secretary/ (per project; global notes in $DEST/summaries.db)"
 echo ""
 echo "  Features:"
+echo "    - Every conversation stored verbatim (screenshots included), searchable by words and meaning"
 echo "    - Conversation summarization (automatic)"
 echo "    - One flat index, no memory types"
 echo "    - Save:   \"recuerda que...\" / \"toma nota:\" / \"avísame el viernes...\""
 echo "    - Forget: \"olvida que...\" / \"borra la nota de...\" / \"ya hice...\""
 echo ""
+if [ ! -x "$DEST/venv/bin/python" ]; then
+  echo "  Optional semantic search (not installed): see INSTALL.md step 4"
+  echo ""
+fi
+# Upgrades from before 2.5 leave gaps in each project's verbatim index that
+# only a rebuild repairs; say so instead of letting the gap go unnoticed.
+case "$PKG_INSTALLED" in
+  1.*|2.[0-4].*)
+    warn "Upgraded from v$PKG_INSTALLED: once per project, from its root, run"
+    echo "    node $DEST/summarize.mjs index-turns --rebuild && node $DEST/summarize.mjs index-vectors"
+    echo ""
+    ;;
+esac
 echo "  Restart Claude Code to activate the hooks."
 echo "  To uninstall: bash $SCRIPT_DIR/install.sh --uninstall"
 echo ""

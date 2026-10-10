@@ -99,6 +99,9 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 
 **Key features:**
 - **Per-project storage (memory travels with the folder)** — each project keeps its own SQLite DB + bullets cache inside the project at `<projectRoot>/.claude/the-secretary/`; copy or sync the folder anywhere and its memory goes with it. Only items marked `global` live in the shared DB at `~/.claude/the-secretary/`. Legacy global data is migrated automatically (non-destructively) the first time a project opens
+- **Verbatim conversation index (v2.5.0)** — every user/assistant message is read straight from Claude Code's transcripts by every hook (its own cursor, so no turn is skipped), stored whole in 800-char chunks with pasted screenshots saved to `images/`, and kept after Claude Code deletes the transcript. Search fuses FTS5 (literal) and sqlite-vec (meaning) with reciprocal rank fusion; exact matches always first. Upgrade: `index-turns --rebuild` once per project
+- **Handoff wait after `/clear` (v2.8.0)** — an async SessionStart hook waits for the previous session's handoff and wakes Claude with it, so no first prompt is needed; a status line shows the wait
+- **Local hooks (v2.9.0)** — machine-specific behaviour lives in `~/.claude/the-secretary/local/`, which `install.sh` never overwrites
 - **Recall-on-demand** — detects recall-style prompts (`do you remember`, `do you recall`, `remember when`, plus `¿recuerdas?` / `te acuerdas?` in Spanish) via UserPromptSubmit hook and auto-injects matching snippets from cache + DB before Claude replies
 - **Chunked summarization + immediate LLM call** — conversation is broken into bounded chunks (every `summarize_every_n` tool calls, minimum `min_new_chars` of new content), each chunk is sent to the local LLM right away for a fresh summary, then stored with an incremental `chunk_index` in SQLite and appended to the per-project `.md` cache. This keeps every LLM call small and fast, prevents context blow-up, and ensures no long conversation is ever summarized in a single oversized request
 - **Consolidation + compaction pass** — on session end / restore, chunks are consolidated into a single summary; if the merged summary exceeds the size budget, a second LLM pass compacts it under 3500 chars while preserving critical info
@@ -110,11 +113,11 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 - SQLite storage for persistent summaries across sessions (per-project DB + attached global DB, unified `all_items` view)
 - Configurable: model, summarization frequency (`summarize_every_n`), min content threshold (`min_new_chars`), token limits, remote LLM support
 
-**Includes:** `summarize.mjs`, `start-llm.sh`, `config.json`, `hooks.json`, `install.sh`, `claude-md-snippet.md`, `skill/SKILL.md` (behavior rules skill, installed to `~/.claude/skills/the-secretary/`)
+**Includes:** `summarize.mjs`, `embed.py`, `start-llm.sh`, `config.json`, `inject-claude-md.mjs`, `hooks.json`, `statusline.json`, `install.sh`, `claude-md-snippet.md`, `skill/SKILL.md` (behavior rules skill, installed to `~/.claude/skills/the-secretary/`)
 
 **Install path:** `~/.claude/the-secretary/` (engine, config, LLM; auto-migrates from legacy `~/.claude/summarizer/` on re-install). Project data lives in each project's `.claude/the-secretary/`.
 
-**Requirements:** macOS/Linux, Node.js 18+, llama-server (llama.cpp) or MLX in PATH, ~2GB disk for the GGUF model
+**Requirements:** macOS/Linux, Node.js 18+, llama-server (llama.cpp) or MLX in PATH, ~1–15 GB disk for the summary model (sized by RAM; none with `provider: claude_cli`). Optional semantic search: a venv with `mlx-embeddings` (Apple Silicon, ~600 MB model) — see `TheSecretary/INSTALL.md`
 
 ---
 
@@ -570,6 +573,9 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-10-10 | TheSecretary v2.9.8: short LLM answers (intents, ids to forget, notification blurb) are no longer discarded as empty summaries; docs brought in line with the code (model table by RAM, hook table, installer steps). CLAUDE.Global v1.3.2: two rules added (read what an edit refers to first; hover-revealed controls toggle `visibility`) |
+| 2026-10-09 | TheSecretary v2.8.0–v2.9.7: handoff wait after `/clear` (async `await-handoff --rewake` hook + status line), local hooks folder, idle reaper for the shared LLM server, `claude_cli` provider no longer spawns itself, recall and "where were we" questions answered from the skill and the handoff — see `TheSecretary/README.md` changelog |
+| 2026-09-25 | TheSecretary v2.5.0: transcript as source of truth — index reads transcripts with its own cursor from every hook (pure-chat turns were dropped), full turns in 800-char chunks, pasted screenshots persisted, `index-turns --rebuild`; search fuses FTS5 + vectors (RRF, exact-first, dedupe), vector floor 0.62 → 0.5; INSTALL.md rewritten (hooks from `hooks.json`, embedding venv, upgrade steps) |
 | 2026-07-22 | TheSecretary: per-project storage — DB + bullets cache move into `<projectRoot>/.claude/the-secretary/` so memory travels with the folder; global DB keeps only `global` items (attached via unified `all_items` view); filesystem-based project-root resolution; automatic non-destructive migration from the old global DB and legacy cache |
 | 2026-07-09 | CLAUDE.Global: restructure behavior rules as terse headline + enforcement detail        |
 | 2026-06-22 | CodeIndex: relational edge graph (`callers`/`deps`/`arch`/`flow`), JS embedded in PHP/HTML templates, hardened non-git fallback + OOM/large-line guards |

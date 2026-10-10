@@ -1,0 +1,5 @@
+{
+  "type": "command",
+  "command": "node ~/.claude/the-secretary/summarize.mjs handoff-status",
+  "refreshInterval": 1
+}

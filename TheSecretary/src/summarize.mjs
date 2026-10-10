@@ -21,7 +21,7 @@
  * Reads hook JSON from stdin.
  */
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, rmSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, rmSync, openSync } from 'fs';
 import { join, basename } from 'path';
 import { homedir, tmpdir } from 'os';
 import { createHash } from 'crypto';
@@ -34,10 +34,27 @@ import http from 'http';
 const SECRETARY_DIR = join(homedir(), '.claude', 'the-secretary');
 const CONFIG_PATH = join(SECRETARY_DIR, 'config.json');
 
+// The `claude` binary moves with the way it was installed (Homebrew, the
+// native installer, npm). A configured path that no longer exists falls back
+// to the known locations instead of failing every summary. The native
+// installer's copy is the default because it is the one that updates itself:
+// a global npm install left behind keeps its old version, and an old CLI
+// warms up its built-in agents on every start (one extra request on the
+// user's main model per summary).
+function resolveClaudeBin(configured) {
+  const candidates = [
+    configured,
+    join(homedir(), '.local', 'bin', 'claude'),
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+  ].filter(Boolean).map(p => p.replace(/^~/, homedir()));
+  return candidates.find(p => existsSync(p)) || configured;
+}
+
 function loadConfig() {
   const defaults = {
     provider: 'claude_cli',
-    claude_bin: '/opt/homebrew/bin/claude',
+    claude_bin: resolveClaudeBin('~/.local/bin/claude'),
     claude_model: 'claude-haiku-4-5',
     llm_url: 'http://localhost:8922/v1/chat/completions',
     model: 'qwen2.5-3b-instruct-q4_k_m.gguf',
@@ -51,6 +68,7 @@ function loadConfig() {
     const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
     const merged = { ...defaults, ...raw };
     merged.db_path = merged.db_path.replace(/^~/, homedir());
+    merged.claude_bin = resolveClaudeBin(merged.claude_bin);
     return merged;
   } catch {
     return defaults;
@@ -634,10 +652,24 @@ function reportsNothing(text) {
 }
 
 async function callLLM(prompt, maxTokens = config.max_summary_tokens) {
-  const raw = await requestLLM(prompt, maxTokens);
-  if (reportsNothing(raw)) {
-    process.stderr.write('the-secretary: discarded LLM output (reports no content)\n');
-    return '';
+  let raw;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      raw = await requestLLM(prompt, maxTokens);
+      break;
+    } catch (err) {
+      // An external GPU hold froze the local server mid-request (see LOCAL
+      // HOOKS): wait for it to end, then ask again, so the text this request
+      // was summarizing is not lost
+      if (config.provider !== 'claude_cli' && attempt < 3 && gpuHeldExternally()) {
+        await waitForExternalGpuHold();
+        continue;
+      }
+      throw err;
+    }
+  }
+  if (process.env.SECRETARY_DEBUG) {
+    process.stderr.write(`[llm] prompt=${prompt.length} chars, raw=${raw.length} chars: ${JSON.stringify(raw.slice(0, 600))}\n`);
   }
   if (isDegenerate(raw)) {
     const salvaged = trimDegenerateTail(raw);
@@ -649,6 +681,20 @@ async function callLLM(prompt, maxTokens = config.max_summary_tokens) {
     return '';
   }
   return raw;
+}
+
+/**
+ * callLLM for prompts whose answer is a summary. Only there does "reports
+ * nothing" mean "discard": a one-line answer (`SAVE|…`, a list of ids, a
+ * notification blurb) is short by design and must reach its caller intact.
+ */
+async function callLLMForSummary(prompt, maxTokens = config.max_summary_tokens) {
+  const summary = await callLLM(prompt, maxTokens);
+  if (reportsNothing(summary)) {
+    process.stderr.write('the-secretary: discarded LLM output (reports no content)\n');
+    return '';
+  }
+  return summary;
 }
 
 function requestLLM(prompt, maxTokens = 1500) {
@@ -751,7 +797,12 @@ function callClaudeCLI(prompt, maxTokens = 1500) {
     }
     const bin = config.claude_bin;
     const model = config.claude_model;
-    const args = ['-p', '--model', model, '--output-format', 'json'];
+    // This call is itself a Claude session: with hooks on, its Stop hook runs
+    // The Secretary again, which calls the CLI again — an unbounded chain of
+    // summaries of summaries. Hooks off breaks the chain; no persistence keeps
+    // these throwaway sessions out of the project's transcript folder.
+    const args = ['-p', '--model', model, '--output-format', 'json',
+      '--no-session-persistence', '--settings', '{"disableAllHooks":true}'];
     const child = execFile(bin, args, {
       timeout: 45000,
       maxBuffer: 10 * 1024 * 1024,
@@ -834,20 +885,53 @@ function isLLMAvailable() {
   });
 }
 
+// ═══════════════════ LOCAL HOOKS ═══════════════════
+// Optional machine-specific behaviour lives in local/hooks.mjs next to this
+// file (start-llm.sh has its twin, local/hooks.sh). The folder is never shipped
+// and install.sh never touches it, so it survives upgrades. Without it every
+// hook below is a no-op.
+//
+//   gpuHeldExternally()  true while something outside The Secretary needs the
+//                        GPU to itself. Everything local then yields to it:
+//                        acquireGpuLock treats the GPU as held, the background
+//                        summarizer waits (its text is kept, nothing goes
+//                        online) and a request that failed meanwhile is retried.
+const LOCAL_HOOKS = join(SECRETARY_DIR, 'local', 'hooks.mjs');
+
+let localHooks = {};
+if (existsSync(LOCAL_HOOKS)) {
+  try { localHooks = await import(LOCAL_HOOKS); }
+  catch (err) { process.stderr.write(`[secretary] local hooks failed to load: ${err.message}\n`); }
+}
+
+function gpuHeldExternally() {
+  try { return !!localHooks.gpuHeldExternally?.(); }
+  catch { return false; }
+}
+
+async function waitForExternalGpuHold() {
+  while (gpuHeldExternally()) await new Promise(r => setTimeout(r, 2000));
+}
+
 async function ensureLLMRunning() {
   if (config.provider === 'claude_cli') {
     if (isClaudeDegraded()) return false;
     return existsSync(config.claude_bin);
   }
-  if (await isLLMAvailable()) return true;
   const startScript = join(SECRETARY_DIR, 'start-llm.sh');
-  if (!existsSync(startScript)) return false;
-  try {
-    execSync(`bash "${startScript}" start`, { timeout: 30000, stdio: 'ignore' });
-    return await isLLMAvailable();
-  } catch {
-    return false;
+  if (!(await isLLMAvailable())) {
+    if (!existsSync(startScript)) return false;
+    try {
+      execSync(`bash "${startScript}" start`, { timeout: 30000, stdio: 'ignore' });
+    } catch {
+      return false;
+    }
+    if (!(await isLLMAvailable())) return false;
   }
+  // Record the use: the server is shared by every session's workers, so none
+  // of them stops it. start-llm.sh's idle reaper does, once this goes stale.
+  try { execSync(`bash "${startScript}" touch`, { stdio: 'ignore' }); } catch { /* best-effort */ }
+  return true;
 }
 
 // ═══════════════════ BG WORKER LOCK + DEBOUNCE ═══════════════════
@@ -857,6 +941,16 @@ async function ensureLLMRunning() {
 // Also enforces a minimum gap between launches (debounce).
 
 const BG_DEBOUNCE_MS = 30_000;
+
+// Detached workers have no terminal, so what they write to stderr (why a
+// summary was discarded, why the LLM was unreachable) is lost. With
+// SECRETARY_DEBUG set it is appended to this file instead.
+const WORKER_DEBUG_LOG = join(tmpdir(), 'secretary-worker-debug.log');
+
+function workerStdio() {
+  if (!process.env.SECRETARY_DEBUG) return 'ignore';
+  return ['ignore', 'ignore', openSync(WORKER_DEBUG_LOG, 'a')];
+}
 
 function bgLockPath(sessionId) {
   const safe = String(sessionId || 'default').replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -923,6 +1017,66 @@ function registerBgWorkerForProject(cwd, pid) {
 
 function clearBgWorkerForProject(cwd) {
   try { unlinkSync(bgProjectLockPath(cwd)); } catch { /* ignore */ }
+}
+
+// PID of the live process a lock file names, or 0 (no lock, dead, malformed)
+function liveLockPid(lockFile) {
+  if (!existsSync(lockFile)) return 0;
+  try {
+    const pid = parseInt(readFileSync(lockFile, 'utf-8').split('|')[0], 10);
+    if (pid > 0) { process.kill(pid, 0); return pid; }
+  } catch { /* dead or malformed */ }
+  return 0;
+}
+
+// PID of the `claude` CLI process this hook runs under. /clear keeps that
+// process and only swaps the session id, so it is what ties a new session to
+// the one it replaced; another terminal on the same project has its own.
+function claudeCliPid() {
+  let pid = process.ppid;
+  for (let i = 0; i < 8 && pid > 1; i++) {
+    try {
+      const [ppid, ...comm] = execFileSync('ps', ['-o', 'ppid=,comm=', '-p', String(pid)], {
+        encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim().split(/\s+/);
+      if (basename(comm.join(' ')) === 'claude') return pid;
+      pid = parseInt(ppid, 10);
+    } catch { return 0; }
+  }
+  return 0;
+}
+
+// Handoff lock: the summarizer spawned by force --stop-llm, keyed by project
+// root AND claude CLI, so only the session this terminal just left counts —
+// never another session open on the same project.
+function handoffLockPath(cwd) {
+  const root = resolveProjectRoot(cwd) || cwd || 'default';
+  const key = createHash('sha1').update(`${root}|${claudeCliPid()}`).digest('hex').slice(0, 16);
+  return join(tmpdir(), `secretary-handoff-${key}.lock`);
+}
+
+function registerHandoffWorker(cwd, sessionId, pid) {
+  try { writeFileSync(handoffLockPath(cwd), `${pid}|${Date.now()}|${sessionId}`, 'utf-8'); } catch { /* ignore */ }
+}
+
+// Live handoff summarizer of a PREVIOUS session in this terminal, or 0. This
+// session's own handoffs (one per reply, via the Stop hook) do not count.
+function previousHandoffPid(cwd, sessionId) {
+  const lockFile = handoffLockPath(cwd);
+  const pid = liveLockPid(lockFile);
+  if (!pid) return 0;
+  try {
+    if (readFileSync(lockFile, 'utf-8').trim().split('|')[2] === sessionId) return 0;
+  } catch { return 0; }
+  return pid;
+}
+
+// Blocks until that summarizer exits. No time cap: liveLockPid() checks the pid,
+// so a lock left by a dead worker ends the wait on the next poll.
+async function waitForPreviousHandoff(cwd, sessionId) {
+  while (previousHandoffPid(cwd, sessionId)) {
+    await new Promise((r) => setTimeout(r, 1000));
+  }
 }
 
 // ═══════════════════ NOTIFICATIONS ═══════════════════
@@ -1027,6 +1181,10 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
       // separately later, so tool noise can never crowd out what was actually said.
       let text = '';
       let toolText = '';
+      // Pasted screenshots travel inline as base64. Claude Code's own copy lives in
+      // /private/tmp and dies with the session, so the transcript is the only
+      // durable source; indexTranscript() persists them next to the DB.
+      const images = [];
 
       if (typeof content === 'string') {
         text = content;
@@ -1034,6 +1192,8 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
         for (const block of content) {
           if (block.type === 'text' && block.text) {
             text += block.text + '\n';
+          } else if (block.type === 'image' && block.source?.type === 'base64' && block.source.data) {
+            images.push(block.source);
           } else if (block.type === 'tool_use') {
             toolText += `[Tool: ${block.name}] ${JSON.stringify(block.input || {}).slice(0, 200)}\n`;
             const fp = block.input?.file_path || block.input?.notebook_path;
@@ -1059,8 +1219,10 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
       // "what were we doing" by recency instead of only by keyword match.
       const ts = entry.timestamp || '';
 
-      if (text.length > 10 && !FILLER_RE.test(text)) {
-        messages.push({ role: mappedRole, kind: 'talk', text: text.slice(0, 3000), line: i, ts });
+      // Full text, never truncated here: the index stores it whole (in chunks) and
+      // the summarizer applies its own per-turn cap in messagesToText().
+      if ((text.length > 10 && !FILLER_RE.test(text)) || images.length) {
+        messages.push({ role: mappedRole, kind: 'talk', text, images, line: i, ts });
       } else if (toolText.trim().length > 10) {
         messages.push({ role: 'tool', kind: 'tool', text: toolText.trim().slice(0, 1000), line: i, ts });
       }
@@ -1100,9 +1262,15 @@ function filesTouchedBlock(filesTouched, maxChars = 1200) {
   return `FILES TOUCHED (from this session's tool calls — authoritative; do NOT list any file absent from here):\n${out}\n`;
 }
 
+const SUMMARY_TURN_CHARS = 3000;
+
 function messagesToText(messages, maxChars = 8000, filesTouched = null) {
   const budget = { used: 0 };
   const picked = new Set();
+  // One huge turn (a pasted log) must not eat the whole budget: cap each turn.
+  messages = messages
+    .filter(m => m.text)
+    .map(m => m.text.length > SUMMARY_TURN_CHARS ? { ...m, text: m.text.slice(0, SUMMARY_TURN_CHARS) } : m);
 
   const admit = (list) => {
     for (const m of list) {
@@ -1132,19 +1300,61 @@ function messagesToText(messages, maxChars = 8000, filesTouched = null) {
   return manifest ? `${manifest}\n${text}` : text;
 }
 
+// Rows are chunks, not whole turns: a long turn used to be cut at 3000 chars and
+// lose its tail, and the embedder only reads the first ~1000 chars of each row.
+const TURN_CHUNK_CHARS = 800;
+
+/** Split text at the latest paragraph / line / sentence / word break that keeps chunks ≥ half full. */
+function chunkText(text, max = TURN_CHUNK_CHARS) {
+  const chunks = [];
+  let rest = text.trim();
+  while (rest.length > max) {
+    const win = rest.slice(0, max);
+    let cut = -1;
+    for (const sep of ['\n\n', '\n', '. ', ' ']) {
+      const at = win.lastIndexOf(sep);
+      if (at >= max / 2) { cut = at + sep.length; break; }
+    }
+    if (cut < 0) cut = max;
+    chunks.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
+/** Persist base64 images next to the DB, named by content hash. Returns their paths. */
+function saveTurnImages(images, cwd) {
+  if (!images?.length) return [];
+  const root = resolveProjectRoot(cwd);
+  const dir = join(root ? ensureProjectDataDir(root) : SECRETARY_DIR, 'images');
+  const paths = [];
+  for (const src of images) {
+    try {
+      mkdirSync(dir, { recursive: true });
+      const buf = Buffer.from(src.data, 'base64');
+      const ext = (src.media_type || 'image/png').split('/')[1].replace('jpeg', 'jpg');
+      const file = join(dir, `${createHash('sha1').update(buf).digest('hex').slice(0, 16)}.${ext}`);
+      if (!existsSync(file)) writeFileSync(file, buf);
+      paths.push(file);
+    } catch { /* one bad image must not drop the turn */ }
+  }
+  return paths;
+}
+
 /**
- * Store conversation turns verbatim in the FTS index.
+ * Store a transcript's conversation verbatim in the FTS index — the transcript is the
+ * source of truth, the summaries are only a layer on top of it.
+ *
+ * Reads from its OWN cursor (`fts-line:<session>`), never from the summarizer's
+ * `offset:`. Fed from the summarizer's offset, every turn that the Stop hook
+ * consumed before the next tool call was skipped for good: pure-chat exchanges
+ * (no tool call in between) never reached the index.
  *
  * Only `talk` turns are kept — tool traffic is machine chatter nobody recalls in words.
- * The transcript offset already advances per hook call, so each turn is seen once; a
- * line-keyed guard in `state` makes re-processing (a replayed hook, a resumed session)
- * idempotent anyway.
  */
-function indexTurns(db, messages, { session_id, cwd }) {
-  if (!db || !messages?.length) return 0;
-
-  const talk = messages.filter(m => m.kind === 'talk' && m.text.length >= 20);
-  if (!talk.length) return 0;
+function indexTranscript(db, transcriptPath, { session_id, cwd }) {
+  if (!db || !transcriptPath || !session_id) return 0;
 
   const guardKey = `fts-line:${session_id}`;
   let lastLine = -1;
@@ -1153,8 +1363,9 @@ function indexTurns(db, messages, { session_id, cwd }) {
     if (row) lastLine = parseInt(row.value, 10);
   } catch { return 0; }
 
-  const fresh = talk.filter(m => m.line > lastLine);
-  if (!fresh.length) return 0;
+  const { messages } = parseTranscript(transcriptPath, lastLine + 1);
+  const talk = messages.filter(m => m.kind === 'talk' && (m.text.length >= 20 || m.images?.length));
+  if (!talk.length) return 0;
 
   try {
     const insert = db.prepare(
@@ -1164,15 +1375,21 @@ function indexTurns(db, messages, { session_id, cwd }) {
     // (older transcript formats). Indexing time is not conversation time: a backfill
     // would otherwise stamp thousands of turns with one identical instant.
     const now = new Date().toISOString();
-    const run = db.transaction((rows) => {
-      for (const m of rows) insert.run(m.text, m.role, session_id, cwd || '', m.ts || now);
-    });
-    run(fresh);
-
-    const maxLine = fresh.reduce((a, m) => Math.max(a, m.line), lastLine);
-    db.prepare(`INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, datetime('now'))`)
-      .run(guardKey, String(maxLine));
-    return fresh.length;
+    let rows = 0;
+    db.transaction(() => {
+      for (const m of talk) {
+        const images = saveTurnImages(m.images, cwd).map(p => `[imagen: ${p}]`);
+        const body = [m.text, ...images].join('\n').trim();
+        for (const chunk of chunkText(body)) {
+          insert.run(chunk, m.role, session_id, cwd || '', m.ts || now);
+          rows++;
+        }
+      }
+      const maxLine = talk.reduce((a, m) => Math.max(a, m.line), lastLine);
+      db.prepare(`INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, datetime('now'))`)
+        .run(guardKey, String(maxLine));
+    })();
+    return rows;
   } catch {
     return 0; // FTS table missing (old DB, no FTS5) — never break summarization
   }
@@ -1213,7 +1430,11 @@ const VEC_DIM = 1024;                       // Qwen3-Embedding-0.6B
 // prove a topic was discussed. 0.62 drops most invented queries; whatever survives is
 // still reported as `approx`, and the caller must treat it as "similar wording found",
 // never as evidence. Only an FTS5 hit proves something was actually said.
-const VEC_MIN_SIM = 0.62;
+// 0.62 was the cutoff while vectors were a standalone fallback. Fused with FTS5, the
+// RANK decides, and 0.62 threw away real answers: "the site similar to X" put the turn
+// saying "a site like X" 9th among 10k — at 0.582. The floor now only
+// drops the plainly unrelated; real topics start at 0.58.
+const VEC_MIN_SIM = 0.5;
 const EMBED_SCRIPT = join(SECRETARY_DIR, 'embed.py');
 
 function embedPython() {
@@ -1251,12 +1472,18 @@ const GPU_LOCK_WAIT_MS = 90_000;
 
 let gpuLockDepth = 0;
 
-function acquireGpuLock() {
+function acquireGpuLock(waitMs = GPU_LOCK_WAIT_MS) {
   // Reentrant: index-vectors holds it across every batch so the mlx_lm server
   // cannot slip a Metal context in between two embed runs.
   if (gpuLockDepth > 0) { gpuLockDepth++; return true; }
-  const deadline = Date.now() + GPU_LOCK_WAIT_MS;
+  const deadline = Date.now() + waitMs;
   for (;;) {
+    // An external GPU hold counts as held (see LOCAL HOOKS)
+    if (gpuHeldExternally()) {
+      if (Date.now() > deadline) return false;
+      try { execFileSync('sleep', ['0.25'], { stdio: 'ignore' }); } catch { return false; }
+      continue;
+    }
     try { mkdirSync(GPU_LOCK_DIR); gpuLockDepth = 1; return true; } catch { /* held */ }
     try {
       const age = Date.now() - statSync(GPU_LOCK_DIR).mtimeMs;
@@ -1278,9 +1505,9 @@ function releaseGpuLock() {
 }
 
 /** Embed texts via the helper process. Returns Float32Array[] or null on any failure. */
-function embedTexts(texts) {
+function embedTexts(texts, { lockWaitMs } = {}) {
   if (!texts?.length || !semanticAvailable()) return null;
-  if (!acquireGpuLock()) {
+  if (!acquireGpuLock(lockWaitMs)) {
     process.stderr.write('[secretary] embed skipped: GPU lock busy\n');
     return null;
   }
@@ -1315,7 +1542,9 @@ function vectorSearch(db, query, limit) {
     if (!loadVecExtension(db)) return [];
     const has = db.prepare("SELECT count(*) n FROM sqlite_master WHERE name = 'vturns'").get()?.n;
     if (!has) return [];
-    const [qv] = embedTexts([query]) || [];
+    // Search runs inside a 10 s prompt hook: a GPU held by index-vectors must cost
+    // the semantic half of the answer, never the whole answer.
+    const [qv] = embedTexts([query], { lockWaitMs: 2000 }) || [];
     if (!qv) return [];
     const rows = db.prepare(`
       SELECT v.turn_rowid AS rid, v.distance AS distance
@@ -1327,7 +1556,7 @@ function vectorSearch(db, query, limit) {
       // vec0 returns L2 distance over unit vectors: cos = 1 - d²/2.
       const sim = 1 - (r.distance * r.distance) / 2;
       if (sim < VEC_MIN_SIM) continue;
-      const t = db.prepare('SELECT body, role, project_dir, created_at FROM turns WHERE rowid = ?').get(r.rid);
+      const t = db.prepare('SELECT rowid AS rid, body, role, project_dir, created_at FROM turns WHERE rowid = ?').get(r.rid);
       if (t) out.push({ ...t, sim });
       if (out.length >= limit) break;
     }
@@ -1652,7 +1881,7 @@ async function incremental(hookInput) {
 
     // Index verbatim turns on EVERY call too: the summary gate below runs once every
     // N calls, and turns skipped here would never be searchable.
-    indexTurns(db, messages, { session_id, cwd });
+    indexTranscript(db, transcript_path, { session_id, cwd });
 
     // Only do full LLM summary every N tool calls
     if (counter % config.summarize_every_n !== 0) return;
@@ -1737,7 +1966,7 @@ SUMMARY:
 ${latestSummary}`;
 
     try {
-      const raw = await callLLM(prompt, 300);
+      const raw = await callLLMForSummary(prompt, 300);
       bullets = (raw || '')
         .split('\n')
         .map(l => l.trim())
@@ -1796,7 +2025,7 @@ ${joined}`;
 
   let bullets = [];
   try {
-    const raw = await callLLM(prompt, 1200);
+    const raw = await callLLMForSummary(prompt, 1200);
     bullets = (raw || '')
       .split('\n')
       .map(l => l.trim())
@@ -1830,7 +2059,12 @@ async function bgSummarize(sessionId, cwd, messageCount, tmpFile, { notify: shou
     process.exit(1);
   }
 
+  // The text is already safe in memory, so wait out an external GPU hold
+  // (see LOCAL HOOKS) instead of dropping it
+  await waitForExternalGpuHold();
+
   if (!(await ensureLLMRunning())) {
+    process.stderr.write('the-secretary: summary dropped (LLM server unavailable)\n');
     process.exit(1);
   }
 
@@ -1934,8 +2168,9 @@ ${text}`;
   // degenerates: once the content runs out before the budget does, it keeps
   // emitting and fills the remainder by repeating. Real output measures
   // 460-921 chars, so max_summary_tokens (800) clears it with margin to spare.
-  const summary = await callLLM(prompt, config.max_summary_tokens);
+  const summary = await callLLMForSummary(prompt, config.max_summary_tokens);
   if (!summary || summary.length < 50) {
+    process.stderr.write(`the-secretary: summary dropped (LLM returned ${summary ? summary.length : 0} chars)\n`);
     process.exit(0);
   }
 
@@ -2002,6 +2237,8 @@ async function compact(hookInput) {
 
         await processSecretaryOrders(messages, db, cwd, session_id);
 
+        indexTranscript(db, transcript_path, { session_id, cwd });
+
         const text = messagesToText(messages, 8000, filesTouched);
 
         if (text.length >= 500) {
@@ -2027,7 +2264,7 @@ ACCURACY RULES (mandatory):
 CONVERSATION:
 ${text}`;
 
-            const summary = await callLLM(prompt);
+            const summary = await callLLMForSummary(prompt);
             if (summary && summary.length >= 50) {
               const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM all_items WHERE session_id = ?').get(session_id);
               const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
@@ -2288,9 +2525,8 @@ async function restore(hookInput) {
           max_at: maxRow?.max_at || new Date().toISOString().replace('T',' ').slice(0,19),
           restored_at: new Date().toISOString()
         };
-        const wmDir = join(homedir(), '.claude', 'the-secretary', 'watermarks');
-        mkdirSync(wmDir, { recursive: true });
-        writeFileSync(join(wmDir, `${session_id}.json`), JSON.stringify(watermark));
+        mkdirSync(WATERMARKS_DIR, { recursive: true });
+        writeFileSync(watermarkFilePath(session_id), JSON.stringify(watermark));
       }
     } catch (err) {
       process.stderr.write(`[secretary] watermark write failed: ${err.message}\n`);
@@ -2327,6 +2563,10 @@ async function force(hookInput, { stopLlm = false, notify: shouldNotify = false 
     const { messages, rawLength, filesTouched } = parseTranscript(transcript_path, fromOffset);
 
     await processSecretaryOrders(messages, db, cwd, session_id);
+
+    // Stop fires after EVERY reply, including pure-chat ones with no tool call, so
+    // this is the only hook that sees those turns while they are the latest.
+    indexTranscript(db, transcript_path, { session_id, cwd });
 
     // The whole session needs more room than an incremental chunk, or the
     // budget would drop precisely the early turns that state the session's goal.
@@ -2367,11 +2607,12 @@ async function force(hookInput, { stopLlm = false, notify: shouldNotify = false 
     if (shouldNotify) spawnArgs.push('--notify');
     const child = spawn('node', spawnArgs, {
       detached: true,
-      stdio: 'ignore',
+      stdio: workerStdio(),
     });
     child.unref();
     registerBgWorker(session_id, child.pid);
     registerBgWorkerForProject(cwd, child.pid);
+    if (stopLlm) registerHandoffWorker(cwd, session_id, child.pid);
     process.stderr.write(`☑ Session memory: summarization launched in background\n`);
   } finally {
     db.close();
@@ -2505,7 +2746,7 @@ CRITICAL ACCURACY RULES — violating these makes the summary worse than useless
 - Never invent file paths, function names, version numbers, or metrics that do not appear in the source text.
 
 SUMMARIES:\n${allSummaries}`;
-              const consolidated = await callLLM(prompt, 2000);
+              const consolidated = await callLLMForSummary(prompt, 2000);
               if (consolidated && consolidated.length >= 50) {
                 output += consolidated + '\n';
               } else {
@@ -2579,6 +2820,8 @@ const TEMPORAL_TRIGGERS = [
   /\bpor\s+d[oó]nde\s+(?:vamos|[ií]bamos|seguimos|segu[ií]a)/i,
   /\b(?:qu[eé]|cual)\s+(?:es\s+)?(?:lo\s+)?[uú]ltimo\s+que\s+(?:hicimos|hice|hiciste|estab)/i,
   /\bretomamos?\b/i,
+  /\bc[oó]mo\s+(?:vas|vamos|va\s+(?:eso|la\s+cosa|todo))\b/i,
+  /\bqu[eé]\s+tal\s+(?:vas|vamos|va)\b/i,
   /\bd[oó]nde\s+(?:lo\s+)?(?:dejamos|dej[eé])\b/i,
   /\bwhere\s+(?:were|did)\s+we\s+(?:leave|left|stop|at)\b/i,
   /\bwhat\s+(?:were|was)\s+(?:we|i)\s+(?:working|doing)\b/i,
@@ -2814,47 +3057,71 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
     const db = openDb(cwd);
     if (db) {
       try {
+        // Literal and semantic lists are FUSED, not chained. As a fallback that ran
+        // only when FTS came up short, vectors never ran at all: an OR query over a
+        // 10k-turn index always fills every slot, so "the site similar to X" returned
+        // rows that merely shared a word and never the one that said "a site like X".
+        // Reciprocal rank fusion puts a row that ranks well in both first.
         const match = buildMatchQuery(terms);
+        const fused = new Map(); // rowid -> { row, score, literal }
+        const RRF_K = 60;
         if (match) {
-          const rows = db.prepare(`
-            SELECT body, role, project_dir, created_at, bm25(turns) AS rank
+          // bm25 alone rewards a short row holding ONE rare word, so a filler term
+          // ("mencioné") outranked rows matching the real subjects. Rank by how many
+          // distinct query terms a row covers first; bm25 only breaks ties.
+          const fold = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+          const folded = terms.map(fold);
+          db.prepare(`
+            SELECT rowid AS rid, body, role, project_dir, created_at, bm25(turns) AS rank
             FROM turns
             WHERE turns MATCH ?
             ORDER BY rank
-            LIMIT ?
-          `).all(match, maxHits - hits.length);
-
-          for (const row of rows) {
-            const body = row.body || '';
-            const lower = body.toLowerCase();
-            const firstTerm = terms.find(t => lower.includes(t.toLowerCase())) || terms[0];
-            const idx = Math.max(0, lower.indexOf(firstTerm.toLowerCase()));
-            const start = Math.max(0, idx - 120);
-            const end = Math.min(body.length, idx + snippetChars);
-            const snippet = (start > 0 ? '…' : '') + body.slice(start, end) + (end < body.length ? '…' : '');
-            hits.push({
-              source: row.role === 'user' ? 'said' : 'turn',
-              project: basename(row.project_dir || '') || 'unknown',
-              date: (row.created_at || '').split('T')[0],
-              score: 0,
-              snippet: snippet.trim(),
-            });
-          }
+            LIMIT 500
+          `).all(match)
+            .map(r => ({ ...r, cover: folded.filter(t => fold(r.body || '').includes(t)).length }))
+            .sort((a, b) => (b.cover - a.cover) || (a.rank - b.rank))
+            .slice(0, 50)
+            .forEach((row, i) => fused.set(row.rid, {
+              row, score: 1 / (RRF_K + i), literal: true, exact: row.cover === folded.length,
+            }));
         }
-        // ── 2b. Semantic fallback ──
-        // Only when the literal pass came up short. Tagged `approx` so the caller can
-        // show these as "close in meaning", never as something that was actually said.
-        if (hits.length < maxHits) {
-          for (const row of vectorSearch(db, q, maxHits - hits.length)) {
-            hits.push({
-              source: row.role === 'user' ? 'said~' : 'turn~',
-              approx: true,
-              project: basename(row.project_dir || '') || 'unknown',
-              date: (row.created_at || '').split('T')[0],
-              score: 0,
-              snippet: (row.body || '').slice(0, snippetChars).trim(),
-            });
-          }
+        vectorSearch(db, q, 50).forEach((row, i) => {
+          const hit = fused.get(row.rid);
+          if (hit) hit.score += 1 / (RRF_K + i);
+          else fused.set(row.rid, { row, score: 1 / (RRF_K + i), literal: false, exact: false });
+        });
+
+        // A row holding EVERY query term is the literal answer (an identifier, a
+        // quoted phrase) — vectors recover ~0% of those, so they never outrank it.
+        // A message sent twice (a retried prompt) is one answer, not two slots.
+        const seenBodies = new Set();
+        const ranked = [...fused.values()]
+          .sort((a, b) => (b.exact - a.exact) || (b.score - a.score))
+          .filter(({ row }) => !seenBodies.has(row.body) && seenBodies.add(row.body))
+          .slice(0, maxHits - hits.length);
+        if (process.env.SECRETARY_DEBUG) {
+          process.stderr.write(`[search] terms=${JSON.stringify(terms)} fts=${[...fused.values()].filter(h => h.literal).length} fused=${fused.size}\n`);
+          [...fused.values()].sort((a, b) => b.score - a.score).slice(0, 15).forEach((h, i) =>
+            process.stderr.write(`[search] #${i} rid=${h.row.rid} score=${h.score.toFixed(4)} lit=${h.literal} cover=${h.row.cover ?? '-'} sim=${h.row.sim?.toFixed(3) ?? '-'} ${(h.row.body || '').slice(0, 60).replace(/\n/g, ' ')}\n`));
+        }
+        for (const { row, literal } of ranked) {
+          const body = row.body || '';
+          const lower = body.toLowerCase();
+          const firstTerm = terms.find(t => lower.includes(t.toLowerCase()));
+          const idx = firstTerm ? lower.indexOf(firstTerm.toLowerCase()) : 0;
+          const start = Math.max(0, idx - 120);
+          const end = Math.min(body.length, idx + snippetChars);
+          const snippet = (start > 0 ? '…' : '') + body.slice(start, end) + (end < body.length ? '…' : '');
+          // A row only the vectors found is `approx`: close in meaning, never proof
+          // that something was actually said.
+          hits.push({
+            source: (row.role === 'user' ? 'said' : 'turn') + (literal ? '' : '~'),
+            approx: !literal,
+            project: basename(row.project_dir || '') || 'unknown',
+            date: (row.created_at || '').split('T')[0],
+            score: 0,
+            snippet: snippet.trim(),
+          });
         }
       } catch { /* no FTS table yet (older DB) — fall through to summaries */ }
       finally { db.close(); }
@@ -3034,18 +3301,40 @@ async function cmdIndexTurns() {
     return;
   }
 
+  // --rebuild re-reads every transcript still on disk from line 0: it fills the
+  // gaps the old offset-coupled indexer left and replaces turns cut at 3000 chars.
+  // Sessions whose transcript Claude Code already deleted keep their rows — the
+  // index is by then their only copy. Vectors of replaced rows go too, or their
+  // rowids would be reused by the new rows and point at the wrong text.
+  const rebuild = process.argv.includes('--rebuild');
+  let hasVectors = false;
+  if (rebuild) {
+    hasVectors = !!db.prepare("SELECT count(*) n FROM sqlite_master WHERE name = 'vturns'").get()?.n;
+    if (hasVectors && !loadVecExtension(db)) {
+      process.stderr.write('[secretary] --rebuild needs sqlite-vec to drop stale vectors; aborting\n');
+      db.close();
+      return;
+    }
+  }
+
   let files = 0, indexed = 0;
   try {
     for (const f of readdirSync(projectsDir)) {
       if (!f.endsWith('.jsonl')) continue;
       const sessionId = f.replace(/\.jsonl$/, '');
-      let messages;
+      if (rebuild) {
+        db.transaction(() => {
+          if (hasVectors) db.prepare('DELETE FROM vturns WHERE rowid IN (SELECT rowid FROM turns WHERE session_id = ?)').run(sessionId);
+          db.prepare('DELETE FROM turns WHERE session_id = ?').run(sessionId);
+          db.prepare('DELETE FROM state WHERE key = ?').run(`fts-line:${sessionId}`);
+        })();
+      }
+      let n = 0;
       try {
-        ({ messages } = parseTranscript(join(projectsDir, f)));
+        n = indexTranscript(db, join(projectsDir, f), { session_id: sessionId, cwd });
       } catch { continue; } // one unreadable transcript must not abort the rest
-      if (!messages.length) continue;
       files++;
-      indexed += indexTurns(db, messages, { session_id: sessionId, cwd });
+      indexed += n;
     }
     const total = db.prepare('SELECT COUNT(*) AS n FROM turns').get()?.n ?? 0;
     process.stdout.write(`Indexed ${indexed} new turn(s) from ${files} transcript(s). Total in index: ${total}\n`);
@@ -3083,6 +3372,37 @@ async function cmdSearch() {
 async function userPromptHook(hookInput) {
   const prompt = hookInput.prompt || hookInput.user_prompt || '';
 
+  // ── Recall question → load the skill, said in the turn it applies to ──
+  // The CLAUDE.md rule is read once at session start. By the time the question
+  // arrives the handoff already sits in context, and answering straight from it
+  // skips the skill. Written before every other branch so none of them drops it.
+  if (isRecallQuery(prompt)) {
+    process.stdout.write(
+      `## ⛔ The Secretary: pregunta de memoria\n\n` +
+      `Tu PRIMERA llamada a herramienta en este turno es \`Skill\` con \`skill: "the-secretary"\`, ` +
+      `aunque el contexto ya esté inyectado. No respondas antes de cargarlo.\n\n`
+    );
+  }
+
+  // ── Previous session still being summarized (typically right after /clear) ──
+  // The context SessionStart restored predates that summary. Blocking the prompt
+  // until it lands stalls the user, so hand Claude a background command instead:
+  // it exits when the summarizer does and prints what it wrote, and its
+  // completion notice wakes Claude with the fresh context.
+  const { session_id, cwd } = hookInput;
+  if (session_id && cwd && previousHandoffPid(cwd, session_id)) {
+    const cmd = `echo '${JSON.stringify({ cwd, session_id })}' | node ~/.claude/the-secretary/summarize.mjs await-handoff`;
+    process.stdout.write(
+      `## ⏳ The Secretary: el resumen de la sesión anterior todavía se está generando\n\n` +
+      `El contexto restaurado al inicio es anterior a ese resumen. Lanza YA este comando con Bash ` +
+      `\`run_in_background: true\`; termina cuando llega el resumen e imprime su contenido:\n\n` +
+      `\`\`\`bash\n${cmd}\n\`\`\`\n\n` +
+      `Si la petición depende de la sesión anterior ("por dónde vamos", "sigue con…"), dile al usuario ` +
+      `en una línea que estás esperando el resumen y respóndele cuando llegue el aviso. Si no depende, sigue con ella.\n\n`
+    );
+    return;
+  }
+
   // ── Fresh-context watermark check ──
   // If summaries landed AFTER the session's restore (e.g. previous session's
   // tail finished summarizing post-/clear), inject a notice with the new content
@@ -3117,11 +3437,17 @@ async function userPromptHook(hookInput) {
  * watermark. On the next user prompt we detect that, inject a system reminder
  * with the new content, and advance the watermark so we only notify once.
  */
-async function checkFreshContextWatermark(hookInput) {
+const WATERMARKS_DIR = join(homedir(), '.claude', 'the-secretary', 'watermarks');
+
+function watermarkFilePath(sessionId) {
+  return join(WATERMARKS_DIR, `${sessionId}.json`);
+}
+
+async function checkFreshContextWatermark(hookInput, { snippetChars = 400 } = {}) {
   const { session_id, cwd } = hookInput;
   if (!session_id || !cwd) return;
 
-  const wmFile = join(homedir(), '.claude', 'the-secretary', 'watermarks', `${session_id}.json`);
+  const wmFile = watermarkFilePath(session_id);
   if (!existsSync(wmFile)) return;
 
   let wm;
@@ -3150,7 +3476,7 @@ async function checkFreshContextWatermark(hookInput) {
     } catch { /* best-effort */ }
 
     const MAX_SHOW = 5;
-    const SNIP = 400;
+    const SNIP = snippetChars;
     const shown = rows.slice(-MAX_SHOW);
 
     let out = `\n## 📥 The Secretary: contexto nuevo disponible\n\n`;
@@ -3161,9 +3487,63 @@ async function checkFreshContextWatermark(hookInput) {
       out += `### ${r.created_at}\n\n${snippet}\n\n---\n\n`;
     }
     process.stdout.write(out);
+    return true;
   } finally {
     db.close();
   }
+}
+
+const HANDOFF_WAITING_MESSAGE = '⏳ The Secretary: waiting for the previous handoff';
+// One frame per status line refresh (`refreshInterval: 1` → one per second).
+const HANDOFF_WAITING_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/**
+ * handoff-status: `statusLine` command. The async `await-handoff --rewake`
+ * SessionStart hook stays silent until the summary lands, and a SessionStart
+ * systemMessage is only painted when the transcript next renders — after
+ * /clear that is when the handoff has already landed — so the wait itself is
+ * shown here: the status line prints the message while the previous session's
+ * handoff is being written and goes blank once it is done.
+ */
+function handoffStatus(statusInput) {
+  const { session_id } = statusInput;
+  const cwd = statusInput.cwd || statusInput.workspace?.current_dir;
+  if (!session_id || !cwd || !previousHandoffPid(cwd, session_id)) return;
+  const frame = HANDOFF_WAITING_FRAMES[Math.floor(Date.now() / 1000) % HANDOFF_WAITING_FRAMES.length];
+  process.stdout.write(`${HANDOFF_WAITING_MESSAGE} ${frame}\n`);
+}
+
+/**
+ * await-handoff: run by Claude in the background when the user-prompt hook
+ * reports that the previous session's handoff is still being written. Exits
+ * once that summarizer does and prints what it stored — the task's completion
+ * notice is how the fresh context reaches Claude.
+ *
+ * With `rewake` it runs as an async SessionStart hook (`asyncRewake`) instead:
+ * exit code 2 is what wakes Claude with what was printed, so the user does
+ * not have to type anything after /clear. It wakes even when nothing new
+ * landed (a short session's handoff is discarded as NOTHING TO REPORT), so
+ * every /clear ends with a visible answer instead of silence.
+ */
+async function awaitHandoff(hookInput, { rewake = false } = {}) {
+  const { session_id, cwd } = hookInput;
+  if (!session_id || !cwd) {
+    process.stderr.write('[secretary] await-handoff needs {"cwd","session_id"} on stdin\n');
+    process.exit(1);
+  }
+  if (rewake) {
+    // `restore` runs as a sibling SessionStart hook: the watermark it writes is
+    // what the check below compares against, so let it land first.
+    for (let i = 0; i < 120 && !existsSync(watermarkFilePath(session_id)); i++) {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  await waitForPreviousHandoff(cwd, session_id);
+  const fresh = await checkFreshContextWatermark(hookInput, { snippetChars: Infinity });
+  if (!fresh) {
+    process.stdout.write('## 📥 The Secretary: el resumen de la sesión anterior terminó sin añadir contexto nuevo\n');
+  }
+  if (rewake) process.exitCode = 2;
 }
 
 // ═══════════════════ MAIN ═══════════════════
@@ -3187,12 +3567,6 @@ async function main() {
     // Release locks so the next incremental() can spawn
     clearBgWorker(sessionId);
     clearBgWorkerForProject(cwd);
-    // If called with --stop-llm, shut down the LLM server after summarizing
-    if (flags.includes('--stop-llm')) {
-      try {
-        execSync('bash ~/.claude/the-secretary/start-llm.sh stop > /dev/null 2>&1');
-      } catch { /* ignore */ }
-    }
     process.exit(0);
   }
 
@@ -3258,7 +3632,7 @@ async function main() {
     process.exit(0);
   }
 
-  const validCommands = ['incremental', 'compact', 'restore', 'force', 'inject', 'recall', 'search', 'index-turns', 'index-vectors', 'sync', 'user-prompt', 'drain-global'];
+  const validCommands = ['incremental', 'compact', 'restore', 'force', 'inject', 'recall', 'search', 'index-turns', 'index-vectors', 'sync', 'user-prompt', 'handoff-status', 'await-handoff', 'drain-global'];
 
   if (command === 'drain-global') {
     cmdDrainGlobal(process.argv.includes('--dry-run'));
@@ -3299,6 +3673,8 @@ async function main() {
     process.stderr.write('  index-vectors     Build the semantic index (optional; needs embedding venv)\n');
     process.stderr.write('  sync              Refresh both indexes in the background (SessionStart hook)\n');
     process.stderr.write('  user-prompt       UserPromptSubmit hook: auto-inject context on recall-style prompts\n');
+    process.stderr.write('  handoff-status    Tell the user the previous session\'s handoff is still being written (statusLine command)\n');
+    process.stderr.write('  await-handoff     Wait for the previous session\'s handoff summary, then print it\n');
     process.exit(1);
   }
 
@@ -3321,6 +3697,8 @@ async function main() {
       case 'inject': await inject(hookInput); break;
       case 'recall': await recall(hookInput); break;
       case 'user-prompt': await userPromptHook(hookInput); break;
+      case 'handoff-status': handoffStatus(hookInput); break;
+      case 'await-handoff': await awaitHandoff(hookInput, { rewake: process.argv.includes('--rewake') }); break;
     }
   } catch (err) {
     process.stderr.write(`[secretary] ${err.message}\n`);

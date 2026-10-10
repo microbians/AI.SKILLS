@@ -77,6 +77,15 @@
           "type": "command",
           "command": "bash ~/.claude/the-secretary/start-llm.sh start > /dev/null 2>&1; node ~/.claude/the-secretary/summarize.mjs restore; node ~/.claude/the-secretary/summarize.mjs sync",
           "timeout": 120
+        },
+        {
+          "type": "command",
+          "command": "node ~/.claude/the-secretary/summarize.mjs await-handoff --rewake",
+          "async": true,
+          "asyncRewake": true,
+          "rewakeSummary": "The Secretary: previous session handoff",
+          "rewakeMessage": "The Secretary finished waiting for the previous session's handoff after /clear. Tell the user in one line what arrived, then wait for their request:",
+          "timeout": 600
         }
       ]
     }

@@ -1,6 +1,6 @@
 {
   "provider": "local",
-  "claude_bin": "/opt/homebrew/bin/claude",
+  "claude_bin": "~/.local/bin/claude",
   "claude_model": "claude-haiku-4-5",
   "llm_url": "http://localhost:8922/v1/chat/completions",
   "model": "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
