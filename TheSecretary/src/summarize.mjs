@@ -22,7 +22,7 @@
  */
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, rmSync, openSync } from 'fs';
-import { join, basename } from 'path';
+import { join, basename, dirname } from 'path';
 import { homedir, tmpdir } from 'os';
 import { createHash } from 'crypto';
 import { createRequire } from 'module';
@@ -62,6 +62,7 @@ function loadConfig() {
     min_new_chars: 2000,
     max_summary_tokens: 800,
     restore_recent_items: 15,
+    restore_tail_chars: 5000,
     db_path: join(SECRETARY_DIR, 'summaries.db'),
   };
   try {
@@ -1059,6 +1060,16 @@ function registerHandoffWorker(cwd, sessionId, pid) {
   try { writeFileSync(handoffLockPath(cwd), `${pid}|${Date.now()}|${sessionId}`, 'utf-8'); } catch { /* ignore */ }
 }
 
+// Session this terminal ran before `sessionId` (the one /clear just left), or
+// ''. The handoff lock is the only record of which session a terminal ran, so
+// force() keeps it current even when it spawns no summarizer.
+function previousSessionId(cwd, sessionId) {
+  try {
+    const prev = readFileSync(handoffLockPath(cwd), 'utf-8').trim().split('|')[2] || '';
+    return prev === sessionId ? '' : prev;
+  } catch { return ''; }
+}
+
 // Live handoff summarizer of a PREVIOUS session in this terminal, or 0. This
 // session's own handoffs (one per reply, via the Stop hook) do not count.
 function previousHandoffPid(cwd, sessionId) {
@@ -1099,6 +1110,11 @@ function projectLabel(cwd) {
     const root = resolveProjectRoot(cwd);
     return root ? basename(root) : '';
   } catch { return ''; }
+}
+
+function notifyMemoryRecovered(cwd, message) {
+  const proj = projectLabel(cwd);
+  notify(proj ? `${proj} — Memory recovered` : 'The Secretary — Memory recovered', message);
 }
 
 function notify(title, message) {
@@ -1263,6 +1279,46 @@ function filesTouchedBlock(filesTouched, maxChars = 1200) {
 }
 
 const SUMMARY_TURN_CHARS = 3000;
+
+/**
+ * The literal end of a conversation, newest turns kept whole until `maxChars`
+ * (the oldest kept turn is cut from its front). Unlike messagesToText() it is
+ * contiguous: it shows where the session stopped, including whether the last
+ * reply finished the task or broke off mid-way.
+ */
+function transcriptTail(messages, maxChars) {
+  const turnCap = Math.max(500, Math.floor(maxChars / 3));
+  const format = (m) => {
+    const prefix = m.role === 'user' ? 'USER' : m.role === 'assistant' ? 'ASSISTANT' : 'TOOL';
+    // A tool turn only needs to show that a step ran: one line, not its output.
+    let body = m.kind === 'tool' ? m.text.trim().split('\n')[0] : m.text.trim();
+    const cap = m.kind === 'tool' ? 200 : turnCap;
+    if (body.length > cap) body = body.slice(0, cap) + '…';
+    return `[${prefix}]: ${body}`;
+  };
+  messages = messages.filter(m => m.text);
+  // The last request always goes in: a run of tool calls can fill the whole
+  // budget, and without the ask the tail cannot say whether it was finished.
+  let askAt = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user' && messages[i].kind === 'talk') { askAt = i; break; }
+  }
+  const ask = askAt >= 0 ? format(messages[askAt]) : '';
+  const rows = [];
+  let used = ask.length;
+  let i = messages.length - 1;
+  for (; i > askAt && used < maxChars; i--) {
+    let row = format(messages[i]);
+    if (used + row.length > maxChars) row = '…' + row.slice(row.length - (maxChars - used));
+    rows.unshift(row);
+    used += row.length + 2;
+  }
+  if (ask) {
+    if (i > askAt) rows.unshift(`[… ${i - askAt} turns omitted …]`);
+    rows.unshift(ask);
+  }
+  return rows.join('\n\n');
+}
 
 function messagesToText(messages, maxChars = 8000, filesTouched = null) {
   const budget = { used: 0 };
@@ -2305,7 +2361,7 @@ ${text}`;
 }
 
 async function restore(hookInput) {
-  const { session_id, cwd } = hookInput;
+  const { session_id, cwd, transcript_path, source } = hookInput;
 
   const db = openDb(cwd);
   if (!db) {
@@ -2447,6 +2503,22 @@ async function restore(hookInput) {
       }
     }
 
+    // 2a'. After /clear, the literal tail of the session just left. A summary
+    //      says what was done; only the raw end shows whether the last reply
+    //      finished or broke off mid-task. Transcripts of one project share a
+    //      folder, so the previous one sits next to this session's.
+    const prevSessionId = source === 'clear' && cwd && transcript_path ? previousSessionId(cwd, session_id) : '';
+    if (prevSessionId) {
+      const tailChars = Math.max(500, parseInt(config.restore_tail_chars, 10) || 5000);
+      const { messages } = parseTranscript(join(dirname(transcript_path), `${prevSessionId}.jsonl`));
+      const tail = transcriptTail(messages, tailChars);
+      if (tail) {
+        output += `## 🧵 End of the previous conversation (last ~${tailChars} chars, verbatim)\n\n`
+          + `_Check this before anything else: if the last turns left work unfinished (a step announced but not run, an edit not applied, a question unanswered), tell the user in one line what was pending and offer to resume it. If they show the task finished, do not reopen it._\n\n`
+          + `${tail}\n\n`;
+      }
+    }
+
     // 2b. Latest raw items across the WHOLE project tree, newest-first. This is
     //     the literal "what happened most recently in the DB" view the user
     //     asked for — independent of session grouping or bullet caching, so it
@@ -2505,8 +2577,10 @@ async function restore(hookInput) {
     const formattedDate = lastDate !== 'unknown' ? new Date(lastDate + 'Z').toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : lastDate;
 
     process.stdout.write(output + `\n\n☑ Session memory recovered from ${formattedDate} (${totalItems} items restored)`);
-    const proj = projectLabel(cwd);
-    notify(proj ? `${proj} — Memory recovered` : 'The Secretary — Memory recovered', `From ${formattedDate} (${totalItems} items)`);
+    // After /clear the previous session's handoff is usually still being
+    // written, so recovery is not over yet: the `await-handoff --rewake` hook
+    // notifies once it lands.
+    if (source !== 'clear') notifyMemoryRecovered(cwd, `From ${formattedDate} (${totalItems} items)`);
 
     // ── Fresh-context watermark ──
     // Record max(created_at) of summaries known at restore-time for this project.
@@ -2578,6 +2652,10 @@ async function force(hookInput, { stopLlm = false, notify: shouldNotify = false 
     // at least true. The incremental path keeps the lower bar — a thin chunk
     // there is just a thin chunk, not a fabricated session state.
     const minChars = stopLlm ? 600 : 100;
+    // Record this session as the terminal's latest even when no handoff is
+    // written, so the next /clear reads the right transcript tail. A live
+    // summarizer keeps its lock: it is what await-handoff waits on.
+    if (stopLlm && !liveLockPid(handoffLockPath(cwd))) registerHandoffWorker(cwd, session_id, 0);
     if (text.length < minChars) {
       process.stderr.write('☑ Session memory: nothing new to save\n');
       return;
@@ -3543,7 +3621,10 @@ async function awaitHandoff(hookInput, { rewake = false } = {}) {
   if (!fresh) {
     process.stdout.write('## 📥 The Secretary: el resumen de la sesión anterior terminó sin añadir contexto nuevo\n');
   }
-  if (rewake) process.exitCode = 2;
+  if (rewake) {
+    notifyMemoryRecovered(cwd, fresh ? 'Previous session handoff included' : 'No new context from the previous session');
+    process.exitCode = 2;
+  }
 }
 
 // ═══════════════════ MAIN ═══════════════════

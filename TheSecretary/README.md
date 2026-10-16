@@ -228,6 +228,7 @@ The check is cheap (a single SQLite query per prompt) and fires only when there 
    - **Manually injected context** — items added with `inject` are printed **verbatim**, never LLM-consolidated: they are hand-curated, so paraphrasing them only loses detail
    - **Session handoff brief** (📋) from the previous session's Stop hook — the dense "how to resume" doc
    - **Handoffs from earlier sessions** — the 2 previous handoffs, truncated to 900 chars each. A handoff is the distilled state of an entire session, so restoring only the last one (`LIMIT 1`) discarded most of the project history; truncation keeps them from dwarfing the rest of the recall
+   - **End of the previous conversation** (🧵, `/clear` only) — the verbatim tail of the session just left (`restore_tail_chars`, default 5000), always starting with its last user request; tool turns are cut to one line. A summary says what was done, only the raw end shows whether the last reply finished or broke off, so Claude is told to check it and offer to resume unfinished work. The previous session is the one recorded in this terminal's handoff lock
    - **Latest N items** (🕑) — the N most recent summaries across the project tree, newest-first (`restore_recent_items`, default 15)
    - Consolidated conversation summary (loaded from per-project cache — see below) as background
    - Saved items — one flat list, oldest first
@@ -456,6 +457,7 @@ Edit `~/.claude/the-secretary/config.json`:
 | `min_new_chars` | `2000` | Minimum new content before summarizing |
 | `max_summary_tokens` | `800` | Max tokens for summary output |
 | `restore_recent_items` | `15` | How many recent items the `🕑 Latest N items` restore block shows (newest-first, across the whole project tree) |
+| `restore_tail_chars` | `5000` | Size of the `🧵 End of the previous conversation` block restore injects after `/clear` |
 | `llm_url` | `http://localhost:8922/v1/chat/completions` | OpenAI-compatible endpoint (used when `provider=local`) |
 | `claude_bin` | `~/.local/bin/claude` | Path to the `claude` binary (used when `provider=claude_cli`). Defaults to the native installer's copy, the one that updates itself. If it does not exist, `~/.local/bin/claude`, `/opt/homebrew/bin/claude` and `/usr/local/bin/claude` are tried |
 | `claude_model` | `claude-haiku-4-5` | Model passed to `claude -p --model` |
@@ -570,6 +572,7 @@ TheSecretary/
 
 | Version | Date | Change |
 |---|---|---|
+| 2.10.0 | 2026-10-16 | After `/clear`, restore injects the verbatim end of the session just left (`🧵`, `restore_tail_chars`, default 5000; the last user request always included) and asks Claude to check whether it broke off mid-task before resuming. The "Memory recovered" notification no longer fires on `/clear` before the previous handoff lands: `await-handoff --rewake` sends it once the wait is over. The Stop hook records the terminal's session in the handoff lock even when it writes no handoff |
 | 2.9.8 | 2026-10-10 | Short LLM answers reach their caller again: the "reports nothing" guard sat in `callLLM` and discarded every one-line answer (intent `SAVE`/`FORGET`, ids to forget, notification blurb) as an empty summary, so saves and deletions detected by the LLM fell back to `NONE`. The guard moved to `callLLMForSummary`, which only summary prompts call |
 | 2.9.7 | 2026-10-09 | A recall question now loads the skill every time: the `UserPromptSubmit` hook prints an order to call `Skill` with `the-secretary` as the first tool call of the turn, before any other branch, and the `CLAUDE.md` snippet states the same. With the handoff already in context Claude answered straight from it and skipped the skill |
 | 2.9.6 | 2026-10-09 | "Where were we" questions ("por dónde vamos", "dónde lo dejamos", "where were we") are answered from the session handoff alone: the rule is in the `CLAUDE.md` snippet and in the skill's "Trust injected context" triggers, so Claude no longer runs `git status` or grep to rebuild the state the handoff already holds |

@@ -84,7 +84,7 @@
           "async": true,
           "asyncRewake": true,
           "rewakeSummary": "The Secretary: previous session handoff",
-          "rewakeMessage": "The Secretary finished waiting for the previous session's handoff after /clear. Tell the user in one line what arrived, then wait for their request:",
+          "rewakeMessage": "The Secretary finished waiting for the previous session's handoff after /clear. Tell the user in one line what arrived. Then check the 'End of the previous conversation' block injected at session start: if it shows work left unfinished, say in one line what was pending and offer to resume it; otherwise wait for their request:",
           "timeout": 600
         }
       ]
