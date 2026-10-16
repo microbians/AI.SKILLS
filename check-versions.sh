@@ -58,7 +58,7 @@ for d in "$REPO"/Skills/*/; do
 done
 
 # Packages that ship an installer (skill lives in <pkg>/skill/)
-for pkg in SafeEdit CodeIndex TheSecretary; do
+for pkg in SafeEdit CodeIndex TheSecretary GFXPerf; do
   src="$REPO/$pkg/skill/SKILL.md"
   [ -f "$src" ] || continue
   slug="$(sed -n 's/^name: *//p' "$src" | head -1)"

@@ -48,6 +48,7 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 - [TheSecretary](#thesecretary) ⭐
 - [SafeEdit](#safeedit)
 - [CodeIndex](#codeindex)
+- [GFXPerf](#gfxperf)
 - [Skills](#skills)
   - [Defensive Development](#defensive-development)
   - [ASCII Art Diagrams](#ascii-art-diagrams)
@@ -160,6 +161,25 @@ A fast, incremental **symbol index** so the agent can answer *"where is `X` defi
 **Install path:** `~/.claude/codeindex/` (engine + hook), `~/.claude/skills/code-index/` (behavior rules).
 
 **Requirements:** Node.js 22+ (built-in `node:sqlite`), universal-ctags (`brew install universal-ctags`).
+
+---
+
+## GFXPerf
+
+> [`GFXPerf/`](GFXPerf/)
+
+A skill for performance work on **graphics code in the browser** — JavaScript hot loops, Canvas2D and WebGPU. A method and a set of rules, not a tool: it makes the agent measure properly before and after, find the slow layer before touching it, and write down what was tried.
+
+- **The loop:** reproduce and count → baseline → locate (script, garbage collection, state changes, fill rate, GPU) → change one thing → measure interleaved → keep or delete → write it down
+- **Measuring:** a real browser on the real display (never headless), a button starts it, warm-up, a plain loop (never inside `requestAnimationFrame`), the median, variants interleaved, numbers shown on the page
+- **JavaScript:** allocate nothing per frame — arrays, typed arrays and objects created once and reused —, do less before doing it faster, one shape per object and one kind per array
+- **Canvas2D:** group by style, one path for many shapes, static layers cached, no readback in the frame
+- **WebGPU:** pipelines, bind groups and buffers created once; one upload per buffer per frame; few draw calls and passes; fragments are the bill
+- **Also ships:** a measuring harness for a page with a Run button, the findings log's format, and a script that downloads the WebGPU and WGSL specifications for local search
+
+**Includes:** `skill/SKILL.md`, `skill/references/` (`javascript.md`, `canvas2d.md`, `webgpu.md`, `measuring.md`), `skill/templates/` (`measure.js`, `findings.md`), `skill/scripts/fetch-specs.sh`, `src/claude-md-snippet.md`, `install.sh`
+
+**Install path:** `~/.claude/skills/gfx-perf/` (or a project's `.claude/skills/gfx-perf/` with `--project`).
 
 ---
 
@@ -573,7 +593,8 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
-| 2026-10-16 | TheSecretary v2.10.0: after `/clear`, restore injects the verbatim end of the previous conversation (~5000 chars) so Claude can tell whether it broke off mid-task; the "Memory recovered" notification waits for the previous handoff to land |
+| 2026-10-16 | TheSecretary v2.10.0: after `/clear`, restore injects the verbatim end of the previous conversation (~5000 chars) so Claude can tell whether it broke off mid-task; the "Memory recovered" notification waits for the previous handoff to land. CLAUDE.Global v1.3.3: The Secretary section marker bumped to v2.10.0 |
+| 2026-10-11 | Add GFXPerf v1.0.0: performance method and rules for graphics code in the browser (JavaScript, Canvas2D, WebGPU), with a measuring harness, a findings log format and a WebGPU / WGSL specification fetcher |
 | 2026-10-10 | TheSecretary v2.9.8: short LLM answers (intents, ids to forget, notification blurb) are no longer discarded as empty summaries; docs brought in line with the code (model table by RAM, hook table, installer steps). CLAUDE.Global v1.3.2: two rules added (read what an edit refers to first; hover-revealed controls toggle `visibility`) |
 | 2026-10-09 | TheSecretary v2.8.0–v2.9.7: handoff wait after `/clear` (async `await-handoff --rewake` hook + status line), local hooks folder, idle reaper for the shared LLM server, `claude_cli` provider no longer spawns itself, recall and "where were we" questions answered from the skill and the handoff — see `TheSecretary/README.md` changelog |
 | 2026-09-25 | TheSecretary v2.5.0: transcript as source of truth — index reads transcripts with its own cursor from every hook (pure-chat turns were dropped), full turns in 800-char chunks, pasted screenshots persisted, `index-turns --rebuild`; search fuses FTS5 + vectors (RRF, exact-first, dedupe), vector floor 0.62 → 0.5; INSTALL.md rewritten (hooks from `hooks.json`, embedding venv, upgrade steps) |
