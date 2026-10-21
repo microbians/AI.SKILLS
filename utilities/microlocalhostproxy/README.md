@@ -14,7 +14,7 @@ Auto-discovers, registers, and auto-starts dev servers for any project type (PHP
 │                                                               │
 │  Server not running?                                          │
 │         → devproxy auto-starts it (php -S, npm run dev, etc.) │
-│         → kills idle servers after 15min inactivity            │
+│         → kills idle servers after 15min inactivity           │
 │                                                               │
 ├───────────────────────────────────────────────────────────────┤
 │                                                               │
