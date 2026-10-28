@@ -31,6 +31,7 @@ mv ~/.claude/summarizer ~/.claude/the-secretary
 ```bash
 mkdir -p ~/.claude/skills/secretary
 cp skill/SKILL.md ~/.claude/skills/secretary/SKILL.md
+rm -rf ~/.claude/skills/the-secretary   # upgrading from < 2.11.0: the skill was renamed
 ```
 
 The skill defines the behavior rules Claude must follow when interacting with The Secretary (recall commands, how to read `[said]` / `[said~]` hits, trigger patterns, scope, etc.).
