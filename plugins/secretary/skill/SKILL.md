@@ -2,7 +2,7 @@
 name: secretary
 description: AI-powered context persistence for Claude Code — keeps ONE flat index per project (no memory types) plus conversation summaries, via local LLM hooks and SQLite. Use whenever the user mentions remembering/forgetting something, taking notes, or asks recall questions ("recuerda que...", "olvida que...", "anota...", "borra la nota...", "avísame...", "recuérdame...", "cancela el recordatorio...", "qué recuerdas?", "muestra mis notas", "show my reminders", "remember that...", "forget...", "take note...", "remind me...", "do you remember...?"). Runs entirely in background via hooks; this skill defines the behavior rules and recall commands Claude must follow when interacting with it.
 argument-hint: "[ai [local | apple | claude [model] [--account <name | email | folder>]]]"
-version: 2.11.1
+version: 2.12.0
 updated: 2026-10-17
 license: MIT
 ---
@@ -43,6 +43,14 @@ node ~/.claude/the-secretary/summarize.mjs inject --text "your context here"
 ```
 
 ## Searching the memory (how to read the results)
+
+**Dates narrow the search.** A date in the query limits it to that span (local time):
+"hoy", "ayer", "anteayer", "el martes (pasado)", "la semana pasada", "esta semana", "este mes",
+"el mes pasado", "hace 3 días", "los últimos 5 días", "el 5 de octubre", "en octubre", "28/10",
+"2026-10-28", and the English forms ("yesterday", "last tuesday", "2 days ago"…). The other
+words are what is searched: `search "microproxy ayer"` = microproxy, only yesterday. A query
+that is only a date (`search "qué hicimos el lunes"`) returns that span's session handoffs.
+No result for a date means nothing was recorded in this project that day — say so.
 
 `search` returns hits tagged by how they were found. The tag decides how much they prove:
 

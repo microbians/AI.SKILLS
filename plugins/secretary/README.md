@@ -288,6 +288,8 @@ There are no type prefixes, no `due_at` and no `status` column.
 
 ## Search: literal and semantic, fused
 
+**By date.** A date in the query limits every stage to that span of local time: `hoy`/`today`, `ayer`/`yesterday`, `anteayer`, `el martes (pasado)`/`last tuesday`, `la semana pasada`/`last week`, `esta semana`, `este mes`, `el mes pasado`, `hace 3 días`/`3 days ago`, `los últimos 5 días`/`last 5 days`, `el 5 de octubre`/`october 5`, `en octubre`/`in october`, `28/10`, `2026-10-28`. The remaining words are what is searched (`search "microproxy ayer"`). A query that is only a date (`search "qué hicimos el lunes"`) returns the session handoffs written that day, else its other summaries. The summaries cache has no per-entry dates, so a dated query skips it; vector hits are kept only when they fall in the span. A bare weekday word ("lunes") is not a date.
+
 Two indexes, because they fail in opposite ways. Measured on a real 1.8k-turn project:
 
 | Query kind | FTS5 | Vectors |
@@ -595,6 +597,7 @@ TheSecretary/
 
 | Version | Date | Change |
 |---|---|---|
+| 2.12.0 | 2026-10-28 | Search by date: a date in the query ("ayer", "el martes pasado", "la semana pasada", "hace 3 días", "el 5 de octubre", "2026-10-28", and the English forms) limits literal, vector and summary results to that span of local time; the other words are what is searched. A query that is only a date returns that day's session handoffs |
 | 2.11.1 | 2026-10-28 | A session opened in any subfolder of a repo now uses the memory at the repo root: the personal folder name that the project-root climb treated as a "container of unrelated projects" is gone from `GENERIC_CONTAINERS`, so subfolders no longer get a memory of their own |
 | 2.11.0 | 2026-10-28 | The skill is renamed `secretary` (`/secretary`); the installer removes the old `skills/the-secretary` folder. Data folders keep their `the-secretary` name. `/secretary ai` (and `summarize.mjs backend`) shows or switches the summarizing AI: `local`, `apple` or `claude [model]`. `--account <name | email | folder>` / the `claude_config_dir` key pick which Claude account the CLI bills when there is more than one. Off-project sessions get one `OFF-PROJECT:` line instead of taking over the handoff. The Apple backend gets no frequency penalty |
 | 2.10.1 | 2026-10-17 | Long sessions get a handoff again: `messagesToText` admitted every user turn before any assistant turn, so once a session's requests alone filled the 16000-char budget the model saw only asks, no replies, answered `NOTHING TO REPORT`, and no handoff was stored for the rest of the session (the next `/clear` injected one ten hours stale). Talk turns of both roles are now admitted in one recency pass. The files-touched manifest writes paths relative to the session's first `cwd`: absolute paths under a deep project root cut the list at 8 files. With `SECRETARY_DEBUG`, every prompt sent to the LLM is appended to `$TMPDIR/secretary-prompts-debug.txt` and skipped transcript lines are logged. The `claude_cli` cooldown after two failures now holds: `readClaudeState` read `degradedUntil` with `| 0`, which truncates a millisecond timestamp to 32 bits into a value always in the past |

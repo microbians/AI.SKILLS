@@ -1654,6 +1654,132 @@ function vectorSearch(db, query, limit) {
 
 // ═══════════════════ DATE PARSING ═══════════════════
 
+// A date in a recall question ("qué hicimos ayer", "lo del martes pasado",
+// "last week", "hace 3 días", "el 5 de octubre", "2026-10-28") narrows the
+// search to that span of local time. Returns { from, to, index, phrase } —
+// `to` is exclusive; `index`/`phrase` locate the date words so the caller can
+// search for the rest — or null when the text names no date.
+const WEEKDAYS = {
+  domingo: 0, lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6,
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+};
+const MONTHS = {
+  enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5, julio: 6, agosto: 7,
+  septiembre: 8, setiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
+  january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6, august: 7,
+  september: 8, october: 9, november: 10, december: 11,
+};
+const NUMBER_WORDS = {
+  un: 1, una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7,
+  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
+};
+const WEEKDAY_RX = Object.keys(WEEKDAYS).join('|');
+const MONTH_RX = Object.keys(MONTHS).join('|');
+
+// Lowercase and strip accents one character for one, so a match index in the
+// folded text is also valid in the original.
+const foldSameLength = (s) => s.toLowerCase()
+  .replace(/[áàâä]/g, 'a').replace(/[éèêë]/g, 'e').replace(/[íìîï]/g, 'i')
+  .replace(/[óòôö]/g, 'o').replace(/[úùûü]/g, 'u');
+
+function parseDateRange(text, now = new Date()) {
+  const s = foldSameLength(text || '');
+  const day = (d, add = 0) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + add);
+  const today = day(now);
+  const count = (w) => (/^\d+$/.test(w) ? Number(w) : NUMBER_WORDS[w]) || 0;
+  const monday = (d) => day(d, -((d.getDay() + 6) % 7));
+  // A day or month named without a year is the most recent one not in the future.
+  const pastYear = (month, date = 1) =>
+    new Date(today.getFullYear(), month, date) > today ? today.getFullYear() - 1 : today.getFullYear();
+  const oneDay = (d) => ({ from: d, to: day(d, 1) });
+  const dayOf = (month, date) => oneDay(new Date(pastYear(month, date), month, date));
+  const monthOf = (month) => {
+    const y = pastYear(month);
+    return { from: new Date(y, month, 1), to: new Date(y, month + 1, 1) };
+  };
+  const ago = (k, unit) => {
+    if (!k) return null;
+    if (/^d/.test(unit)) return oneDay(day(today, -k));
+    if (/^(?:s|w)/.test(unit)) return { from: day(today, -7 * k), to: day(today, -7 * (k - 1)) };
+    return { from: new Date(today.getFullYear(), today.getMonth() - k, 1), to: new Date(today.getFullYear(), today.getMonth() - k + 1, 1) };
+  };
+
+  // Most specific first: an explicit date beats "ayer" in the same sentence.
+  const rules = [
+    [/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/, (m) => oneDay(new Date(+m[1], m[2] - 1, +m[3]))],
+    [/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2}|\d{4}))?\b/, (m) => m[3]
+      ? oneDay(new Date(m[3].length === 2 ? 2000 + +m[3] : +m[3], m[2] - 1, +m[1]))
+      : dayOf(m[2] - 1, +m[1])],
+    [new RegExp(`\\b(?:el\\s+)?(\\d{1,2})\\s+(?:de\\s+)?(${MONTH_RX})\\b`), (m) => dayOf(MONTHS[m[2]], +m[1])],
+    [new RegExp(`\\b(${MONTH_RX})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`), (m) => dayOf(MONTHS[m[1]], +m[2])],
+    [/\b(?:anteayer|antes\s+de\s+ayer|(?:the\s+)?day\s+before\s+yesterday)\b/, () => oneDay(day(today, -2))],
+    [/\b(?:ayer|yesterday)\b/, () => oneDay(day(today, -1))],
+    [/\b(?:hoy|today)\b/, () => oneDay(today)],
+    [/\b(?:(?:en\s+)?los\s+)?(?:ultimos|last|past)\s+(\d+|[a-z]+)\s+(dias|days|semanas|weeks)\b/, (m) => {
+      const k = count(m[1]) * (/^(?:s|w)/.test(m[2]) ? 7 : 1);
+      return k ? { from: day(today, -k), to: day(today, 1) } : null;
+    }],
+    [/\bhace\s+(\d+|[a-z]+)\s+(dias?|semanas?|mes(?:es)?)\b/, (m) => ago(count(m[1]), m[2])],
+    [/\b(\d+|[a-z]+)\s+(days?|weeks?|months?)\s+ago\b/, (m) => ago(count(m[1]), m[2])],
+    [/\b(?:(?:la\s+)?semana\s+pasada|last\s+week)\b/, () => ({ from: day(monday(today), -7), to: monday(today) })],
+    [/\b(?:esta\s+semana|this\s+week)\b/, () => ({ from: monday(today), to: day(today, 1) })],
+    [/\b(?:(?:el\s+)?mes\s+pasado|last\s+month)\b/, () => ({
+      from: new Date(today.getFullYear(), today.getMonth() - 1, 1), to: new Date(today.getFullYear(), today.getMonth(), 1),
+    })],
+    [/\b(?:este\s+mes|this\s+month)\b/, () => ({ from: new Date(today.getFullYear(), today.getMonth(), 1), to: day(today, 1) })],
+    // "el martes", "el martes pasado", "martes pasado", "last tuesday", "on tuesday":
+    // the latest such day before today. A bare weekday word is left alone.
+    [new RegExp(`\\b(?:el\\s+(${WEEKDAY_RX})(?:\\s+pasado)?|(${WEEKDAY_RX})\\s+pasado|(?:last|on)\\s+(${WEEKDAY_RX}))\\b`), (m) => {
+      const wd = WEEKDAYS[m[1] || m[2] || m[3]];
+      return oneDay(day(today, -((today.getDay() - wd + 7) % 7 || 7)));
+    }],
+    [new RegExp(`\\b(?:en|in)\\s+(${MONTH_RX})\\b`), (m) => monthOf(MONTHS[m[1]])],
+  ];
+
+  for (const [rx, toRange] of rules) {
+    const m = s.match(rx);
+    if (!m) continue;
+    const range = toRange(m);
+    if (range && !isNaN(range.from) && range.to > range.from) return { ...range, index: m.index, phrase: m[0] };
+  }
+  return null;
+}
+
+// The span as each table stores it: turns in ISO UTC, summaries in SQLite's UTC text.
+function dateBounds(range) {
+  const iso = [range.from.toISOString(), range.to.toISOString()];
+  return { turns: iso, summaries: iso.map((t) => t.replace('T', ' ').slice(0, 19)) };
+}
+
+// A question that is only a date ("qué hicimos ayer"): what happened then, oldest
+// first — the session handoffs written in that span, else its other summaries.
+function searchByDate(cwd, range, { maxHits, snippetChars }) {
+  const db = openDb(cwd);
+  if (!db) return [];
+  try {
+    const rows = db.prepare(`
+      SELECT project_dir, summary, created_at FROM all_items
+      WHERE created_at >= ? AND created_at < ?
+      ORDER BY created_at
+    `).all(...dateBounds(range).summaries);
+    const handoffs = rows.filter((r) => r.summary.startsWith('[HANDOFF]'));
+    // Stored in UTC; shown in the user's local time, like the dates they asked about.
+    const local = (utc) => {
+      const d = new Date(`${utc.replace(' ', 'T')}Z`);
+      const p = (n) => String(n).padStart(2, '0');
+      return isNaN(d) ? utc : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    };
+    return (handoffs.length ? handoffs : rows).slice(-maxHits).map((r) => ({
+      source: 'db',
+      project: basename(r.project_dir || '') || 'unknown',
+      date: local(r.created_at || ''),
+      score: 0,
+      snippet: r.summary.slice(0, snippetChars).trim(),
+    }));
+  } catch { return []; }
+  finally { db.close(); }
+}
+
 
 // ═══════════════════ INTENT CLASSIFICATION ═══════════════════
 
@@ -3110,11 +3236,17 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
   const q = (query || '').trim();
   if (q.length < 3) return [];
 
+  // A date narrows WHERE to look; the words around it are WHAT to look for.
+  const range = parseDateRange(q);
+  const words = range ? `${q.slice(0, range.index)} ${q.slice(range.index + range.phrase.length)}`.trim() : q;
+  const bounds = range && dateBounds(range);
+  const inRange = (row) => !bounds || (row.created_at >= bounds.turns[0] && row.created_at < bounds.turns[1]);
+
   // "Where were we?" is a question about time, not about words — answer it from the
   // tail of the conversation. Keyword ranking would surface any old turn that merely
   // repeats the phrasing. Regex first (instant, covers the common phrasings); the local
   // model is consulted only when it misses, since phrasing is open-ended.
-  if (isTemporalQuery(q) || await isTemporalQueryLLM(q)) {
+  if (!range && (isTemporalQuery(q) || await isTemporalQueryLLM(q))) {
     const recent = recentContext(cwd, { limit: maxHits * 2 });
     if (recent.length) {
       return recent.map((r) => ({
@@ -3138,9 +3270,11 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
     'the', 'and', 'for', 'what', 'did', 'was', 'were', 'have', 'has', 'with', 'from',
     'this', 'that', 'these', 'those', 'about', 'into', 'been', 'they', 'you', 'your',
   ]);
-  let terms = q.split(/\s+/)
-    .map((t) => t.replace(/[.,;:!?()"']/g, ''))
+  let terms = words.split(/\s+/)
+    .map((t) => t.replace(/[.,;:!?()"'¿¡]/g, ''))
     .filter((t) => t.length >= 3 && !STOPWORDS.has(t.toLowerCase()));
+  // Only a date left ("qué hicimos ayer"): answer with what happened then.
+  if (range && terms.length === 0) return searchByDate(cwd, range, { maxHits, snippetChars });
   // If the query was ALL stopwords, fall back to the original tokens rather
   // than returning nothing.
   if (terms.length === 0) terms = q.split(/\s+/).filter((t) => t.length >= 3);
@@ -3150,7 +3284,8 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
   const hits = [];
 
   // ── 1. Cache .md files (this project only) ──
-  try {
+  // The cache has no per-entry dates, so a dated question skips it.
+  if (!range) try {
     const { readdirSync, readFileSync, statSync } = await import('fs');
     const projPath = cacheDirForProject(cwd);
     const projName = basename(resolveProjectRoot(cwd) || cwd || '');
@@ -3225,10 +3360,10 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
           db.prepare(`
             SELECT rowid AS rid, body, role, project_dir, created_at, bm25(turns) AS rank
             FROM turns
-            WHERE turns MATCH ?
+            WHERE turns MATCH ? ${bounds ? 'AND created_at >= ? AND created_at < ?' : ''}
             ORDER BY rank
             LIMIT 500
-          `).all(match)
+          `).all(match, ...(bounds ? bounds.turns : []))
             .map(r => ({ ...r, cover: folded.filter(t => fold(r.body || '').includes(t)).length }))
             .sort((a, b) => (b.cover - a.cover) || (a.rank - b.rank))
             .slice(0, 50)
@@ -3236,7 +3371,8 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
               row, score: 1 / (RRF_K + i), literal: true, exact: row.cover === folded.length,
             }));
         }
-        vectorSearch(db, q, 50).forEach((row, i) => {
+        // Vectors cannot filter by date: fetch wider, keep the rows in the span.
+        vectorSearch(db, words, range ? 200 : 50).filter(inRange).slice(0, 50).forEach((row, i) => {
           const hit = fused.get(row.rid);
           if (hit) hit.score += 1 / (RRF_K + i);
           else fused.set(row.rid, { row, score: 1 / (RRF_K + i), literal: false, exact: false });
@@ -3299,10 +3435,10 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
         const rows = db.prepare(`
           SELECT project_dir, summary, created_at, ${scoreExpr} AS matches
           FROM all_items
-          WHERE matches > 0
+          WHERE matches > 0 ${bounds ? 'AND created_at >= ? AND created_at < ?' : ''}
           ORDER BY matches DESC, created_at DESC
           LIMIT ?
-        `).all(...params, maxHits - hits.length);
+        `).all(...params, ...(bounds ? bounds.summaries : []), maxHits - hits.length);
 
         for (const row of rows) {
           const lower = row.summary.toLowerCase();
