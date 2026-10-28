@@ -21,7 +21,7 @@
  * Reads hook JSON from stdin.
  */
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, rmSync, openSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync, readdirSync, statSync, unlinkSync, rmSync, openSync, readSync, closeSync, fstatSync } from 'fs';
 import { join, basename, dirname } from 'path';
 import { homedir, tmpdir } from 'os';
 import { createHash } from 'crypto';
@@ -63,6 +63,9 @@ function loadConfig() {
     max_summary_tokens: 800,
     restore_recent_items: 15,
     restore_tail_chars: 5000,
+    context_warn_tokens: 130000,
+    context_clear_tokens: 170000,
+    trim_keep_tokens: 60000,
     db_path: join(SECRETARY_DIR, 'summaries.db'),
   };
   try {
@@ -110,6 +113,8 @@ function parentDir(p) {
 }
 
 const PROJECT_DATA_SUBDIR = join('.claude', 'the-secretary');
+// A handoff whose session did no work on the project: one line, never the resume point.
+const OFF_PROJECT_TAG = 'OFF-PROJECT:';
 
 function resolveProjectRoot(cwd) {
   if (!cwd || cwd === '__global__') return null;
@@ -671,6 +676,7 @@ async function callLLM(prompt, maxTokens = config.max_summary_tokens) {
   }
   if (process.env.SECRETARY_DEBUG) {
     process.stderr.write(`[llm] prompt=${prompt.length} chars, raw=${raw.length} chars: ${JSON.stringify(raw.slice(0, 600))}\n`);
+    try { appendFileSync(join(tmpdir(), 'secretary-prompts-debug.txt'), `\n═════ ${new Date().toISOString()} ═════\n${prompt}\n`, 'utf-8'); } catch { /* ignore */ }
   }
   if (isDegenerate(raw)) {
     const salvaged = trimDegenerateTail(raw);
@@ -719,10 +725,13 @@ function requestLLM(prompt, maxTokens = 1500) {
       // explicitly. Names are MLX's own — `repeat_penalty` (llama.cpp's spelling)
       // is silently ignored here. The context sizes default to 20 tokens, far too
       // short to notice a long loop, hence the wider windows.
-      repetition_penalty: 1.1,
-      repetition_context_size: 256,
-      frequency_penalty: 0.3,
-      frequency_context_size: 256,
+      // Apple's on-device model (apfel) rejects frequency_penalty, so it gets none.
+      ...(config.local_backend === 'apple' ? {} : {
+        repetition_penalty: 1.1,
+        repetition_context_size: 256,
+        frequency_penalty: 0.3,
+        frequency_context_size: 256,
+      }),
     });
 
     const req = http.request({
@@ -765,7 +774,9 @@ function readClaudeState() {
     if (!existsSync(CLAUDE_DEGRADE_FILE)) return { fails: 0, degradedUntil: 0 };
     const raw = readFileSync(CLAUDE_DEGRADE_FILE, 'utf-8');
     const parsed = JSON.parse(raw);
-    return { fails: parsed.fails | 0, degradedUntil: parsed.degradedUntil | 0 };
+    // Number(), not `| 0`: a millisecond timestamp does not fit in 32 bits, and
+    // the truncated value always lay in the past, so the cooldown never held.
+    return { fails: Number(parsed.fails) || 0, degradedUntil: Number(parsed.degradedUntil) || 0 };
   } catch { return { fails: 0, degradedUntil: 0 }; }
 }
 
@@ -791,6 +802,16 @@ function recordClaudeSuccess() {
   writeClaudeState({ fails: 0, degradedUntil: 0 });
 }
 
+// Which Claude account the CLI bills. Each account is a config folder
+// (CLAUDE_CONFIG_DIR): a path picks that account, "default" the one with no
+// CLAUDE_CONFIG_DIR, and no key keeps whatever the current session uses.
+function claudeAccountEnv(account) {
+  const env = { ...process.env };
+  if (account === 'default') delete env.CLAUDE_CONFIG_DIR;
+  else if (account) env.CLAUDE_CONFIG_DIR = account.replace(/^~/, homedir());
+  return env;
+}
+
 function callClaudeCLI(prompt, maxTokens = 1500) {
   return new Promise((resolve, reject) => {
     if (isClaudeDegraded()) {
@@ -807,7 +828,7 @@ function callClaudeCLI(prompt, maxTokens = 1500) {
     const child = execFile(bin, args, {
       timeout: 45000,
       maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env },
+      env: claudeAccountEnv(config.claude_config_dir),
     }, (err, stdout, stderr) => {
       if (err) {
         recordClaudeFail();
@@ -1179,10 +1200,14 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
   // projects). This manifest is built straight from tool_use blocks, costs ~300
   // chars for a whole session, and is passed to the model as authoritative.
   const filesTouched = new Map();
+  // The first cwd the session reports is where it was launched (the project
+  // root); later entries follow the shell wherever a command cd'd to.
+  let sessionRoot = '';
 
   for (let i = fromOffset; i < lines.length; i++) {
     try {
       const entry = JSON.parse(lines[i]);
+      if (!sessionRoot && entry.cwd) sessionRoot = entry.cwd;
       const msg = entry.message || entry;
       // Only real conversation roles. A transcript also carries bookkeeping entries
       // ('attachment', 'last-prompt', 'mode', 'system', 'queue-operation', …) that have
@@ -1212,7 +1237,11 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
             images.push(block.source);
           } else if (block.type === 'tool_use') {
             toolText += `[Tool: ${block.name}] ${JSON.stringify(block.input || {}).slice(0, 200)}\n`;
-            const fp = block.input?.file_path || block.input?.notebook_path;
+            let fp = block.input?.file_path || block.input?.notebook_path;
+            // Relative to the session's root: absolute paths under a deep project
+            // root cost ~150 chars each, so the manifest cap cut the list after
+            // 8 files and the session's most edited files never reached the model.
+            if (fp && sessionRoot && fp.startsWith(sessionRoot + '/')) fp = fp.slice(sessionRoot.length + 1);
             if (fp) {
               const verb = FILE_WRITERS.has(block.name) ? 'changed'
                 : FILE_READERS.has(block.name) ? 'read' : 'used';
@@ -1242,7 +1271,9 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
       } else if (toolText.trim().length > 10) {
         messages.push({ role: 'tool', kind: 'tool', text: toolText.trim().slice(0, 1000), line: i, ts });
       }
-    } catch { /* skip malformed lines */ }
+    } catch (err) {
+      if (process.env.SECRETARY_DEBUG) process.stderr.write(`[parse] line ${i} skipped: ${err.message}\n`);
+    }
   }
 
   return { messages, rawLength: lines.length, filesTouched };
@@ -1253,8 +1284,8 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
  *
  * Two rules, both learned the hard way from transcripts where the summary came out
  * describing tool output instead of the work:
- *  - User turns state the intent and the constraints, so they are admitted first and
- *    only then assistant turns; tool traffic fills whatever is left, if anything.
+ *  - Conversation turns (user and assistant together) are admitted first; tool
+ *    traffic fills whatever is left, if anything.
  *  - Selection walks BACKWARDS. The end of a session holds its current state, which is
  *    what a handoff needs; truncating from the front kept only the stale opening.
  * Emitted output is restored to chronological order so the model reads a conversation.
@@ -1275,7 +1306,7 @@ function filesTouchedBlock(filesTouched, maxChars = 1200) {
     out += line;
   }
   if (!out) return '';
-  return `FILES TOUCHED (from this session's tool calls — authoritative; do NOT list any file absent from here):\n${out}\n`;
+  return `FILES TOUCHED (from this session's tool calls — authoritative; do NOT list any file absent from here). Relative paths are under the session's working directory:\n${out}\n`;
 }
 
 const SUMMARY_TURN_CHARS = 3000;
@@ -1342,9 +1373,12 @@ function messagesToText(messages, maxChars = 8000, filesTouched = null) {
   const manifest = filesTouchedBlock(filesTouched);
   budget.used += manifest.length;
 
+  // Both sides of the conversation in one recency pass. Admitting every user
+  // turn before any assistant turn let a long session's requests fill the whole
+  // budget: the model saw only asks, no replies, and answered NOTHING TO REPORT
+  // for a day of real work, so no handoff was stored after the session grew.
   const recentFirst = [...messages].reverse();
-  admit(recentFirst.filter(m => m.kind === 'talk' && m.role === 'user'));
-  admit(recentFirst.filter(m => m.kind === 'talk' && m.role === 'assistant'));
+  admit(recentFirst.filter(m => m.kind === 'talk'));
   admit(recentFirst.filter(m => m.kind === 'tool'));
 
   let text = '';
@@ -2163,13 +2197,24 @@ ACCURACY RULES (mandatory):
 CONVERSATION:
 ${text}`;
 
+  const handoffRoot = resolveProjectRoot(cwd) || cwd;
   const handoffPrompt = `You are writing a session handoff so the NEXT session can resume this work WITHOUT the user explaining anything again. The reader will be a fresh assistant with no memory of what just happened.
+
+PROJECT: ${basename(handoffRoot)} (root: ${handoffRoot})
+The handoff is about THIS project only. Work on anything else — shell config, Claude
+or tooling setup, accounts, other folders, files outside the project root — is
+OFF-PROJECT. Off-project work never fills the sections below; it gets at most ONE short
+bullet in the final "## Outside the project" section.
 
 FIRST, read the CONVERSATION below and judge whether it actually contains a session's
 work. If it is only a line or two, or holds no identifiable files, decisions or problems,
 output exactly this and nothing else:
 
 NOTHING TO REPORT
+
+If the session's only work was OFF-PROJECT, output exactly one line and nothing else:
+
+${OFF_PROJECT_TAG} <one sentence, max 120 characters, naming what was done>
 
 That is a valid, expected answer. An empty handoff costs the next session nothing, while
 an invented one misleads it for hours. NEVER fill the sections below with plausible but
@@ -2200,7 +2245,10 @@ Paths of any backup folders created this session.
 File paths + one-line description of what changed in each. If the conversation opens
 with a FILES TOUCHED list, that list is the ONLY valid source for this section: every
 path must come from it verbatim, and a file it marks "read" was inspected, NOT changed.
-Never add a file that is absent from it.
+Never add a file that is absent from it. Only files inside the project root go here.
+
+## Outside the project
+At most one bullet, max 120 characters, for off-project work. Omit if there was none.
 
 Rules:
 - Be concrete, name things. No vague language ("we worked on improvements").
@@ -2240,7 +2288,10 @@ ${text}`;
   // \W* on both sides so markdown emphasis around the phrase ("**NOTHING TO
   // REPORT**") is matched too, not just a bare line.
   let finalSummary = summary.replace(/\n+\W*nothing to report\W*$/i, '').trim();
-  if (/^\W*nothing to report\W*$/i.test(finalSummary) || finalSummary.length < 50) {
+  // Off-project session: keep only its one line, stripped of markdown emphasis.
+  const offProject = isHandoff && finalSummary.match(/^\W*OFF-PROJECT\W*:?\**\s*(.+)/i);
+  if (offProject) finalSummary = `${OFF_PROJECT_TAG} ${offProject[1].split('\n')[0].replace(/\*+/g, '').trim()}`;
+  if (/^\W*nothing to report\W*$/i.test(finalSummary) || finalSummary.length < (offProject ? 20 : 50)) {
     process.stderr.write('the-secretary: handoff skipped (transcript held no reportable work)\n');
     process.exit(0);
   }
@@ -2486,20 +2537,39 @@ async function restore(hookInput) {
     //     summaries so it dominates the new session's initial context.
     let handoffBrief = '';
     if (cwd) {
+      // The resume point is the latest handoff with PROJECT work; sessions spent
+      // on something else after it only get their one line.
+      const offProjectLike = `[HANDOFF] ${OFF_PROJECT_TAG}%`;
       const handoffRow = db.prepare(`
         SELECT summary, created_at, session_id FROM all_items
         WHERE ${tree.clause}
-          AND summary LIKE '[HANDOFF]%'
+          AND summary LIKE '[HANDOFF]%' AND summary NOT LIKE ?
         ORDER BY created_at DESC
         LIMIT 1
-      `).get(...tree.params);
+      `).get(...tree.params, offProjectLike);
       if (handoffRow) {
         const body = (handoffRow.summary || '').replace(/^\[HANDOFF\]\s*/i, '').trim();
         const when = handoffRow.created_at
           ? new Date(handoffRow.created_at + 'Z').toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
           : '';
-        handoffBrief = `## 📋 Session handoff — resume here\n\n_Written at the end of the previous session (${when}). Read this first; the older bullet summaries below are background._\n\n${body}\n`;
+        handoffBrief = `## 📋 Session handoff — resume here\n\n_Last session with work on this project (${when}). Read this first; the older bullet summaries below are background._\n\n${body}\n`;
         output += handoffBrief + '\n';
+      }
+      const offProjectRows = db.prepare(`
+        SELECT summary, MAX(created_at) AS created_at FROM all_items
+        WHERE ${tree.clause}
+          AND summary LIKE ? AND created_at > ?
+        GROUP BY summary
+        ORDER BY created_at DESC
+        LIMIT 3
+      `).all(...tree.params, offProjectLike, handoffRow?.created_at || '');
+      if (offProjectRows.length > 0) {
+        output += `## ↪ Outside the project since then\n\n`;
+        for (const r of offProjectRows) {
+          const date = new Date(r.created_at + 'Z').toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+          output += `- ${r.summary.replace(/^\[HANDOFF\]\s*OFF-PROJECT:\s*/i, '')} _(${date})_\n`;
+        }
+        output += '\n';
       }
     }
 
@@ -2523,7 +2593,9 @@ async function restore(hookInput) {
     //     the literal "what happened most recently in the DB" view the user
     //     asked for — independent of session grouping or bullet caching, so it
     //     can never go stale relative to a handoff written under a sibling path.
-    if (cwd) {
+    //     Skipped when a handoff exists: it repeats the handoff's own drafts and
+    //     every restored token is paid again on each turn of the session.
+    if (cwd && !handoffBrief) {
       const N = Math.max(1, parseInt(config.restore_recent_items, 10) || 15);
       const recentItems = db.prepare(`
         SELECT summary, created_at FROM all_items
@@ -2549,9 +2621,12 @@ async function restore(hookInput) {
       }
     }
 
-    const cacheLabel = cacheHit ? ` _(bullets cache)_` : '';
-    const ctxLabel = handoffBrief ? '## Background — older session bullets' : '## Context from Previous Conversation (auto-injected by The Secretary)';
-    output += `${ctxLabel}${cacheLabel}\n\n${finalSummary}\n`;
+    // Older session bullets only stand in for a missing handoff; next to one
+    // they repeat it. They stay reachable through `recall`.
+    if (!handoffBrief) {
+      const cacheLabel = cacheHit ? ` _(bullets cache)_` : '';
+      output += `## Context from Previous Conversation (auto-injected by The Secretary)${cacheLabel}\n\n${finalSummary}\n`;
+    }
 
     // 2. Saved items — one flat list, no categories.
     if (savedItems.length > 0) {
@@ -2791,9 +2866,9 @@ async function recall(hookInput) {
         const priorHandoffs = db.prepare(`
           SELECT summary, created_at FROM all_items
           WHERE src = 'p' AND session_id != ?
-            AND summary LIKE '[HANDOFF]%'
+            AND summary LIKE '[HANDOFF]%' AND summary NOT LIKE ?
           ORDER BY created_at DESC LIMIT 2
-        `).all(lastSessionRow.session_id);
+        `).all(lastSessionRow.session_id, `[HANDOFF] ${OFF_PROJECT_TAG}%`);
 
         if (priorHandoffs.length > 0) {
           output += `## Handoffs de sesiones anteriores (${priorHandoffs.length})\n\n`;
@@ -3361,6 +3436,22 @@ async function cmdIndexVectors() {
   }
 }
 
+/**
+ * Whole history of a trimmed session in one temp file: `<transcript>.bak`
+ * (the lines trims dropped, in order) followed by the live file's lines not
+ * already there. Returns { path, liveLines }.
+ */
+function mergeTrimmedTranscript(path) {
+  const uuidOf = (l) => l.match(/"uuid":"([^"]+)"/)?.[1];
+  const bak = readFileSync(`${path}.bak`, 'utf-8').split('\n').filter((l) => l.trim());
+  const live = readFileSync(path, 'utf-8').split('\n').filter((l) => l.trim());
+  const saved = new Set(bak.map(uuidOf).filter(Boolean));
+  const merged = [...bak, ...live.filter((l) => !saved.has(uuidOf(l)))];
+  const out = join(tmpdir(), `secretary-merged-${basename(path)}`);
+  writeFileSync(out, merged.join('\n') + '\n');
+  return { path: out, liveLines: live.length };
+}
+
 async function cmdIndexTurns() {
   const cwd = process.cwd();
   // Claude Code slugifies the project path by replacing every non-alphanumeric run
@@ -3397,9 +3488,15 @@ async function cmdIndexTurns() {
 
   let files = 0, indexed = 0;
   try {
+    const only = process.argv.includes('--session') ? process.argv[process.argv.indexOf('--session') + 1] : null;
     for (const f of readdirSync(projectsDir)) {
       if (!f.endsWith('.jsonl')) continue;
       const sessionId = f.replace(/\.jsonl$/, '');
+      if (only && sessionId !== only) continue;
+      const path = join(projectsDir, f);
+      // A trimmed session (see trimSession) keeps its older lines in `.bak`:
+      // a rebuild reads both, or it would replace the history with the tail.
+      const full = rebuild && existsSync(`${path}.bak`) ? mergeTrimmedTranscript(path) : null;
       if (rebuild) {
         db.transaction(() => {
           if (hasVectors) db.prepare('DELETE FROM vturns WHERE rowid IN (SELECT rowid FROM turns WHERE session_id = ?)').run(sessionId);
@@ -3409,7 +3506,13 @@ async function cmdIndexTurns() {
       }
       let n = 0;
       try {
-        n = indexTranscript(db, join(projectsDir, f), { session_id: sessionId, cwd });
+        n = indexTranscript(db, full?.path ?? path, { session_id: sessionId, cwd });
+        if (full) {
+          // The merged file ends with every line of the live one: all indexed.
+          db.prepare(`INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, datetime('now'))`)
+            .run(`fts-line:${sessionId}`, String(full.liveLines - 1));
+          rmSync(full.path, { force: true });
+        }
       } catch { continue; } // one unreadable transcript must not abort the rest
       files++;
       indexed += n;
@@ -3457,8 +3560,23 @@ async function userPromptHook(hookInput) {
   if (isRecallQuery(prompt)) {
     process.stdout.write(
       `## ⛔ The Secretary: pregunta de memoria\n\n` +
-      `Tu PRIMERA llamada a herramienta en este turno es \`Skill\` con \`skill: "the-secretary"\`, ` +
+      `Tu PRIMERA llamada a herramienta en este turno es \`Skill\` con \`skill: "secretary"\`, ` +
       `aunque el contexto ya esté inyectado. No respondas antes de cargarlo.\n\n`
+    );
+  }
+
+  // ── Context past the clear threshold ──
+  // Every turn resends the whole context, so a long session costs more per
+  // turn the longer it runs. The handoff makes /clear cheap; say when to do it.
+  const tokens = contextTokens(hookInput.transcript_path);
+  if (tokens >= config.context_clear_tokens) {
+    const howTo = trimIfOverLimit(hookInput)
+      ? `dale en un bloque de código el comando que retoma esta misma sesión, ya recortada a los últimos mensajes: ` +
+        `\`/resume ${hookInput.session_id}\``
+      : `dile que haga \`/clear\` (el handoff conserva el hilo)`;
+    process.stdout.write(
+      `## 🧹 The Secretary: contexto en ${Math.round(tokens / 1000)}k tokens\n\n` +
+      `Termina la tarea en curso y, al acabar, ${howTo}. No lo repitas si ya lo dijiste en este contexto.\n\n`
     );
   }
 
@@ -3581,14 +3699,192 @@ const HANDOFF_WAITING_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦',
  * systemMessage is only painted when the transcript next renders — after
  * /clear that is when the handoff has already landed — so the wait itself is
  * shown here: the status line prints the message while the previous session's
- * handoff is being written and goes blank once it is done.
+ * handoff is being written and goes blank once it is done. It also shows the
+ * context size (`ctx 92k`): dim, amber past `context_warn_tokens`, red with a
+ * /clear hint past `context_clear_tokens`.
  */
 function handoffStatus(statusInput) {
-  const { session_id } = statusInput;
+  const { session_id, transcript_path } = statusInput;
   const cwd = statusInput.cwd || statusInput.workspace?.current_dir;
-  if (!session_id || !cwd || !previousHandoffPid(cwd, session_id)) return;
-  const frame = HANDOFF_WAITING_FRAMES[Math.floor(Date.now() / 1000) % HANDOFF_WAITING_FRAMES.length];
-  process.stdout.write(`${HANDOFF_WAITING_MESSAGE} ${frame}\n`);
+  const parts = [];
+  // Debug: `touch ~/.claude/the-secretary/debug-status` dumps what Claude Code sends.
+  const debugPath = join(homedir(), '.claude', 'the-secretary', 'debug-status');
+  if (existsSync(debugPath)) writeFileSync(debugPath, JSON.stringify(statusInput, null, 2));
+  // Claude Code's own live count when it sends one: right after a /resume the
+  // transcript's last `usage` still belongs to the context before the resume.
+  const live = statusInput.context_window?.current_usage;
+  const tokens = live
+    ? (live.input_tokens || 0) + (live.cache_read_input_tokens || 0) + (live.cache_creation_input_tokens || 0)
+    : contextTokens(transcript_path);
+  if (tokens) {
+    const warn = config.context_warn_tokens, clear = config.context_clear_tokens;
+    const color = tokens >= clear ? '31' : tokens >= warn ? '33' : '2';
+    const hint = tokens >= clear ? ` /resume ${session_id}` : '';
+    // Bar spans the model's whole context window; a mark sits at the clear threshold.
+    const windowSize = statusInput.context_window?.context_window_size || 200000;
+    const CELLS = 30;
+    const filled = Math.min(CELLS, Math.round((tokens / windowSize) * CELLS));
+    const mark = Math.min(CELLS - 1, Math.round((clear / windowSize) * CELLS));
+    const cells = Array.from({ length: CELLS }, (_, i) => (i < filled ? '█' : '░'));
+    const bar = `\x1b[${color}m${cells.slice(0, mark).join('')}\x1b[0m\x1b[1m│\x1b[0m\x1b[${color}m${cells.slice(mark).join('')}`;
+    parts.push(`${bar} ${Math.round(tokens / 1000)}k${hint}\x1b[0m`);
+  }
+  if (session_id && cwd && previousHandoffPid(cwd, session_id)) {
+    const frame = HANDOFF_WAITING_FRAMES[Math.floor(Date.now() / 1000) % HANDOFF_WAITING_FRAMES.length];
+    parts.push(`${HANDOFF_WAITING_MESSAGE} ${frame}`);
+  }
+  if (parts.length) process.stdout.write(parts.join('  ·  ') + '\n');
+}
+
+/**
+ * Trims the session transcript IN PLACE to its tail, so `/resume <same id>`
+ * reopens the conversation with a small context. (A SessionStart "resume"
+ * hook cannot do it: it runs after the transcript is already loaded.) The
+ * running session keeps appending to the file and keeps its context in memory.
+ * The parent chain is walked back from the last message; the cut lands on the
+ * earliest user prompt whose tail stays under `trim_keep_tokens`, measured
+ * from the `usage` the transcript records for each request. Everything from the cut on is kept in file order (parallel tool
+ * results hang on sibling branches), minus sidechains and tool calls still
+ * waiting for a result. Every dropped line is first appended to
+ * `<transcript>.bak`, which so keeps the whole history. Returns true when the
+ * file was trimmed or is already short.
+ */
+function trimSession({ transcript_path: transcriptPath, session_id, cwd }) {
+  if (!transcriptPath || !existsSync(transcriptPath)) return false;
+  try {
+    const raw = readFileSync(transcriptPath, 'utf-8');
+    // Same line numbering as parseTranscript: the stored read positions count these.
+    const rawLines = raw.split('\n').filter((l) => l.trim());
+    const parsed = rawLines.map((l) => { try { return JSON.parse(l); } catch { return null; } });
+    const lines = parsed.filter(Boolean);
+    const CHAIN = new Set(['user', 'assistant', 'attachment', 'system']);
+    const byUuid = new Map(lines.filter((l) => l.uuid && CHAIN.has(l.type)).map((l) => [l.uuid, l]));
+    const leaf = [...lines].reverse().find((l) => l.uuid && CHAIN.has(l.type) && !l.isSidechain);
+    const chain = [];
+    for (let n = leaf; n; n = n.parentUuid ? byUuid.get(n.parentUuid) : null) chain.unshift(n);
+
+    // A prompt the user typed: system-made user entries (task notifications,
+    // command output) are meta or start with a tag.
+    const isPrompt = (l) => l.type === 'user' && !l.isMeta && typeof l.message?.content === 'string' && !l.message.content.startsWith('<');
+    // Tokens a tail adds, measured from the `usage` of each request: the sum of
+    // the growths between consecutive requests after the cut. A drop (an
+    // earlier resume or compaction restarted the context) adds nothing.
+    // (Estimating from content chars missed ~3x: images and hook text count.)
+    const contextOf = (l) => {
+      const u = l.type === 'assistant' && l.message?.usage;
+      return u ? (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) : null;
+    };
+    let cut = -1;
+    let tail = 0;
+    let next = null; // context of the closest request after i
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const own = contextOf(chain[i]);
+      if (own != null) {
+        if (next != null) tail += Math.max(0, next - own);
+        next = own;
+      }
+      if (tail > config.trim_keep_tokens) break;
+      if (isPrompt(chain[i])) cut = i;
+    }
+    if (cut < 0) return false;
+    if (cut === 0) return true;
+
+    const start = lines.indexOf(chain[cut]);
+    let kept = lines.slice(start).filter((l) => l.uuid && CHAIN.has(l.type) && !l.isSidechain);
+    const blocks = (l) => (Array.isArray(l.message?.content) ? l.message.content : []);
+    const answered = new Set(kept.flatMap((l) => blocks(l).filter((c) => c.type === 'tool_result').map((c) => c.tool_use_id)));
+    kept = kept.filter((l) => !(l.type === 'assistant' && blocks(l).some((c) => c.type === 'tool_use' && !answered.has(c.id))));
+    const keptLines = new Set(kept.map((l) => parsed.indexOf(l)));
+    kept[0] = { ...kept[0], parentUuid: null };
+
+    const bakPath = `${transcriptPath}.bak`;
+    const saved = new Set();
+    if (existsSync(bakPath)) {
+      for (const l of readFileSync(bakPath, 'utf-8').split('\n')) {
+        const m = l.match(/"uuid":"([^"]+)"/);
+        if (m) saved.add(m[1]);
+      }
+    }
+    const dropped = rawLines.filter((l, i) => !keptLines.has(i) && !(parsed[i]?.uuid && saved.has(parsed[i].uuid)));
+    if (dropped.length) appendFileSync(bakPath, dropped.join('\n') + '\n');
+
+    // Claude Code appends to this file while it runs: carry over whatever
+    // landed after the read so no line is lost.
+    const late = readFileSync(transcriptPath, 'utf-8').slice(raw.length);
+    writeFileSync(transcriptPath, kept.map((l) => JSON.stringify(l)).join('\n') + '\n' + late);
+    remapReadPositions(cwd, session_id, keptLines, rawLines.length);
+    return true;
+  } catch (err) {
+    process.stderr.write(`[secretary] trim error: ${err.message}\n`);
+    return false;
+  }
+}
+
+/**
+ * After a trim, moves the summarizer's and the turn index's read positions
+ * (line numbers into the transcript) onto the trimmed file, so neither skips
+ * the lines written next. `keptLines`: old numbers of the lines kept, which
+ * become lines 0..n-1; lines past `oldCount` arrived during the trim and follow.
+ */
+function remapReadPositions(cwd, sessionId, keptLines, oldCount) {
+  if (!sessionId) return;
+  const db = openDb(cwd);
+  if (!db) return;
+  try {
+    const kept = [...keptLines].sort((a, b) => a - b);
+    // Number of lines that end up before old line `n` in the new file.
+    const before = (n) => kept.filter((i) => i < n).length + Math.max(0, n - oldCount);
+    const read = (key) => db.prepare('SELECT value FROM state WHERE key = ?').get(key)?.value;
+    const write = db.prepare(`INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, datetime('now'))`);
+    const next = read(`offset:${sessionId}`); // next line to read
+    if (next != null) write.run(`offset:${sessionId}`, String(before(parseInt(next, 10))));
+    const last = read(`fts-line:${sessionId}`); // last line indexed
+    if (last != null) write.run(`fts-line:${sessionId}`, String(before(parseInt(last, 10) + 1) - 1));
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Trims the transcript when the context is past `context_clear_tokens`.
+ * Run on every prompt and at the end of every turn, so whenever the status
+ * line shows `/resume`, the file it reopens is already short.
+ */
+function trimIfOverLimit(hookInput) {
+  if (contextTokens(hookInput.transcript_path) < config.context_clear_tokens) return false;
+  return trimSession(hookInput);
+}
+
+/**
+ * Context size of the session's last main-thread request, from the `usage`
+ * the transcript records for it: everything sent (fresh + cache read + cache
+ * write). Reads only the transcript's tail, since the status line runs every
+ * second. Returns 0 when unknown.
+ */
+function contextTokens(transcriptPath) {
+  if (!transcriptPath || !existsSync(transcriptPath)) return 0;
+  let fd;
+  try {
+    fd = openSync(transcriptPath, 'r');
+    const size = fstatSync(fd).size;
+    const len = Math.min(size, 512 * 1024);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"usage"')) continue;
+      let entry;
+      try { entry = JSON.parse(lines[i]); } catch { continue; }
+      const u = entry.message?.usage;
+      if (!u || entry.isSidechain) continue;
+      return (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+    }
+    return 0;
+  } catch {
+    return 0;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 /**
@@ -3625,6 +3921,107 @@ async function awaitHandoff(hookInput, { rewake = false } = {}) {
     notifyMemoryRecovered(cwd, fresh ? 'Previous session handoff included' : 'No new context from the previous session');
     process.exitCode = 2;
   }
+}
+
+// ═══════════════════ BACKEND SWITCH ═══════════════════
+
+// Which AI writes the summaries. Each name is just a pair of config.json keys.
+const BACKENDS = {
+  local: { provider: 'local', local_backend: 'mlx' },
+  apple: { provider: 'local', local_backend: 'apple' },
+  claude: { provider: 'claude_cli' },
+};
+
+function backendName(cfg) {
+  if (cfg.provider === 'claude_cli') return 'claude';
+  return cfg.local_backend === 'apple' ? 'apple' : 'local';
+}
+
+// Every Claude account on this machine: the default one (~/.claude.json, no
+// CLAUDE_CONFIG_DIR) plus each ~/.<folder> holding its own .claude.json.
+// `value` is what claude_config_dir stores.
+function listClaudeAccounts() {
+  const emailOf = (file) => {
+    try { return JSON.parse(readFileSync(file, 'utf-8')).oauthAccount?.emailAddress || ''; } catch { return ''; }
+  };
+  const accounts = [{ value: 'default', folder: 'default', email: emailOf(join(homedir(), '.claude.json')) }];
+  for (const entry of readdirSync(homedir())) {
+    const file = join(homedir(), entry, '.claude.json');
+    if (entry.startsWith('.') && existsSync(file)) {
+      accounts.push({ value: join(homedir(), entry), folder: entry.slice(1), email: emailOf(file) });
+    }
+  }
+  return accounts;
+}
+
+const squash = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+const isSubsequence = (needle, hay) => { let i = 0; for (const c of hay) if (c === needle[i]) i++; return i === needle.length; };
+
+// An account is named by its folder, its email (with or without @ and dots),
+// the email's user or the email's domain. Tighter tests win: exact, prefix,
+// substring, then letters in order ("wrk" → work). A tie is no answer.
+function resolveClaudeAccount(query) {
+  const q = squash(basename(query));
+  const accounts = listClaudeAccounts();
+  const keys = (a) => {
+    const [user, domain = ''] = a.email.split('@');
+    return [a.folder, a.email, user, domain.split('.')[0]].filter(Boolean).map(squash);
+  };
+  const tests = [(k) => k === q, (k) => k.startsWith(q), (k) => k.includes(q), (k) => isSubsequence(q, k)];
+  for (const test of tests) {
+    const hits = accounts.filter(a => keys(a).some(test));
+    if (hits.length) return { account: hits.length === 1 ? hits[0] : null, accounts };
+  }
+  return { account: null, accounts };
+}
+
+function accountLabel(value) {
+  if (!value) return 'same as session';
+  const account = listClaudeAccounts().find(a => a.value === value.replace(/^~/, homedir()));
+  return account ? `${account.email || account.folder} (${account.folder})` : value;
+}
+
+function backendLabel(cfg) {
+  const name = backendName(cfg);
+  if (name === 'claude') return `claude (${cfg.claude_model}, account: ${accountLabel(cfg.claude_config_dir)})`;
+  if (name === 'apple') return 'apple (on-device)';
+  return `local (${cfg.model})`;
+}
+
+// `backend` shows the current one; `backend <local|apple|claude> [claude model] [--account <name|email|folder>]` switches.
+function cmdBackend(args) {
+  const raw = existsSync(CONFIG_PATH) ? JSON.parse(readFileSync(CONFIG_PATH, 'utf-8')) : {};
+  const current = { ...config, ...raw };
+  const at = args.indexOf('--account');
+  const account = at >= 0 ? args[at + 1] : undefined;
+  const [name, model] = at >= 0 ? [...args.slice(0, at), ...args.slice(at + 2)] : args;
+  if (!name) {
+    process.stdout.write(`The Secretary backend: ${backendLabel(current)}\nOptions: ${Object.keys(BACKENDS).join(' | ')} (claude takes an optional model, e.g. sonnet, and --account <name | email | folder>)\nAccounts: ${listClaudeAccounts().map(a => `${a.folder} <${a.email || '?'}>`).join(', ')}\n`);
+    return;
+  }
+  if (!BACKENDS[name]) {
+    process.stdout.write(`Unknown backend "${name}". Options: ${Object.keys(BACKENDS).join(' | ')}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const next = { ...raw, ...BACKENDS[name] };
+  if (name === 'claude' && model) next.claude_model = model;
+  if (name === 'claude' && account) {
+    const { account: hit, accounts } = resolveClaudeAccount(account);
+    if (!hit) {
+      const list = accounts.map(a => `${a.folder} <${a.email || '?'}>`).join(', ');
+      process.stdout.write(`No single account matches "${account}". Accounts: ${list}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    next.claude_config_dir = hit.value;
+  }
+  writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + '\n');
+  // A running local server keeps serving the old model; stop it so the next summary starts the new one.
+  if (backendName(current) !== name) {
+    try { execFileSync('bash', [join(SECRETARY_DIR, 'start-llm.sh'), 'stop'], { stdio: 'ignore' }); } catch { /* not running */ }
+  }
+  process.stdout.write(`The Secretary backend: ${backendLabel({ ...config, ...next })} (was ${backendLabel(current)})\n`);
 }
 
 // ═══════════════════ MAIN ═══════════════════
@@ -3720,6 +4117,11 @@ async function main() {
     return;
   }
 
+  if (command === 'backend') {
+    cmdBackend(process.argv.slice(3));
+    return;
+  }
+
   if (command === 'search') {
     await cmdSearch();
     return;
@@ -3750,6 +4152,7 @@ async function main() {
     process.stderr.write('  inject            Inject manual text: --text "your context"\n');
     process.stderr.write('  recall            Show the whole index: saved items + context\n');
     process.stderr.write('  search <query>    Search cache + DB for a query\n');
+    process.stderr.write('  backend [name]    Show or switch the summarizing AI: local | apple | claude [model] [--account <name|email|folder>]\n');
     process.stderr.write('  index-turns       Backfill the verbatim FTS index from transcripts on disk\n');
     process.stderr.write('  index-vectors     Build the semantic index (optional; needs embedding venv)\n');
     process.stderr.write('  sync              Refresh both indexes in the background (SessionStart hook)\n');
@@ -3774,7 +4177,10 @@ async function main() {
       case 'incremental': await incremental(hookInput); break;
       case 'compact': await compact(hookInput); break;
       case 'restore': await restore(hookInput); break;
-      case 'force': await force(hookInput, { stopLlm: process.argv.includes('--stop-llm'), notify: process.argv.includes('--notify') }); break;
+      case 'force':
+        await force(hookInput, { stopLlm: process.argv.includes('--stop-llm'), notify: process.argv.includes('--notify') });
+        trimIfOverLimit(hookInput); // after the handoff has read the full transcript
+        break;
       case 'inject': await inject(hookInput); break;
       case 'recall': await recall(hookInput); break;
       case 'user-prompt': await userPromptHook(hookInput); break;

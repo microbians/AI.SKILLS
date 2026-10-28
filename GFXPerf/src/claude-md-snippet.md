@@ -1,6 +1,8 @@
 <!-- skill: gfx-perf vSKILL_VERSION -->
 ## Graphics performance (JavaScript, Canvas2D, WebGPU)
 
-For any performance work on graphics code, STRICTLY follow the `gfx-perf` skill rules. Invoke it BEFORE: optimizing or profiling a render loop or anything that runs per frame or per element, writing or changing a shader, a buffer upload or a render pass for speed, writing a page that measures frame time, or answering "is this faster?".
+For any performance work on graphics code — or on any JavaScript that runs per element or per frame, graphics or not — STRICTLY follow the `gfx-perf` skill rules. Invoke it BEFORE: optimizing or profiling a render loop, a slow load or first frame, or anything that runs per frame or per element, writing or changing a shader, a buffer upload or a render pass for speed, writing a page that measures frame time, or answering "is this faster?".
 
 **The rule underneath all of them: a number you did not measure is a guess.** Measure in a real browser on the real display (never headless), after a warm-up, in a plain loop (never inside `requestAnimationFrame`), report the median, and interleave the variants (A, B, A, B). Count before timing — draw calls, bytes uploaded, allocations, passes. Allocate nothing per frame: create arrays, typed arrays and objects once and reuse them. A change that does not move the median is deleted, and every result that changed a decision is written into the project's findings log.
+
+**Hot loops live in small functions — never inside a giant method.** A JIT leaves the loops of a very large function (a thousand lines and up) at its lower tiers: every step looks slow per element (40–80 ns where 5–10 is normal) and nothing in the loop explains it. Move EVERY loop into a function of its own (taking out one can slow the ones left behind); find it by timing each step inside the function behind a debug flag. Measured on JavaScriptCore: a path build 482 → 170 ms, identical output.

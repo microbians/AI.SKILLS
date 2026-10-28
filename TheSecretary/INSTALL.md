@@ -29,8 +29,8 @@ mv ~/.claude/summarizer ~/.claude/the-secretary
 ## 1b. Install the skill
 
 ```bash
-mkdir -p ~/.claude/skills/the-secretary
-cp skill/SKILL.md ~/.claude/skills/the-secretary/SKILL.md
+mkdir -p ~/.claude/skills/secretary
+cp skill/SKILL.md ~/.claude/skills/secretary/SKILL.md
 ```
 
 The skill defines the behavior rules Claude must follow when interacting with The Secretary (recall commands, how to read `[said]` / `[said~]` hits, trigger patterns, scope, etc.).
@@ -94,7 +94,7 @@ What each hook does:
 node ~/.claude/the-secretary/inject-claude-md.mjs ~/.claude/CLAUDE.md src/claude-md-snippet.md "$(sed -n 's/^version: *//p' skill/SKILL.md)"
 ```
 
-This inserts (or refreshes) the section with a `<!-- skill: the-secretary vX.Y.Z -->` marker, which `check-versions.sh` reads.
+This inserts (or refreshes) the section with a `<!-- skill: secretary vX.Y.Z -->` marker, which `check-versions.sh` reads.
 
 ## 7. Verify
 

@@ -1,8 +1,8 @@
 ---
 name: gfx-perf
-description: Performance work on graphics code in the browser — JavaScript hot loops, Canvas2D and WebGPU. Use BEFORE optimizing, profiling or benchmarking a render loop, a stroke/particle/shape pipeline, a shader, a buffer upload, or any code that runs per frame or per element; when a page stutters, drops frames or a change "should be faster"; and when writing a page that measures frame time. Gives the measuring protocol (real browser, warm-up, median, interleaved A/B), a symptom → cause guide, and the rules for allocation-free JavaScript, Canvas2D state and fill rate, and WebGPU pipelines, buffers, passes and shaders.
-version: 1.0.0
-updated: 2026-10-11
+description: Performance work on JavaScript that runs per element or per frame — graphics or not — and on graphics code in the browser (Canvas2D, WebGPU). Use BEFORE optimizing, profiling or benchmarking a hot loop (a parser, a build or layout pass, a data transform over thousands of items, a render loop, a stroke/particle/shape pipeline), a shader or a buffer upload; when a page stutters, drops frames, a load or first frame is slow, or a change "should be faster"; and when writing a page that measures time. Gives the measuring protocol (real browser, warm-up, median, interleaved A/B), a symptom → cause guide, and the rules for allocation-free JavaScript, function size and JIT tiers, Canvas2D state and fill rate, and WebGPU pipelines, buffers, passes and shaders.
+version: 1.2.0
+updated: 2026-10-22
 license: MIT
 compatibility: opencode
 metadata:
@@ -13,10 +13,12 @@ metadata:
 
 # gfx-perf
 
-Rules for making graphics code fast in the browser, and for proving that it
-got faster. Three layers, cheapest to check first: the **JavaScript** that
-decides what to draw, the **Canvas2D** calls or **WebGPU** commands that draw
-it, and the **pixels** the GPU has to fill.
+Rules for making graphics code — and any JavaScript that runs per element —
+fast in the browser, and for proving that it got faster. Code that draws
+nothing uses the JavaScript layer and the measuring rules alone. Three
+layers, cheapest to check first: the **JavaScript** that decides what to
+draw, the **Canvas2D** calls or **WebGPU** commands that draw it, and the
+**pixels** the GPU has to fill.
 
 The rule underneath all of them:
 
@@ -53,6 +55,7 @@ how a week goes into making the wrong thing faster.
 | Symptom | Likely layer | Look at |
 |---------|-------------|---------|
 | Frame time grows with the number of elements, steady | CPU script | The per-element loop: work that could be skipped, cached or hoisted ([javascript.md](references/javascript.md)) |
+| Every step slow per element (tens of ns), nothing in the loop explains it | JIT tier | The loop inside a very large function: move each loop into a function of its own ([javascript.md](references/javascript.md) § Function size) |
 | Mostly smooth, with a hitch every few hundred ms | Garbage collection | Allocations inside the loop — arrays, objects, closures, strings ([javascript.md](references/javascript.md) § Allocation) |
 | Frame time grows with the canvas size or the zoom, not with the element count | Fill rate | Pixels painted more than once, device pixel ratio, blur and shadow, full-screen passes ([canvas2d.md](references/canvas2d.md), [webgpu.md](references/webgpu.md) § Fill rate) |
 | Frame time grows with the number of *different* styles, textures or materials | State changes | Batching and ordering ([canvas2d.md](references/canvas2d.md) § State, [webgpu.md](references/webgpu.md) § Draw calls) |
@@ -90,6 +93,10 @@ Each has its own reference with the reasons and the code. The headlines:
   typed arrays.
 - **Hoist what does not change** out of the loop: property chains, lengths,
   trigonometry of a constant angle, anything parsed from a string.
+- **Hot loops live in small functions.** Inside a method of a thousand lines
+  a JIT leaves the loops at its lower tiers: extracting every one of them
+  made a path build 482 → 170 ms. Time each step inside the function to find
+  it.
 
 ### Canvas2D — [references/canvas2d.md](references/canvas2d.md)
 

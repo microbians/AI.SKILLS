@@ -2,14 +2,14 @@
 
 Reference copy of the **global `CLAUDE.md`** used across all Claude Code sessions on this machine. Lives at `~/.claude/CLAUDE.md` once installed.
 
-This file holds behavior rules, FTP/SFTP guidelines, and pointers to the skills (`ascii-art-diagrams`, `the-secretary`) that handle the rest. It's intentionally terse: only what helps Claude act correctly, no rationale or filler.
+This file holds behavior rules, FTP/SFTP guidelines, and pointers to the skills (`ascii-art-diagrams`, `secretary`) that handle the rest. It's intentionally terse: only what helps Claude act correctly, no rationale or filler.
 
 ## What's inside
 
 - **Behavior Rules** — the non-negotiable habits Claude must keep across every project (no reverting without permission, no long sleeps, reuse before duplicate, finish in-flight tasks, acknowledge mistakes flat, just-do-it instead of asking, read code before debugging, etc.).
 - **FTP / SFTP — Avoid firewall bans** — single-paragraph rules + ready-to-paste `lftp` patterns. Designed to prevent CSF/LFD bans on shared hosting.
 - **ASCII Art Diagrams** — pointer to the `ascii-art-diagrams` skill (verifies Unicode column counts, prevents misaligned tree characters).
-- **Memory / notes / reminders / recall** — pointer to the `the-secretary` skill (recall commands, triggers, scope, config). The actual context-persistence engine is installed separately via [`TheSecretary/install.sh`](../TheSecretary/install.sh).
+- **Memory / notes / reminders / recall** — pointer to the `secretary` skill (recall commands, triggers, scope, config). The actual context-persistence engine is installed separately via [`TheSecretary/install.sh`](../TheSecretary/install.sh).
 
 ## Install
 
@@ -34,7 +34,7 @@ Sections in this file (`## Behavior Rules`, `## FTP / SFTP`, `## ASCII Art Diagr
 
 The two pointer sections in `CLAUDE.md` reference skills that must also be installed under `~/.claude/skills/`:
 
-- **`the-secretary`** — installed automatically by [`TheSecretary/install.sh`](../TheSecretary/install.sh).
+- **`secretary`** — installed automatically by [`TheSecretary/install.sh`](../TheSecretary/install.sh).
 - **`ascii-art-diagrams`** — copy from [`../skills/ascii-art-diagrams/`](../skills/ascii-art-diagrams/) to `~/.claude/skills/ascii-art-diagrams/`.
 
 If the skills are missing, the `STRICTLY follow the X skill` lines in `CLAUDE.md` won't resolve to anything and the relevant rules will be lost.

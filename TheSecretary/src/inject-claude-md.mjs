@@ -17,7 +17,7 @@ if (!target || !snippetPath || !version) {
 }
 
 const ANCHOR = '@@THE-SECRETARY-SLOT@@';
-const marker = `<!-- skill: the-secretary v${version} -->`;
+const marker = `<!-- skill: secretary v${version} -->`;
 const snippet = `${marker}\n${fs.readFileSync(snippetPath, 'utf-8').trim()}\n`;
 
 let md = fs.readFileSync(target, 'utf-8');

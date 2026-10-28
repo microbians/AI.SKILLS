@@ -374,7 +374,7 @@ bash install.sh
 The installer will:
 1. Migrate any legacy install from `~/.claude/summarizer/` to `~/.claude/the-secretary/` (preserves DB, models, watermarks, cache)
 2. Create `~/.claude/the-secretary/` with all files
-3. Install the `the-secretary` skill at `~/.claude/skills/the-secretary/` (defines the behavior rules Claude must follow)
+3. Install the `secretary` skill at `~/.claude/skills/secretary/` (defines the behavior rules Claude must follow)
 4. Install the `better-sqlite3` and `sqlite-vec` dependencies
 5. Set up the summary model: MLX downloads the one sized to your machine on first run (see [Model auto-selection by RAM](#model-auto-selection-by-ram)); without MLX, the 3B GGUF for llama.cpp is downloaded now
 6. Merge hooks into `~/.claude/settings.json` and set its `statusLine` (an existing status line of yours is kept)
@@ -392,7 +392,28 @@ For manual installation, see [INSTALL.md](INSTALL.md).
 
 ## Commands
 
+Switch the AI that writes the summaries from the chat with `/secretary ai`:
+
+```
+/secretary ai                                        # show the current one
+/secretary ai local                                  # local MLX server
+/secretary ai apple                                  # Apple's on-device model (apfel)
+/secretary ai claude                                 # claude CLI with claude_model
+/secretary ai claude sonnet --account work          # model + which account bills it
+/secretary ai claude --account default               # the account with no CLAUDE_CONFIG_DIR
+```
+
+`--account` finds the account by its config folder (`work`, `.claude-work`, `~/.claude-work`),
+its email (`me@example.com`, `meexample.com`), the email's user (`me`) or domain (`example`),
+or just a few of those letters in order. Accounts are `~/.claude.json` (`default`) plus every
+`~/.<folder>/.claude.json`; `/secretary ai` lists them. A name two accounts share is refused.
+
+Switching away from a local backend stops its server; the next summary starts the new one.
+
 ```bash
+# Same as /secretary ai, from a shell
+node ~/.claude/the-secretary/summarize.mjs backend claude sonnet
+
 # Force an immediate summary
 node ~/.claude/the-secretary/summarize.mjs force
 
@@ -461,6 +482,8 @@ Edit `~/.claude/the-secretary/config.json`:
 | `llm_url` | `http://localhost:8922/v1/chat/completions` | OpenAI-compatible endpoint (used when `provider=local`) |
 | `claude_bin` | `~/.local/bin/claude` | Path to the `claude` binary (used when `provider=claude_cli`). Defaults to the native installer's copy, the one that updates itself. If it does not exist, `~/.local/bin/claude`, `/opt/homebrew/bin/claude` and `/usr/local/bin/claude` are tried |
 | `claude_model` | `claude-haiku-4-5` | Model passed to `claude -p --model` |
+| `claude_config_dir` | _(unset)_ | Which Claude account `claude_cli` uses when you have more than one: the account's config folder (sets `CLAUDE_CONFIG_DIR`), or `default` for the account with no `CLAUDE_CONFIG_DIR`. Unset keeps the account of the session that triggered the summary |
+| `local_backend` | `mlx` | `mlx` (MLX / llama.cpp) or `apple` (Apple's on-device model via apfel), used when `provider=local` |
 | `db_path` | `~/.claude/the-secretary/summaries.db` | GLOBAL SQLite DB path (only `__global__` items; per-project data lives in `<projectRoot>/.claude/the-secretary/summaries.db`) |
 | `embed_python` | `~/.claude/the-secretary/venv/bin/python` | Interpreter with `mlx-embeddings` for the semantic index (optional key) |
 
@@ -572,6 +595,8 @@ TheSecretary/
 
 | Version | Date | Change |
 |---|---|---|
+| 2.11.0 | 2026-10-28 | The skill is renamed `secretary` (`/secretary`); the installer removes the old `skills/the-secretary` folder. Data folders keep their `the-secretary` name. `/secretary ai` (and `summarize.mjs backend`) shows or switches the summarizing AI: `local`, `apple` or `claude [model]`. `--account <name | email | folder>` / the `claude_config_dir` key pick which Claude account the CLI bills when there is more than one. Off-project sessions get one `OFF-PROJECT:` line instead of taking over the handoff. The Apple backend gets no frequency penalty |
+| 2.10.1 | 2026-10-17 | Long sessions get a handoff again: `messagesToText` admitted every user turn before any assistant turn, so once a session's requests alone filled the 16000-char budget the model saw only asks, no replies, answered `NOTHING TO REPORT`, and no handoff was stored for the rest of the session (the next `/clear` injected one ten hours stale). Talk turns of both roles are now admitted in one recency pass. The files-touched manifest writes paths relative to the session's first `cwd`: absolute paths under a deep project root cut the list at 8 files. With `SECRETARY_DEBUG`, every prompt sent to the LLM is appended to `$TMPDIR/secretary-prompts-debug.txt` and skipped transcript lines are logged. The `claude_cli` cooldown after two failures now holds: `readClaudeState` read `degradedUntil` with `| 0`, which truncates a millisecond timestamp to 32 bits into a value always in the past |
 | 2.10.0 | 2026-10-16 | After `/clear`, restore injects the verbatim end of the session just left (`🧵`, `restore_tail_chars`, default 5000; the last user request always included) and asks Claude to check whether it broke off mid-task before resuming. The "Memory recovered" notification no longer fires on `/clear` before the previous handoff lands: `await-handoff --rewake` sends it once the wait is over. The Stop hook records the terminal's session in the handoff lock even when it writes no handoff |
 | 2.9.8 | 2026-10-10 | Short LLM answers reach their caller again: the "reports nothing" guard sat in `callLLM` and discarded every one-line answer (intent `SAVE`/`FORGET`, ids to forget, notification blurb) as an empty summary, so saves and deletions detected by the LLM fell back to `NONE`. The guard moved to `callLLMForSummary`, which only summary prompts call |
 | 2.9.7 | 2026-10-09 | A recall question now loads the skill every time: the `UserPromptSubmit` hook prints an order to call `Skill` with `the-secretary` as the first tool call of the turn, before any other branch, and the `CLAUDE.md` snippet states the same. With the handoff already in context Claude answered straight from it and skipped the skill |

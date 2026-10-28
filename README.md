@@ -114,7 +114,7 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 - SQLite storage for persistent summaries across sessions (per-project DB + attached global DB, unified `all_items` view)
 - Configurable: model, summarization frequency (`summarize_every_n`), min content threshold (`min_new_chars`), token limits, remote LLM support
 
-**Includes:** `summarize.mjs`, `embed.py`, `start-llm.sh`, `config.json`, `inject-claude-md.mjs`, `hooks.json`, `statusline.json`, `install.sh`, `claude-md-snippet.md`, `skill/SKILL.md` (behavior rules skill, installed to `~/.claude/skills/the-secretary/`)
+**Includes:** `summarize.mjs`, `embed.py`, `start-llm.sh`, `config.json`, `inject-claude-md.mjs`, `hooks.json`, `statusline.json`, `install.sh`, `claude-md-snippet.md`, `skill/SKILL.md` (behavior rules skill, installed to `~/.claude/skills/secretary/`)
 
 **Install path:** `~/.claude/the-secretary/` (engine, config, LLM; auto-migrates from legacy `~/.claude/summarizer/` on re-install). Project data lives in each project's `.claude/the-secretary/`.
 

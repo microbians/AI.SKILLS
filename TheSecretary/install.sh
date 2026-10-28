@@ -9,7 +9,8 @@ set -e
 
 DEST="$HOME/.claude/the-secretary"
 LEGACY_DEST="$HOME/.claude/summarizer"
-SKILL_DEST="$HOME/.claude/skills/the-secretary"
+SKILL_DEST="$HOME/.claude/skills/secretary"
+LEGACY_SKILL_DEST="$HOME/.claude/skills/the-secretary"
 SETTINGS="$HOME/.claude/settings.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -19,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # upgrade is visible instead of a silent overwrite.
 PKG_VERSION="$(sed -n 's/^version: *//p' "$SCRIPT_DIR/skill/SKILL.md" 2>/dev/null | head -1)"
 [ -n "$PKG_VERSION" ] || PKG_VERSION="0.0.0"
-PKG_INSTALLED="$(sed -n 's/^version: *//p' "$HOME/.claude/skills/the-secretary/SKILL.md" 2>/dev/null | head -1)"
+PKG_INSTALLED="$(sed -n 's/^version: *//p' "$HOME/.claude/skills/secretary/SKILL.md" 2>/dev/null | head -1)"
 if [ -z "$PKG_INSTALLED" ]; then
   echo "the-secretary v$PKG_VERSION — installing..."
 elif [ "$PKG_INSTALLED" != "$PKG_VERSION" ]; then
@@ -100,7 +101,7 @@ if [ "$1" = "--uninstall" ]; then
   done
 
   # Remove skill
-  rm -rf "$SKILL_DEST"
+  rm -rf "$SKILL_DEST" "$LEGACY_SKILL_DEST"
   info "Removed $SKILL_DEST"
 
   # Remove directories (current + legacy)
@@ -180,7 +181,8 @@ cp "$SCRIPT_DIR/src/inject-claude-md.mjs" "$DEST/"
 chmod +x "$DEST/start-llm.sh"
 
 # 2b. Install skill
-info "Installing the-secretary skill..."
+info "Installing the secretary skill..."
+rm -rf "$LEGACY_SKILL_DEST" # renamed to "secretary" in 2.11.0 (/secretary)
 mkdir -p "$SKILL_DEST"
 cp "$SCRIPT_DIR/skill/SKILL.md" "$SKILL_DEST/SKILL.md"
 info "Skill installed at $SKILL_DEST"
@@ -288,7 +290,7 @@ inject_snippet() {
   # Every branch must emit the version marker, or check-versions.sh cannot see
   # which version is installed.
   local marked
-  marked="$(printf '<!-- skill: the-secretary v%s -->\n' "$PKG_VERSION"; cat "$SNIPPET")"
+  marked="$(printf '<!-- skill: secretary v%s -->\n' "$PKG_VERSION"; cat "$SNIPPET")"
 
   if [ ! -f "$target" ]; then
     printf '%s\n' "$marked" > "$target"

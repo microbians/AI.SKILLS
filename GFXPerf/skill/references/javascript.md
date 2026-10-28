@@ -53,6 +53,11 @@ Rules:
   inline callbacks create a function object each pass when they capture
   loop variables. Hoist the function.
 - **`subarray` allocates a view object.** Pass the buffer and an offset.
+- **A getter can allocate.** Testing a capability by calling a getter
+  (`el.commandData !== undefined`, where the getter returns a `subarray`)
+  makes the object every time, only to throw it away: test with
+  `'commandData' in el`. One such test called a few times per element on
+  every rebuild cost 12 of 19 ms over 84K elements.
 - **No strings per element:** keys built by concatenation, `toFixed`,
   template literals, colour strings. Build them once and cache by the value
   they depend on.
@@ -123,6 +128,41 @@ they have seen, and fall back to slow generic code when the next one differs.
 - A `Float32Array` rounds on write: arithmetic is still in doubles, so
   accumulate in a local variable, not in the array.
 
+## Function size
+
+**Hot loops live in small functions — never inside a giant method.** A JIT
+optimizes function by function, and a very large one (a thousand lines and
+up) has its loops left at the lower tiers. The symptom: every step of the
+work is slow per element — 40–80 ns where 5–10 is normal — and nothing in the
+loop's own code explains it. Measured on JavaScriptCore, a path build of
+1,444 lines (flatten, joins, tile binning, fan map, 84K paths, 940K segments):
+
+| Step | Inside the method | In a function of its own |
+|------|------------------:|-------------------------:|
+| flatten | 51 ms | 6 ms |
+| joins | 72 ms | 8 ms |
+| segment boxes | 43 ms | 7 ms |
+| tile lists | 66 ms | 11 ms |
+| the whole build | 482 ms | 170 ms |
+
+Same output to the pixel.
+
+- **Move each loop into a module function.** Pass the arrays in (scratch
+  arrays the caller owns and reuses), return a number, and hand several
+  results back through one module-level holder object with fixed fields
+  (`FLAT.segOff`, `FLAT.minX` …), which allocates nothing.
+- **Extract all of them, not one.** Taking a single loop out sped it up
+  (40 → 16 ms) and made the loops left behind slower (joins 72 → 115 ms):
+  the method's own tier-up changed. Gains show once the method only
+  orchestrates.
+- **Find it by timing each step inside the function**, behind a debug flag
+  (sum `performance.now()` laps per step over all elements), and divide by
+  the element count. A profiler that times the method whole shows one big
+  number and no cause. A wrapper per method inflates the small calls.
+- **Twin loops become one function with a parameter** — two copies of a loop
+  differing in one flag are one function, which also halves what the JIT has
+  to warm.
+
 ## Loops
 
 - **Plain `for` with an index** in hot paths. `for…of` over arrays is close in
@@ -134,7 +174,15 @@ they have seen, and fall back to slow generic code when the next one differs.
   matter; use a head index for a queue.
 - **Multiply, do not `Math.pow`,** for small integer powers.
   `Math.hypot` is markedly slower than `Math.sqrt(x * x + y * y)` in some
-  engines; in a per-element path, measure it.
+  engines — on JavaScriptCore a per-segment length sum went 16 → 5 ms; in a
+  per-element path, measure it.
+- **`Math.min` / `Math.max` with more than two arguments** in a per-element
+  path: write the comparisons (`if (x < minX) minX = x;`).
+- **Work that does not depend on the outer loop** comes out of it, however
+  natural it reads inside: a segment's column span is the same for every row
+  it crosses, so it is computed once per segment, not once per row and
+  segment. Reserve room once, for exactly what will be written, when a
+  counting pass can tell how much.
 - **Compare squared distances** and skip the square root.
 - **Incremental instead of absolute** when stepping evenly: add a delta
   instead of recomputing from the start; rotate by a constant with one

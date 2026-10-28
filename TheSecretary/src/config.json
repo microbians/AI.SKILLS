@@ -1,13 +1,15 @@
 {
   "provider": "local",
+  "local_backend": "mlx",
   "claude_bin": "~/.local/bin/claude",
-  "claude_model": "claude-haiku-4-5",
+  "claude_model": "claude-haiku-5-5",
   "llm_url": "http://localhost:8922/v1/chat/completions",
-  "model": "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+  "model": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
   "summarize_every_n": 15,
   "min_new_chars": 2000,
   "max_summary_tokens": 800,
   "restore_recent_items": 15,
-  "restore_tail_chars": 5000,
-  "db_path": "~/.claude/the-secretary/summaries.db"
+  "db_path": "~/.claude/the-secretary/summaries.db",
+  "gpu_reservation": false,
+  "context_clear_tokens": 500000
 }

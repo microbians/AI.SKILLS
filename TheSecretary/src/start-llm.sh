@@ -47,6 +47,14 @@ secretary_provider() {
   echo "${p:-claude_cli}"
 }
 
+# "apple" in config.json's local_backend serves Apple's on-device model through
+# apfel instead of MLX / llama.cpp.
+secretary_local_backend() {
+  local cfg
+  cfg="$(cd "$(dirname "$0")" && pwd)/config.json"
+  sed -n 's/.*"local_backend"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$cfg" 2>/dev/null | head -1
+}
+
 # Idle reaper: the only thing that stops the server on its own. One per server,
 # alive as long as something listens on the port; once a minute it runs
 # stop-if-idle. Summarizer workers used to `stop` the server when they were
@@ -105,7 +113,15 @@ pick_mlx_model() {
   else                            echo "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
   fi
 }
-MLX_MODEL="${SECRETARY_MLX_MODEL:-$(pick_mlx_model)}"
+# config.json's "model" wins over the RAM pick when it names an MLX repo.
+configured_mlx_model() {
+  local cfg m
+  cfg="$(cd "$(dirname "$0")" && pwd)/config.json"
+  m=$(sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\(mlx-community\/[^"]*\)".*/\1/p' "$cfg" 2>/dev/null | head -1)
+  echo "$m"
+}
+MLX_MODEL="${SECRETARY_MLX_MODEL:-$(configured_mlx_model)}"
+MLX_MODEL="${MLX_MODEL:-$(pick_mlx_model)}"
 GGUF_MODEL="$HOME/.claude/the-secretary/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 
 # Detect backend: prefer MLX on Apple Silicon, fallback to llama.cpp
@@ -179,8 +195,20 @@ case "${1:-start}" in
     cd "$(dirname "$0")"
 
     BACKEND=$(detect_backend)
+    LLAMA_GPU_LAYERS=99
+    LLAMA_DEVICE_ARGS=""
+    case "$(secretary_local_backend)" in
+      apple) BACKEND="apple" ;;
+      llama-cpu) BACKEND="llama"; LLAMA_GPU_LAYERS=0; LLAMA_DEVICE_ARGS="--device none" ;;
+    esac
 
-    if [ "$BACKEND" = "mlx" ]; then
+    if [ "$BACKEND" = "apple" ]; then
+      echo "Starting Apple on-device model (apfel)..."
+      nohup python3 -c "import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])" \
+        apfel --serve --port $PORT \
+        > "$LOG" 2>&1 &
+
+    elif [ "$BACKEND" = "mlx" ]; then
       echo "Starting MLX server with $MLX_MODEL..."
       # mlx_lm calls mx.distributed.init(), which picks the MPI backend whenever
       # libmpi is installed (Homebrew open-mpi) and then binds a second, unused
@@ -216,8 +244,10 @@ case "${1:-start}" in
       nohup llama-server \
         --model "$GGUF_MODEL" \
         --port $PORT \
-        --ctx-size 4096 \
-        --n-gpu-layers 99 \
+        --ctx-size 8192 \
+        --n-gpu-layers $LLAMA_GPU_LAYERS \
+        --threads 10 \
+        $LLAMA_DEVICE_ARGS \
         --log-disable \
         > "$LOG" 2>&1 &
 
