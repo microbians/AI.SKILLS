@@ -54,7 +54,7 @@ brew install universal-ctags
 sudo apt-get install universal-ctags
 
 # then, from the repo:
-bash CodeIndex/install.sh
+bash plugins/code-index/install.sh
 ```
 
 The installer:
@@ -67,7 +67,7 @@ The installer:
 It is idempotent — re-run to upgrade. Uninstall with:
 
 ```bash
-bash CodeIndex/install.sh --uninstall
+bash plugins/code-index/install.sh --uninstall
 ```
 
 (Per-project `.claude/codeindex.db` files are left in place on uninstall.)
@@ -115,7 +115,7 @@ CodeIndex/src/codeindex.mjs:186   extractSymbols(relPath, lines)   (function)
 
 $ node ~/.claude/codeindex/codeindex.mjs callers extractSymbols
 extractSymbols  is called/used by:
-  CodeIndex/src/codeindex.mjs:312   indexFile   (function)   [uses]
+  plugins/code-index/src/codeindex.mjs:312   indexFile   (function)   [uses]
 
 $ node ~/.claude/codeindex/codeindex.mjs stats
 Files:        70

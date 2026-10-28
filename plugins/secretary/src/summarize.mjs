@@ -102,8 +102,6 @@ const GENERIC_CONTAINERS = new Set([
   'Documents', 'Desktop', 'Developer', 'dev', 'src', 'repos', 'Repos',
   'work', 'Work', 'CloudDocs', 'Mobile Documents',
   'Library', 'CloudStorage', 'Shared drives',
-  // Personal monorepo-of-projects buckets that group unrelated skills/apps.
-  'AI.SKILLS',
 ]);
 
 function parentDir(p) {

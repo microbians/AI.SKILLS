@@ -2,9 +2,10 @@
 /********************************************************
 	DEVPROXY - Central Reverse Proxy
 
-	Routes *.localhost requests to registered project servers.
-	Listens directly on port 80 (no pfctl needed).
-	Drops root privileges after binding to port 80.
+	Routes *.localhost requests to running or registered project servers.
+	Listens on port 80 of every interface, which macOS allows without root,
+	and closes any connection that does not come from this Mac. Also answers
+	DNS for *.localhost on port 53 (same rule), so no dnsmasq is needed.
 	Non-.localhost traffic is ignored (connection reset).
 
 	Features:
@@ -27,11 +28,13 @@
 ********************************************************/
 
 import http from 'http';
-import { createServer as createNetServer } from 'net';
-import { spawn } from 'child_process';
+import { createServer as createNetServer, connect as netConnect } from 'net';
+import { createSocket } from 'dgram';
+import { spawn, execFile } from 'child_process';
 import { existsSync, unlinkSync, writeFileSync, readFileSync, chmodSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { deriveSubdomain } from './devproxy-cli.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -219,61 +222,222 @@ setInterval(() => {
 	}
 }, 60000); // check every minute
 
+// ═══════════════════ LIVE DISCOVERY ═══════════════════
+
+// A server started by hand (npm run dev, php artisan serve, rails s…) needs no
+// registration: the proxy finds the process listening on a TCP port whose
+// working directory is the project folder (or inside it) and routes
+// <folder>.localhost to that port, on whichever address it listens.
+const LSOF = '/usr/sbin/lsof';
+const live = new Map(); // subdomain → Promise<{ host, port } | null>
+
+function lsof(args) {
+	return new Promise((resolve) => {
+		execFile(LSOF, args, { timeout: 5000 }, (err, out) => resolve(out || ''));
+	});
+}
+
+// "*:3000" / "127.0.0.1:5173" / "[::1]:5173" / "[::]:8000" → where to connect.
+function listenAddress(name) {
+	const m = name.match(/^(.*):(\d+)$/);
+	if (!m) return null;
+	const addr = m[1];
+	const host = addr === '*' ? '127.0.0.1'
+		: addr === '[::]' ? '::1'
+		: addr.startsWith('[') ? addr.slice(1, -1)
+		: addr;
+	return { host, port: Number(m[2]) };
+}
+
+// How many folders up from cwd the one named after the subdomain sits; -1 if none.
+function folderDepth(cwd, subdomain) {
+	for (let dir = cwd, depth = 0; dir !== dirname(dir); dir = dirname(dir), depth++) {
+		if (deriveSubdomain(dir) === subdomain) return depth;
+	}
+	return -1;
+}
+
+async function scanListeners(subdomain) {
+	const listeners = [];
+	let pid = 0;
+	for (const line of (await lsof(['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn'])).split('\n')) {
+		if (line[0] === 'p') pid = Number(line.slice(1));
+		if (line[0] !== 'n' || pid === process.pid) continue;
+		const address = listenAddress(line.slice(1));
+		if (address) listeners.push({ pid, ...address });
+	}
+	if (listeners.length === 0) return null;
+
+	const cwdOf = new Map();
+	const pids = [...new Set(listeners.map(l => l.pid))].join(',');
+	for (const line of (await lsof(['-a', '-d', 'cwd', '-Fpn', '-p', pids])).split('\n')) {
+		if (line[0] === 'p') pid = Number(line.slice(1));
+		if (line[0] === 'n') cwdOf.set(pid, line.slice(1));
+	}
+
+	// Closest folder first (project/frontend beats project), then lowest port.
+	const best = listeners
+		.map(l => ({ ...l, depth: cwdOf.has(l.pid) ? folderDepth(cwdOf.get(l.pid), subdomain) : -1 }))
+		.filter(l => l.depth >= 0)
+		.sort((a, b) => a.depth - b.depth || a.port - b.port)[0];
+	return best ? { host: best.host, port: best.port } : null;
+}
+
+// Cached until a connection to it fails; a miss is never cached.
+function discover(subdomain) {
+	let found = live.get(subdomain);
+	if (!found) {
+		found = scanListeners(subdomain).then((target) => {
+			if (!target) live.delete(subdomain);
+			return target;
+		});
+		live.set(subdomain, found);
+	}
+	return found;
+}
+
+// A live server wins; otherwise a registered route (Node module or autostart project).
+async function targetFor(subdomain) {
+	const found = await discover(subdomain);
+	if (found) return found;
+	const route = routes.get(subdomain);
+	return route ? { host: '127.0.0.1', port: route.port } : null;
+}
+
 // ═══════════════════ HTTP SERVER ═══════════════════
+
+// "myapp.localhost" → "myapp"
+function subdomainOf(host) {
+	const match = (host || '').match(/^([a-z0-9_-]+)\.localhost(:\d+)?$/i);
+	return match ? match[1].toLowerCase() : null;
+}
 
 const httpServer = http.createServer((req, res) => {
 	const host = req.headers.host || '';
-	// Extract subdomain: "myapp.localhost" → "myapp"
-	const match = host.match(/^([a-z0-9_-]+)\.localhost(:\d+)?$/i);
+	const subdomain = subdomainOf(host);
 
-	if (!match) {
+	if (!subdomain) {
 		req.socket.destroy();
 		return;
 	}
 
-	const subdomain = match[1].toLowerCase();
-	const route = routes.get(subdomain);
-
-	if (!route) {
-		// Check if it's a known project that needs auto-start
-		if (projects.has(subdomain)) {
-			startServer(subdomain);
-			// Give the server a moment to boot, then retry
-			res.writeHead(503, {
-				'Content-Type': 'text/html; charset=utf-8',
-				'Retry-After': '2',
-				'Refresh': '2',
-			});
-			res.end(startingPage(subdomain));
-			return;
-		}
-
-		res.writeHead(502, { 'Content-Type': 'text/plain' });
-		res.end(`devproxy: no server registered for "${subdomain}.localhost"\nRegistered: ${[...routes.keys()].join(', ') || '(none)'}`);
-		return;
-	}
-
-	// Track activity for managed servers
-	const info = managed.get(subdomain);
-	if (info) info.lastAccess = Date.now();
-
 	// Buffer request body for retries
 	const bodyChunks = [];
 	req.on('data', (chunk) => bodyChunks.push(chunk));
-	req.on('end', () => {
-		const body = Buffer.concat(bodyChunks);
-		forwardWithRetry(req, res, subdomain, route, host, body, 0);
+	req.on('end', async () => {
+		const target = await targetFor(subdomain);
+
+		if (!target) {
+			// Check if it's a known project that needs auto-start
+			if (projects.has(subdomain)) {
+				startServer(subdomain);
+				// Give the server a moment to boot, then retry
+				res.writeHead(503, {
+					'Content-Type': 'text/html; charset=utf-8',
+					'Retry-After': '2',
+					'Refresh': '2',
+				});
+				res.end(startingPage(subdomain));
+				return;
+			}
+
+			res.writeHead(502, { 'Content-Type': 'text/plain' });
+			res.end(`devproxy: no server running or registered for "${subdomain}.localhost"\nStart the server from a folder named "${subdomain}" (or "XXX.${subdomain}").\nRegistered: ${[...routes.keys()].join(', ') || '(none)'}`);
+			return;
+		}
+
+		// Track activity for managed servers
+		const info = managed.get(subdomain);
+		if (info) info.lastAccess = Date.now();
+
+		forwardWithRetry(req, res, subdomain, target, host, Buffer.concat(bodyChunks), 0);
 	});
 });
+
+// Port 80 is open on every interface (no root needed), so only this Mac may use it.
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+httpServer.on('connection', (socket) => {
+	if (!LOOPBACK.has(socket.remoteAddress)) socket.destroy();
+});
+
+// WebSockets (hot reload, live apps): hand the raw connection to the same target.
+httpServer.on('upgrade', async (req, socket, head) => {
+	const subdomain = subdomainOf(req.headers.host);
+	const target = subdomain && await targetFor(subdomain);
+	if (!target) {
+		socket.destroy();
+		return;
+	}
+	const upstream = netConnect(target.port, target.host, () => {
+		const headers = [];
+		for (let i = 0; i < req.rawHeaders.length; i += 2) headers.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+		upstream.write(`${req.method} ${req.url} HTTP/${req.httpVersion}\r\n${headers.join('\r\n')}\r\n\r\n`);
+		if (head.length) upstream.write(head);
+		socket.pipe(upstream).pipe(socket);
+	});
+	upstream.on('error', () => { live.delete(subdomain); socket.destroy(); });
+	socket.on('error', () => upstream.destroy());
+});
+
+// ═══════════════════ DNS (*.localhost → this Mac) ═══════════════════
+
+// /etc/resolver/localhost sends every *.localhost lookup to 127.0.0.1:53; this
+// answers it, so apps that do not special-case .localhost (node, php, python…)
+// reach the proxy too. Port 53 on all interfaces needs no root; only this Mac
+// gets answers. Anything that is not *.localhost is refused.
+const DNS_PORT = 53;
+const dnsServer = createSocket({ type: 'udp6', ipv6Only: false });
+
+function dnsAnswer(query) {
+	// Question name: length-prefixed labels from byte 12 up to a zero byte
+	const labels = [];
+	let i = 12;
+	while (i < query.length && query[i] !== 0) {
+		labels.push(query.toString('ascii', i + 1, i + 1 + query[i]));
+		i += query[i] + 1;
+	}
+	const questionEnd = i + 5; // zero byte + type + class
+	if (questionEnd > query.length) return null;
+	const type = query.readUInt16BE(i + 1);
+	const name = labels.join('.').toLowerCase();
+	const ours = name === 'localhost' || name.endsWith('.localhost');
+	const rdata = !ours ? null
+		: type === 1 ? Buffer.from([127, 0, 0, 1])                            // A
+		: type === 28 ? Buffer.from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]) // AAAA
+		: null;
+
+	const header = Buffer.alloc(12);
+	query.copy(header, 0, 0, 2);                                                  // same id
+	header.writeUInt16BE(0x8400 | (query.readUInt16BE(2) & 0x0100) | (ours ? 0 : 5), 2); // answer, authoritative, RD echoed; REFUSED if not ours
+	header.writeUInt16BE(1, 4);                                                   // one question
+	header.writeUInt16BE(rdata ? 1 : 0, 6);                                       // answers
+	const question = query.subarray(12, questionEnd);
+	if (!rdata) return Buffer.concat([header, question]);
+
+	const answer = Buffer.alloc(12);
+	answer.writeUInt16BE(0xc00c, 0);       // name: pointer to the question
+	answer.writeUInt16BE(type, 2);
+	answer.writeUInt16BE(1, 4);            // class IN
+	answer.writeUInt32BE(60, 6);           // TTL
+	answer.writeUInt16BE(rdata.length, 10);
+	return Buffer.concat([header, question, answer, rdata]);
+}
+
+dnsServer.on('message', (msg, rinfo) => {
+	if (!LOOPBACK.has(rinfo.address) || msg.length < 17) return;
+	const reply = dnsAnswer(msg);
+	if (reply) dnsServer.send(reply, rinfo.port, rinfo.address);
+});
+dnsServer.on('error', (err) => console.error(`[devproxy] DNS on port ${DNS_PORT}: ${err.message}`));
 
 // ═══════════════════ RETRY + AUTO-START ON FAILURE ═══════════════════
 
 const RETRY_DELAYS = [500, 1000, 2000, 3000]; // more retries for auto-started servers
 
-function forwardWithRetry(req, res, subdomain, route, host, body, attempt) {
+function forwardWithRetry(req, res, subdomain, target, host, body, attempt) {
 	const options = {
-		hostname: '127.0.0.1',
-		port: route.port,
+		hostname: target.host,
+		port: target.port,
 		path: req.url,
 		method: req.method,
 		headers: {
@@ -291,6 +455,7 @@ function forwardWithRetry(req, res, subdomain, route, host, body, attempt) {
 
 	proxyReq.on('error', (err) => {
 		const isRetryable = err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET';
+		live.delete(subdomain); // the server moved or stopped: look again on the retry
 
 		// If server not running and we know this project, auto-start it
 		if (err.code === 'ECONNREFUSED' && attempt === 0 && projects.has(subdomain)) {
@@ -302,17 +467,18 @@ function forwardWithRetry(req, res, subdomain, route, host, body, attempt) {
 
 		if (isRetryable && attempt < RETRY_DELAYS.length) {
 			const delay = RETRY_DELAYS[attempt];
-			setTimeout(() => {
-				forwardWithRetry(req, res, subdomain, route, host, body, attempt + 1);
+			setTimeout(async () => {
+				const next = await targetFor(subdomain) || target;
+				forwardWithRetry(req, res, subdomain, next, host, body, attempt + 1);
 			}, delay);
 			return;
 		}
 
 		// All retries exhausted
 		const retried = attempt > 0 ? ` (after ${attempt} retries)` : '';
-		console.error(`[devproxy] upstream error: ${subdomain}.localhost:${route.port} — ${err.message}${retried}`);
+		console.error(`[devproxy] upstream error: ${subdomain}.localhost → ${target.host}:${target.port} — ${err.message}${retried}`);
 		res.writeHead(502, { 'Content-Type': 'text/html; charset=utf-8' });
-		res.end(errorPage(subdomain, route.port, err.message, attempt));
+		res.end(errorPage(subdomain, target.port, err.message, attempt));
 	});
 
 	proxyReq.end(body);
@@ -570,22 +736,14 @@ controlServer.listen(SOCKET_PATH, () => {
 	console.log(`[devproxy] control socket: ${SOCKET_PATH}`);
 });
 
-// Start HTTP server on port 80
-httpServer.listen(LISTEN_PORT, '127.0.0.1', () => {
-	console.log(`[devproxy] listening on 127.0.0.1:${LISTEN_PORT}`);
-
-	// Drop root privileges after binding to port 80
-	if (process.getuid && process.getuid() === 0) {
-		const uid = parseInt(process.env.SUDO_UID || '501', 10);
-		const gid = parseInt(process.env.SUDO_GID || '20', 10);
-		try {
-			process.setgid(gid);
-			process.setuid(uid);
-			console.log(`[devproxy] dropped privileges to uid=${uid} gid=${gid}`);
-		} catch (err) {
-			console.warn(`[devproxy] warning: could not drop privileges: ${err.message}`);
-		}
-	}
-
+// Start HTTP server on port 80 (all interfaces: macOS binds that without root;
+// 127.0.0.1:80 alone would need it). Remote connections are closed above.
+httpServer.listen(LISTEN_PORT, () => {
+	console.log(`[devproxy] listening on *:${LISTEN_PORT} (local connections only)`);
 	console.log(`[devproxy] ready — ${projects.size} project(s) loaded`);
+});
+
+// DNS for *.localhost (all interfaces, same rule as port 80; local queries only)
+dnsServer.bind(DNS_PORT, '::', () => {
+	console.log(`[devproxy] DNS on *:${DNS_PORT} (*.localhost → 127.0.0.1 / ::1, local queries only)`);
 });

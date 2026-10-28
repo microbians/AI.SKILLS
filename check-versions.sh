@@ -2,7 +2,7 @@
 # Version report: what this repo ships vs what is installed in ~/.claude.
 #
 # Answers "is anything out of date?" in one glance — the question that had no
-# answer when CLAUDE.Global/CLAUDE.md silently drifted 25 lines behind the
+# answer when the global CLAUDE.md (claude-md/) silently drifted 25 lines behind the
 # installed copy.
 #
 # Compares BOTH the declared version AND the file content, because a version
@@ -23,7 +23,7 @@ row() { # name  repo_file  installed_file
 
   if [ ! -f "$dst" ]; then
     status="${DIM}not installed${NC}"
-    printf "  %-22s %-9s %-9s %b\n" "$name" "$vs" "—" "$status"
+    printf "  %-30s %-9s %-9s %b\n" "$name" "$vs" "—" "$status"
     return
   fi
   vd="$(ver "$dst")"; vd="${vd:-—}"
@@ -31,7 +31,7 @@ row() { # name  repo_file  installed_file
   # A symlinked skill points AT the repo, so it can never drift — say so
   # explicitly instead of reporting a content comparison against itself.
   if [ -L "$(dirname "$dst")" ]; then
-    printf "  %-22s %-9s %-9s %b\n" "$name" "$vs" "$vd" "${GREEN}linked${NC} ${DIM}(always current)${NC}"
+    printf "  %-30s %-9s %-9s %b\n" "$name" "$vs" "$vd" "${GREEN}linked${NC} ${DIM}(always current)${NC}"
     return
   fi
 
@@ -42,41 +42,37 @@ row() { # name  repo_file  installed_file
   else
     status="${YELLOW}outdated → reinstall${NC}"
   fi
-  printf "  %-22s %-9s %-9s %b\n" "$name" "$vs" "$vd" "$status"
+  printf "  %-30s %-9s %-9s %b\n" "$name" "$vs" "$vd" "$status"
 }
 
 echo
 echo "AI.SKILLS — version report"
 echo
-printf "  %-22s %-9s %-9s %s\n" "PACKAGE" "REPO" "INSTALLED" "STATUS"
-printf "  %-22s %-9s %-9s %s\n" "──────────────────────" "─────────" "─────────" "──────"
+printf "  %-30s %-9s %-9s %s\n" "PACKAGE" "REPO" "INSTALLED" "STATUS"
+printf "  %-30s %-9s %-9s %s\n" "──────────────────────────────" "─────────" "─────────" "──────"
 
-# Standalone skills
-for d in "$REPO"/Skills/*/; do
-  n="$(basename "$d")"
-  row "$n" "$d/SKILL.md" "$CLAUDE/skills/$n/SKILL.md"
-done
-
-# Packages that ship an installer (skill lives in <pkg>/skill/)
-for pkg in SafeEdit CodeIndex TheSecretary GFXPerf; do
-  src="$REPO/$pkg/skill/SKILL.md"
+# Every skill, plugin and tool: its skill is <dir>/SKILL.md (plain skill) or
+# <dir>/skill/SKILL.md (package with an installer); installed under its name.
+for d in "$REPO"/skills/*/ "$REPO"/plugins/*/ "$REPO"/tools/*/; do
+  src="${d}SKILL.md"
+  [ -f "$src" ] || src="${d}skill/SKILL.md"
   [ -f "$src" ] || continue
   slug="$(sed -n 's/^name: *//p' "$src" | head -1)"
-  row "$pkg" "$src" "$CLAUDE/skills/$slug/SKILL.md"
+  row "${d#"$REPO"/}" "$src" "$CLAUDE/skills/$slug/SKILL.md"
 done
 
 # The global CLAUDE.md (versioned via an HTML comment on line 1)
-if [ -f "$REPO/CLAUDE.Global/CLAUDE.md" ]; then
+if [ -f "$REPO/claude-md/CLAUDE.md" ]; then
   gv() { sed -n 's/^<!-- CLAUDE.md v\([^ ]*\) .*-->$/\1/p' "$1" 2>/dev/null | head -1; }
-  vs="$(gv "$REPO/CLAUDE.Global/CLAUDE.md")"; vs="${vs:-—}"
+  vs="$(gv "$REPO/claude-md/CLAUDE.md")"; vs="${vs:-—}"
   if [ -f "$CLAUDE/CLAUDE.md" ]; then
     vd="$(gv "$CLAUDE/CLAUDE.md")"; vd="${vd:-—}"
-    if cmp -s "$REPO/CLAUDE.Global/CLAUDE.md" "$CLAUDE/CLAUDE.md"; then st="${GREEN}in sync${NC}"
+    if cmp -s "$REPO/claude-md/CLAUDE.md" "$CLAUDE/CLAUDE.md"; then st="${GREEN}in sync${NC}"
     elif [ "$vs" = "$vd" ]; then st="${RED}SAME VERSION, DIFFERENT CONTENT${NC}"
     else st="${YELLOW}outdated${NC}"; fi
-    printf "  %-22s %-9s %-9s %b\n" "CLAUDE.md (global)" "$vs" "$vd" "$st"
+    printf "  %-30s %-9s %-9s %b\n" "CLAUDE.md (global)" "$vs" "$vd" "$st"
   else
-    printf "  %-22s %-9s %-9s %b\n" "CLAUDE.md (global)" "$vs" "—" "${DIM}not installed${NC}"
+    printf "  %-30s %-9s %-9s %b\n" "CLAUDE.md (global)" "$vs" "—" "${DIM}not installed${NC}"
   fi
 fi
 

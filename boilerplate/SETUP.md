@@ -90,7 +90,7 @@ Update the skills table to reflect what you actually installed.
 
 | Tool | What it does |
 |------|-------------|
-| `microlocalhostproxy` | Smart port resolution + local subdomain routing (`myapp.localhost`). macOS only. |
+| `microproxy` | Smart port resolution + local subdomain routing (`myapp.localhost`). macOS only. |
 
 ---
 

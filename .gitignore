@@ -5,7 +5,7 @@ Icon
 Icon?
 
 # Local backups
-TheSecretary/backups/
+plugins/secretary/backups/
 .safe-edit-backups/
 *.bak
 *.bak-*

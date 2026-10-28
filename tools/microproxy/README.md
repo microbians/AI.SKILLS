@@ -36,15 +36,18 @@ Auto-discovers, registers, and auto-starts dev servers for any project type (PHP
 ## Quick start
 
 ```bash
-# From any project directory:
+# Start your server the way you always do, from the project folder:
 cd ~/Projects/APP.Invoices
-devproxy
+npm run dev            # or php artisan serve, rails s, python manage.py runserver, …
 
-# That's it. Visit http://invoices.localhost
-# The server auto-starts when you visit the URL.
+# That's it. Visit http://invoices.localhost — no registration needed.
 ```
 
+To have the server start by itself when you visit the URL, register the project once with `devproxy` (see below).
+
 ## How it works
+
+0. **Live discovery (no setup)**: When `invoices.localhost` is requested, the proxy looks for a process listening on a TCP port whose working directory is a folder named `invoices` (or `XXX.Invoices`), or a folder inside it. It routes to that port on whichever address the server bound (`127.0.0.1`, `::1` or all), so it works whatever port or command the server chose. The closest folder wins, then the lowest port. The result is cached until a connection to it fails, then looked up again. WebSockets (hot reload) are forwarded too. A live server always wins over a registered route.
 
 1. **Register**: Run `devproxy` from your project directory. It auto-detects the project type, derives the subdomain from the directory name, finds a free port, and registers with the central proxy.
 
@@ -85,19 +88,19 @@ This registers a dynamic (non-persistent) route. The project manages its own ser
 ## Installation
 
 ```bash
-# Copy central files to ~/.config/devproxy/
-cp central/proxy.js ~/.config/devproxy/
-cp central/install.sh ~/.config/devproxy/
-
-# Run installer (one-time — installs dnsmasq, resolver, LaunchDaemon, CLI)
-bash ~/.config/devproxy/install.sh
+# From the repo — copies everything into ~/.config/devproxy/ and sets it up
+bash tools/microproxy/central/install.sh
 ```
 
+Re-run the same command to update after pulling changes.
+
 The installer:
-1. Installs dnsmasq (resolves `*.localhost` → 127.0.0.1)
-2. Creates `/etc/resolver/localhost`
-3. Sets up LaunchDaemon (proxy on port 80, auto-starts at boot)
+1. Creates `/etc/resolver/localhost`, which sends `*.localhost` lookups to `127.0.0.1:53`. The proxy answers them itself (`*.localhost` → `127.0.0.1` / `::1`; anything else is refused), so no dnsmasq or Homebrew is needed
+2. Sets up a LaunchAgent named `microproxy` (that is the name shown in Login Items): proxy on ports 80 and 53, starts at login, runs as you — no root. macOS lets a user open ports below 1024 on all interfaces; the proxy only answers this Mac
+3. Removes what earlier versions installed: the root LaunchDaemon, and the dnsmasq service if it was set up for devproxy (the dnsmasq package stays)
 4. Installs `devproxy` CLI globally (`/usr/local/bin/devproxy`)
+
+Only steps 1, 3 and 4 ask for the admin password, once.
 
 ## Requirements
 
@@ -119,9 +122,8 @@ tail -f ~/.config/devproxy/proxy.log
 # View persisted projects
 cat ~/.config/devproxy/projects.json
 
-# Restart the LaunchDaemon
-sudo launchctl unload /Library/LaunchDaemons/com.devproxy.proxy.plist
-sudo launchctl load /Library/LaunchDaemons/com.devproxy.proxy.plist
+# Restart the proxy (LaunchAgent, no sudo)
+launchctl kickstart -k gui/$(id -u)/com.devproxy.proxy
 ```
 
 ## License

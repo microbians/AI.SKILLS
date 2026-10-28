@@ -41,7 +41,7 @@ const INSTALLED_MARKER = join(DEVPROXY_DIR, '.installed');
 
 // ═══════════════════ HELPERS ═══════════════════
 
-function deriveSubdomain(dir) {
+export function deriveSubdomain(dir) {
 	const name = basename(dir);
 	// "LAB.Photos" → "photos", "APP.Invoices" → "invoices"
 	const part = name.includes('.') ? name.split('.').pop() : name;
@@ -155,25 +155,26 @@ function sendCommand(cmd) {
 	});
 }
 
-const PLIST_PATH = '/Library/LaunchDaemons/com.devproxy.proxy.plist';
+// A LaunchAgent: runs as the user, so starting it needs no password.
+const PLIST_LABEL = 'com.devproxy.proxy';
+const PLIST_PATH = join(homedir(), 'Library', 'LaunchAgents', `${PLIST_LABEL}.plist`);
 
 function startProxy() {
 	return new Promise((resolve, reject) => {
 		if (!existsSync(PLIST_PATH)) {
-			reject(new Error('LaunchDaemon not installed — run install.sh first'));
+			reject(new Error('LaunchAgent not installed — run install.sh first'));
 			return;
 		}
+		const domain = `gui/${process.getuid()}`;
 		try {
+			// bootstrap fails harmlessly when already loaded; kickstart -k (re)starts it
 			execSync(
-				`osascript -e 'do shell script `
-				+ `"launchctl unload ${PLIST_PATH} 2>/dev/null; `
-				+ `sleep 1; `
-				+ `launchctl load ${PLIST_PATH}" `
-				+ `with administrator privileges'`,
+				`launchctl bootstrap ${domain} "${PLIST_PATH}" 2>/dev/null; `
+				+ `launchctl kickstart -k ${domain}/${PLIST_LABEL}`,
 				{ stdio: 'ignore', timeout: 30000 }
 			);
 		} catch {
-			reject(new Error('Could not start proxy (authentication cancelled or failed)'));
+			reject(new Error('Could not start proxy (launchctl failed)'));
 			return;
 		}
 		let attempts = 0;

@@ -9,34 +9,36 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 │                                                                 │
 │  AI.SKILLS                                                      │
 │                                                                 │
-│  TheSecretary/               Local LLM context summarizer       │
+│  plugins/          hooks + engine + skill, own install.sh       │
+│    - secretary/              Local LLM context summarizer       │
 │                              + recall-on-demand ("remember?")   │
-│                                                                 │
-│  SafeEdit/                   sed -i replacement: diff preview,  │
+│    - safe-edit/              sed -i replacement: diff preview,  │
 │                              backups + auto-prune (Node CLI)    │
-│                                                                 │
-│  CodeIndex/                  Incremental symbol index +         │
+│    - code-index/             Incremental symbol index +         │
 │                              relational edge graph (SQLite)     │
 │                                                                 │
-│  skills/                                                        │
+│  skills/           instructions only (SKILL.md + references)    │
+│    - gfx-perf/               Measured perf work: JS, Canvas2D,  │
+│                              WebGPU                             │
 │    - ascii-art-diagrams/     Unicode diagram formatting rules   │
 │    - defensive-development/  Verify-first coding practices      │
 │    - project-structure/      Auto-gen directory structure docs  │
 │    - project-api/            Auto-gen API reference docs        │
 │    - secure-coding/          Security + data-integrity rules    │
 │                                                                 │
-│  others/                                                        │
-│    - microbrain/             Persistent SQLite memory system    │
-│    - block-destructive/      Block destructive Bash commands    │
-│                                                                 │
-│  utilities/                                                     │
-│    - microlocalhostproxy/    Zero-config subdomain + auto-start │
+│  tools/            standalone programs                          │
+│    - microproxy/             <folder>.localhost for any server  │
 │    - claude-launcher/        VS Code extension (Activity Bar +  │
 │                              Status Bar launcher for Claude)    │
 │                                                                 │
-│  opencodemlx/                Local AI coding assistant (MLX)    │
+│  claude-md/                  The global CLAUDE.md               │
 │                                                                 │
 │  boilerplate/                Project template + instructions    │
+│                                                                 │
+│  others/ (local only)                                           │
+│    - microbrain/             Persistent SQLite memory system    │
+│    - block-destructive/      Block destructive Bash commands    │
+│    - opencodemlx/            Local AI coding assistant (MLX)    │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -45,11 +47,12 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 
 ## Table of Contents
 
-- [TheSecretary](#thesecretary) ⭐
-- [SafeEdit](#safeedit)
-- [CodeIndex](#codeindex)
-- [GFXPerf](#gfxperf)
+- [Plugins](#plugins)
+  - [TheSecretary](#thesecretary) ⭐
+  - [SafeEdit](#safeedit)
+  - [CodeIndex](#codeindex)
 - [Skills](#skills)
+  - [GFXPerf](#gfxperf)
   - [Defensive Development](#defensive-development)
   - [ASCII Art Diagrams](#ascii-art-diagrams)
   - [Project Structure](#project-structure)
@@ -58,8 +61,8 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 - [Others](#others)
   - [Microbrain](#microbrain)
   - [Block Destructive](#block-destructive)
-- [Utilities](#utilities)
-  - [Microlocalhostproxy](#microlocalhostproxy)
+- [Tools](#tools)
+  - [Microproxy](#microproxy)
   - [Claude Launcher](#claude-launcher)
 - [OpenCode MLX](#opencode-mlx)
 - [Boilerplate](#boilerplate)
@@ -70,9 +73,14 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 
 ---
 
-## TheSecretary
+## Plugins
 
-> [`TheSecretary/`](TheSecretary/)
+Change how Claude Code itself works: hooks that run on every session, an engine, and a skill with the rules. Each one has its own `install.sh`.
+
+
+### TheSecretary
+
+> [`plugins/secretary/`](plugins/secretary/)
 
 Local LLM-powered conversation summarizer for Claude Code. Preserves context across `/clear` and session restarts using a small local model (Llama-3.2-3B-4bit, MLX), and auto-injects relevant past context when you ask "do you remember...?" (also "¿recuerdas...?" in Spanish).
 
@@ -119,13 +127,13 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 
 **Install path:** `~/.claude/the-secretary/` (engine, config, LLM; auto-migrates from legacy `~/.claude/summarizer/` on re-install). Project data lives in each project's `.claude/the-secretary/`.
 
-**Requirements:** macOS/Linux, Node.js 18+, llama-server (llama.cpp) or MLX in PATH, ~1–15 GB disk for the summary model (sized by RAM; none with `provider: claude_cli`). Optional semantic search: a venv with `mlx-embeddings` (Apple Silicon, ~600 MB model) — see `TheSecretary/INSTALL.md`
+**Requirements:** macOS/Linux, Node.js 18+, llama-server (llama.cpp) or MLX in PATH, ~1–15 GB disk for the summary model (sized by RAM; none with `provider: claude_cli`). Optional semantic search: a venv with `mlx-embeddings` (Apple Silicon, ~600 MB model) — see `plugins/secretary/INSTALL.md`
 
 ---
 
-## SafeEdit
+### SafeEdit
 
-> [`SafeEdit/`](SafeEdit/)
+> [`plugins/safe-edit/`](plugins/safe-edit/)
 
 Safer replacement for `sed -i`, `perl -i`, and `awk -i inplace` in Claude Code sessions. Ships as a Node CLI plus a `PreToolUse` hook that **blocks the dangerous commands** and points the agent at the safer one.
 
@@ -143,9 +151,9 @@ Safer replacement for `sed -i`, `perl -i`, and `awk -i inplace` in Claude Code s
 
 ---
 
-## CodeIndex
+### CodeIndex
 
-> [`CodeIndex/`](CodeIndex/)
+> [`plugins/code-index/`](plugins/code-index/)
 
 A fast, incremental **symbol index** so the agent can answer *"where is `X` defined?"*, *"what references it?"*, and *"how does this project wire together?"* in milliseconds instead of reading thousands of files or spawning search agents on every change. Thin layer over **universal-ctags** (symbol extraction, ~150 languages) + **SQLite** (`node:sqlite`, symbols + a relational edge graph, queried in ms).
 
@@ -165,9 +173,14 @@ A fast, incremental **symbol index** so the agent can answer *"where is `X` defi
 
 ---
 
-## GFXPerf
+## Skills
 
-> [`GFXPerf/`](GFXPerf/)
+Skill files (`.md`) that teach the agent specific behaviors and workflows. Drop them into `.claude/skills/` or `.opencode/skills/` and the agent picks them up automatically.
+
+
+### GFXPerf
+
+> [`skills/gfx-perf/`](skills/gfx-perf/)
 
 A skill for performance work on **graphics code in the browser** — JavaScript hot loops, Canvas2D and WebGPU. A method and a set of rules, not a tool: it makes the agent measure properly before and after, find the slow layer before touching it, and write down what was tried.
 
@@ -181,12 +194,6 @@ A skill for performance work on **graphics code in the browser** — JavaScript 
 **Includes:** `skill/SKILL.md`, `skill/references/` (`javascript.md`, `canvas2d.md`, `webgpu.md`, `measuring.md`), `skill/templates/` (`measure.js`, `findings.md`), `skill/scripts/fetch-specs.sh`, `src/claude-md-snippet.md`, `install.sh`
 
 **Install path:** `~/.claude/skills/gfx-perf/` (or a project's `.claude/skills/gfx-perf/` with `--project`).
-
----
-
-## Skills
-
-Skill files (`.md`) that teach the agent specific behaviors and workflows. Drop them into `.claude/skills/` or `.opencode/skills/` and the agent picks them up automatically.
 
 
 ### Defensive Development
@@ -412,24 +419,24 @@ A Claude Code `PreToolUse` hook that blocks destructive Bash commands — `rm -r
 
 ---
 
-## Utilities
+## Tools
 
-Standalone utilities for development workflows. Not tied to the agent's skill system.
+Standalone programs for development workflows. They work without the agent; some ship a skill to control them.
 
 
-### Microlocalhostproxy
+### Microproxy
 
-> [`utilities/microlocalhostproxy/`](utilities/microlocalhostproxy/)
+> [`tools/microproxy/`](tools/microproxy/)
 
 Zero-config local subdomain routing with auto-start for any project type (PHP, Node, Python, static).
 
 ```
 ┌───────────────────────────────────────────────────────────┐
 │                                                           │
-│  DEVPROXY                                                 │
+│  MICROPROXY                                               │
 │                                                           │
 │  Browser -> myapp.localhost:80                            │
-│          -> devproxy (port 80 LaunchDaemon)               │
+│          -> microproxy (ports 80 + 53, user, no root)     │
 │          -> routes by Host header                         │
 │          -> auto-starts server if not running             │
 │          -> 127.0.0.1:PORT (your dev server)              │
@@ -437,6 +444,7 @@ Zero-config local subdomain routing with auto-start for any project type (PHP, N
 ├───────────────────────────────────────────────────────────┤
 │                                                           │
 │  FEATURES                                                 │
+│  - Finds servers started by hand (folder = subdomain)     │
 │  - Auto-detect project type (PHP, Node, Python, static)   │
 │  - Auto-start servers on first request                    │
 │  - Persistent registry survives reboots                   │
@@ -454,7 +462,7 @@ Zero-config local subdomain routing with auto-start for any project type (PHP, N
 
 ### Claude Launcher
 
-> [`utilities/claude-launcher/`](utilities/claude-launcher/)
+> [`tools/claude-launcher/`](tools/claude-launcher/)
 
 VS Code extension that adds one-click launchers for Claude Code in the Activity Bar (left) and the Status Bar (bottom). Opens Claude as an editor tab (not the terminal panel) with an optional `--dangerously-skip-permissions` flag, and keeps a live counter of open sessions.
 

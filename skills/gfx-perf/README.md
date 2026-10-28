@@ -56,10 +56,10 @@ garbage collector stops interrupting. It is the first thing the skill checks.
 ./install.sh
 
 # For one project (run from the project's folder)
-/path/to/GFXPerf/install.sh --project
+/path/to/AI.SKILLS/skills/gfx-perf/install.sh --project
 
 # The skill alone, leaving CLAUDE.md as it is
-/path/to/GFXPerf/install.sh --project --skill-only
+/path/to/AI.SKILLS/skills/gfx-perf/install.sh --project --skill-only
 
 # Remove
 ./install.sh --uninstall

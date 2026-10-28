@@ -16,7 +16,7 @@ Zero-config local subdomain routing with auto-start for any project type.
 
 ## Prerequisites
 
-- macOS (uses LaunchDaemon for port 80 binding)
+- macOS (a user LaunchAgent opens ports 80 and 53 — macOS allows it without root on all interfaces)
 - Node.js 18+
 
 ---
@@ -24,20 +24,17 @@ Zero-config local subdomain routing with auto-start for any project type.
 ## Installation
 
 ```bash
-# 1. Copy central files
-mkdir -p ~/.config/devproxy
-cp central/proxy.js ~/.config/devproxy/
-cp central/install.sh ~/.config/devproxy/
-cp central/package.json ~/.config/devproxy/
-
-# 2. Run installer
-bash ~/.config/devproxy/install.sh
+# From the repo root — copies proxy.js, its CLI, the /microproxy skill and
+# this installer into place, then sets everything up
+bash tools/microproxy/central/install.sh
 ```
 
+Re-run the same command to update after pulling changes.
+
 The installer sets up:
-1. **dnsmasq** — resolves `*.localhost` → 127.0.0.1
-2. **macOS resolver** — `/etc/resolver/localhost`
-3. **LaunchDaemon** — proxy on port 80, auto-starts at boot, drops root after binding
+1. **macOS resolver** — `/etc/resolver/localhost` sends `*.localhost` lookups to `127.0.0.1:53`, answered by the proxy itself (no dnsmasq)
+2. **LaunchAgent `microproxy`** — proxy on ports 80 (HTTP) and 53 (DNS), starts at login, runs as you (no root); only answers this Mac. Shown as "microproxy" in Login Items
+3. **Cleanup** — removes the old root LaunchDaemon and stops the old dnsmasq service, if an earlier version installed them
 4. **CLI tool** — `devproxy` command available globally via `/usr/local/bin/devproxy`
 
 ---
@@ -193,9 +190,8 @@ tail -f ~/.config/devproxy/proxy.log
 # View persisted projects
 cat ~/.config/devproxy/projects.json
 
-# Restart the LaunchDaemon
-sudo launchctl unload /Library/LaunchDaemons/com.devproxy.proxy.plist
-sudo launchctl load /Library/LaunchDaemons/com.devproxy.proxy.plist
+# Restart the proxy (LaunchAgent, no sudo)
+launchctl kickstart -k gui/$(id -u)/com.devproxy.proxy
 ```
 
 ---
@@ -208,11 +204,10 @@ When a server is auto-started, the first request gets a "Starting..." page that 
 ### Idle timeout
 Auto-started servers are killed after 15 minutes of inactivity. The next request will auto-start them again (with a brief loading page).
 
-### LaunchDaemon can freeze
-macOS may suspend the daemon after prolonged inactivity. Fix:
+### The proxy stopped answering
+Restart it (no sudo):
 ```bash
-sudo launchctl unload /Library/LaunchDaemons/com.devproxy.proxy.plist
-sudo launchctl load /Library/LaunchDaemons/com.devproxy.proxy.plist
+launchctl kickstart -k gui/$(id -u)/com.devproxy.proxy
 ```
 
 ### Port conflicts
