@@ -604,6 +604,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-10-30 | TheSecretary v2.18.0: softer status line palette; context bar on a gray background with the solid end at the head and a centered limit mark |
 | 2026-10-30 | TheSecretary v2.17.0: no more macOS notifications; "memory recovered" and "handoff included" show for 15 s in the status line after the face and `Secretary` |
 | 2026-10-30 | TheSecretary v2.16.0: status line face `( ∵ᴖ ᴗ ᴖ∵ )` with blinks and gestures, always the same width; shorter context bar; launcher documented in the install steps |
 | 2026-10-30 | TheSecretary v2.15.0: status line starts with an animated `(·_·) Secretary` face that blinks and now and then plays a short gesture without shifting the line |

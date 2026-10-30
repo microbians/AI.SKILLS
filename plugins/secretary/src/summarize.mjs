@@ -3840,6 +3840,23 @@ const HANDOFF_WAITING_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦',
  */
 // Extra status fields Claude Code sends: model + effort, session cost, plan
 // usage (5h / 7d, amber at 75%, red at 90%), minutes left on the prompt cache, account.
+// Status line palette (24-bit): soft tones instead of the terminal's raw ANSI colors.
+const STATUS_PALETTE = {
+  face: '#7fc4c4',  // teal
+  ok: '#98c39a',    // sage
+  warn: '#e5c07b',  // amber
+  alert: '#e88388', // coral
+  track: '#3b404a', // bar background
+  mark: '#8b929e',  // clear-limit mark
+};
+
+const rgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(';');
+
+// Text in `hex`, on a `bg` background when given.
+function paint(hex, text, bg) {
+  return `${bg ? `\x1b[48;2;${rgb(bg)}m` : ''}\x1b[38;2;${rgb(hex)}m${text}\x1b[0m`;
+}
+
 function statusDetails(statusInput) {
   const dim = text => `\x1b[2m${text}\x1b[0m`;
   const out = [];
@@ -3853,13 +3870,14 @@ function statusDetails(statusInput) {
     .filter(([, l]) => l?.used_percentage != null)
     .map(([label, l]) => {
       const pct = l.used_percentage;
-      return `\x1b[${pct >= 90 ? '31' : pct >= 75 ? '33' : '2'}m${label} ${pct}%\x1b[0m`;
+      const text = `${label} ${pct}%`;
+      return pct >= 90 ? paint(STATUS_PALETTE.alert, text) : pct >= 75 ? paint(STATUS_PALETTE.warn, text) : dim(text);
     });
   if (usage.length) out.push(usage.join(' '));
   const cache = statusInput.prompt_cache;
   if (cache?.expires_at) {
     const minutes = Math.round((cache.expires_at * 1000 - Date.now()) / 60000);
-    out.push(minutes > 0 && cache.warm ? dim(`cache ${minutes}m`) : '\x1b[33mcache frío\x1b[0m');
+    out.push(minutes > 0 && cache.warm ? dim(`cache ${minutes}m`) : paint(STATUS_PALETTE.warn, 'cache frío'));
   }
   const account = sessionAccountName();
   if (account) out.push(dim(account));
@@ -3907,7 +3925,7 @@ function secretaryFace(seconds) {
 }
 
 function secretaryLabel() {
-  return `\x1b[36m${secretaryFace(Math.floor(Date.now() / 1000))}\x1b[0m \x1b[1mSecretary\x1b[0m`;
+  return `${paint(STATUS_PALETTE.face, secretaryFace(Math.floor(Date.now() / 1000)))} \x1b[1mSecretary\x1b[0m`;
 }
 
 function handoffStatus(statusInput) {
@@ -3925,19 +3943,26 @@ function handoffStatus(statusInput) {
     : contextTokens(transcript_path);
   if (tokens) {
     const warn = config.context_warn_tokens, clear = config.context_clear_tokens;
-    const color = tokens >= clear ? '31' : tokens >= warn ? '33' : '2';
+    const color = STATUS_PALETTE[tokens >= clear ? 'alert' : tokens >= warn ? 'warn' : 'ok'];
     const hint = tokens < clear ? '' : process.env.SECRETARY_LAUNCHER_PID ? ' ↻ al enviar' : ` /resume ${session_id}`;
     // Bar spans the model's whole context window; a mark sits at the clear threshold.
     const windowSize = statusInput.context_window?.context_window_size || 200000;
     const CELLS = 16;
     const filled = Math.min(CELLS, Math.round((tokens / windowSize) * CELLS));
     const mark = Math.min(CELLS - 1, Math.round((clear / windowSize) * CELLS));
-    // Filled part fades out at its edge (█ → ▓ → ▒) into the empty track (░).
+    // Filled part fades in from its start (▒ → ▓ → █): the head is the solid end.
     const FADE = ['▒', '▓'];
-    const cells = Array.from({ length: CELLS }, (_, i) => (i >= filled ? '░' : FADE[filled - 1 - i] || '█'));
-    const bar = `\x1b[${color}m${cells.slice(0, mark).join('')}\x1b[0m\x1b[1m│\x1b[0m\x1b[${color}m${cells.slice(mark).join('')}`;
+    // The whole bar sits on the track background; filled cells draw the level color over it.
+    const { track } = STATUS_PALETTE;
+    const cell = i => paint(color, i >= filled ? ' ' : FADE[i] || '█', track);
+    const cells = Array.from({ length: CELLS }, (_, i) => cell(i));
+    // Mark = right eighth of one cell + left eighth of the next (▕▏): the line sits
+    // on the boundary between two cells, so it is centered in any font. `│` is not.
+    // Each half takes the background of the side it belongs to.
+    const markHalf = (glyph, i) => paint(STATUS_PALETTE.mark, glyph, i < filled ? color : track);
+    const bar = `${cells.slice(0, mark).join('')}${markHalf('▕', mark - 1)}${markHalf('▏', mark)}${cells.slice(mark).join('')}`;
     const kilo = n => `${Math.round(n / 1000)}K`;
-    parts.push(`${bar}\x1b[0m   \x1b[${color}m${kilo(tokens)}/${kilo(clear)}${hint}\x1b[0m`);
+    parts.push(`${bar}   ${paint(color, `${kilo(tokens)}/${kilo(clear)}${hint}`)}`);
   }
   parts.push(...statusDetails(statusInput));
   if (session_id && cwd && previousHandoffPid(cwd, session_id)) {
