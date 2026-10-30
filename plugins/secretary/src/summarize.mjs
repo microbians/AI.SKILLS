@@ -77,21 +77,40 @@ function loadConfig() {
   }
 }
 
-// The clear limit comes from `secretary -limit <thousands>` (in tokens here) or the config;
-// warn and keep always scale with it.
-function applySessionLimit(cfg) {
-  const limit = Number(process.env.SECRETARY_LIMIT) || cfg.context_clear_tokens;
-  return { ...cfg, context_clear_tokens: limit, context_warn_tokens: Math.round(limit * 0.75), trim_keep_tokens: Math.round(limit / 2) };
+const config = loadConfig();
+
+// ═══════════════════ CONTEXT LIMIT ═══════════════════
+//
+// The clear limit of a session, first match wins: `/secretary limit <K|off>`
+// (stored per session id, so the launcher's relaunch of the same session keeps
+// it), then `secretary -limit <K>` (SECRETARY_LIMIT), then the config.
+const LIMIT_DIR = join(SECRETARY_DIR, 'limit');
+const sessionLimitPath = sessionId => join(LIMIT_DIR, String(sessionId).replace(/[^\w-]/g, '_'));
+
+// 'off', a token count, or null when the session has none of its own.
+function readSessionLimit(sessionId) {
+  if (!sessionId) return null;
+  try {
+    const value = readFileSync(sessionLimitPath(sessionId), 'utf-8').trim();
+    return value === 'off' ? 'off' : Number(value) || null;
+  } catch { return null; }
 }
 
-const config = applySessionLimit(loadConfig());
+// null clears the session's own limit.
+function writeSessionLimit(sessionId, value) {
+  if (value == null) return rmSync(sessionLimitPath(sessionId), { force: true });
+  mkdirSync(LIMIT_DIR, { recursive: true });
+  writeFileSync(sessionLimitPath(sessionId), String(value));
+}
 
-// `/secretary limit off` skips the clear limit for one session (no trim, no
-// relaunch, no /clear advice) until `limit on`. Keyed by session id, so the
-// relaunch that resumes the same session keeps it.
-const LIMIT_OFF_DIR = join(SECRETARY_DIR, 'limit-off');
-const limitOffPath = sessionId => join(LIMIT_OFF_DIR, String(sessionId));
-const limitOff = sessionId => Boolean(sessionId) && existsSync(limitOffPath(sessionId));
+// { clear, warn, keep } in tokens, or null when the limit is off. The warning
+// (amber bar, /clear advice) is at 75% and a trim keeps the last half.
+function limitsFor(sessionId) {
+  const own = readSessionLimit(sessionId);
+  if (own === 'off') return null;
+  const clear = own || Number(process.env.SECRETARY_LIMIT) || config.context_clear_tokens;
+  return { clear, warn: Math.round(clear * 0.75), keep: Math.round(clear / 2) };
+}
 
 // ═══════════════════ PROJECT-ROOT RESOLUTION ═══════════════════
 //
@@ -390,9 +409,21 @@ function ensureSchema(db, schema = 'main') {
       );
     `);
   } catch { /* FTS5 unavailable: search silently falls back to LIKE over summaries */ }
+
+  // Saved items only: the local day ('YYYY-MM-DD') a reminder is due ("avísame
+  // el viernes…") and the last day a note lives ("recuerda hasta el viernes…").
+  const cols = new Set(db.prepare(`PRAGMA ${schema}.table_info(summaries)`).all().map((c) => c.name));
+  for (const col of ['remind_at', 'expires_at']) {
+    if (!cols.has(col)) db.exec(`ALTER TABLE ${schema}.summaries ADD COLUMN ${col} TEXT`);
+  }
 }
 
-const ITEM_COLS = 'session_id, project_dir, chunk_index, summary, message_count, created_at';
+// A note past its last day is deleted the next time the DB is opened.
+function purgeExpired(db, schema = 'main') {
+  db.prepare(`DELETE FROM ${schema}.summaries WHERE expires_at < date('now', 'localtime')`).run();
+}
+
+const ITEM_COLS = 'session_id, project_dir, chunk_index, summary, message_count, created_at, remind_at, expires_at';
 const ALL_ITEMS_COLS = `id, ${ITEM_COLS}`;
 
 // MOVE this project's rows out of the global DB into the project's own DB, so a
@@ -503,6 +534,8 @@ function openDb(cwd) {
       ensureSchema(db, 'g');
       db._hasProject = true;
       migrateFromGlobalDb(db, root);
+      purgeExpired(db);
+      purgeExpired(db, 'g');
       db.exec(`CREATE TEMP VIEW IF NOT EXISTS all_items AS
         SELECT ${ALL_ITEMS_COLS}, 'p' AS src FROM main.summaries
         UNION ALL
@@ -511,6 +544,7 @@ function openDb(cwd) {
       db = new Database(config.db_path);
       db.pragma('journal_mode = WAL');
       ensureSchema(db);
+      purgeExpired(db);
       db._hasProject = false;
       db.exec(`CREATE TEMP VIEW IF NOT EXISTS all_items AS
         SELECT ${ALL_ITEMS_COLS}, 'p' AS src FROM main.summaries`);
@@ -1662,17 +1696,24 @@ const MONTH_RX = Object.keys(MONTHS).join('|');
 // folded text is also valid in the original.
 const foldSameLength = (s) => s.toLowerCase()
   .replace(/[áàâä]/g, 'a').replace(/[éèêë]/g, 'e').replace(/[íìîï]/g, 'i')
-  .replace(/[óòôö]/g, 'o').replace(/[úùûü]/g, 'u');
+  .replace(/[óòôö]/g, 'o').replace(/[úùûü]/g, 'u').replace(/ñ/g, 'n');
 
-function parseDateRange(text, now = new Date()) {
+// `future`: a day or weekday named without a year or "pasado" is the next one
+// instead of the last ("avísame el viernes"), and "mañana", "dentro de 3 días",
+// "la semana que viene" are understood.
+function parseDateRange(text, now = new Date(), { future = false } = {}) {
   const s = foldSameLength(text || '');
   const day = (d, add = 0) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + add);
   const today = day(now);
   const count = (w) => (/^\d+$/.test(w) ? Number(w) : NUMBER_WORDS[w]) || 0;
   const monday = (d) => day(d, -((d.getDay() + 6) % 7));
-  // A day or month named without a year is the most recent one not in the future.
-  const pastYear = (month, date = 1) =>
-    new Date(today.getFullYear(), month, date) > today ? today.getFullYear() - 1 : today.getFullYear();
+  // A day or month named without a year is the most recent one not in the future
+  // (the next one not in the past, with `future`).
+  const pastYear = (month, date = 1) => {
+    const d = new Date(today.getFullYear(), month, date);
+    if (future) return d < today ? today.getFullYear() + 1 : today.getFullYear();
+    return d > today ? today.getFullYear() - 1 : today.getFullYear();
+  };
   const oneDay = (d) => ({ from: d, to: day(d, 1) });
   const dayOf = (month, date) => oneDay(new Date(pastYear(month, date), month, date));
   const monthOf = (month) => {
@@ -1697,6 +1738,13 @@ function parseDateRange(text, now = new Date()) {
     [/\b(?:anteayer|antes\s+de\s+ayer|(?:the\s+)?day\s+before\s+yesterday)\b/, () => oneDay(day(today, -2))],
     [/\b(?:ayer|yesterday)\b/, () => oneDay(day(today, -1))],
     [/\b(?:hoy|today)\b/, () => oneDay(today)],
+    [/\b(?:pasado\s+manana|(?:the\s+)?day\s+after\s+tomorrow)\b/, () => (future ? oneDay(day(today, 2)) : null)],
+    [/\b(?:manana|tomorrow)\b/, () => (future ? oneDay(day(today, 1)) : null)],
+    [/\b(?:dentro\s+de|en|in)\s+(\d+|[a-z]+)\s+(dias?|days?|semanas?|weeks?)\b/, (m) => {
+      const k = count(m[1]) * (/^(?:s|w)/.test(m[2]) ? 7 : 1);
+      return future && k ? oneDay(day(today, k)) : null;
+    }],
+    [/\b(?:(?:la\s+)?semana\s+que\s+viene|(?:la\s+)?proxima\s+semana|next\s+week)\b/, () => (future ? oneDay(day(monday(today), 7)) : null)],
     [/\b(?:(?:en\s+)?los\s+)?(?:ultimos|last|past)\s+(\d+|[a-z]+)\s+(dias|days|semanas|weeks)\b/, (m) => {
       const k = count(m[1]) * (/^(?:s|w)/.test(m[2]) ? 7 : 1);
       return k ? { from: day(today, -k), to: day(today, 1) } : null;
@@ -1711,10 +1759,15 @@ function parseDateRange(text, now = new Date()) {
     [/\b(?:este\s+mes|this\s+month)\b/, () => ({ from: new Date(today.getFullYear(), today.getMonth(), 1), to: day(today, 1) })],
     // "el martes", "el martes pasado", "martes pasado", "last tuesday", "on tuesday":
     // the latest such day before today. A bare weekday word is left alone.
-    [new RegExp(`\\b(?:el\\s+(${WEEKDAY_RX})(?:\\s+pasado)?|(${WEEKDAY_RX})\\s+pasado|(?:last|on)\\s+(${WEEKDAY_RX}))\\b`), (m) => {
-      const wd = WEEKDAYS[m[1] || m[2] || m[3]];
+    [new RegExp(`\\b(?:el\\s+(${WEEKDAY_RX})(\\s+pasado)?|(${WEEKDAY_RX})(\\s+pasado)|(last|on|next)\\s+(${WEEKDAY_RX}))\\b`), (m) => {
+      const wd = WEEKDAYS[m[1] || m[3] || m[6]];
+      const past = m[2] || m[4] || m[5] === 'last';
+      if (future && !past) return oneDay(day(today, (wd - today.getDay() + 7) % 7 || 7));
+      if (m[5] === 'next') return null;
       return oneDay(day(today, -((today.getDay() - wd + 7) % 7 || 7)));
     }],
+    // With `future`, a bare weekday too ("until friday", "hasta viernes"): the next one.
+    [new RegExp(`\\b(${WEEKDAY_RX})\\b`), (m) => (future ? oneDay(day(today, (WEEKDAYS[m[1]] - today.getDay() + 7) % 7 || 7)) : null)],
     [new RegExp(`\\b(?:en|in)\\s+(${MONTH_RX})\\b`), (m) => monthOf(MONTHS[m[1]])],
   ];
 
@@ -1769,7 +1822,7 @@ function searchByDate(cwd, range, { maxHits, snippetChars }) {
  * Pre-filter: cheap regex to detect lines that MIGHT be secretary orders.
  * This avoids sending every user line to the LLM.
  */
-const ORDER_PREFILTER = /(?:recuerda|remember|olvida|forget|nota|note|anota|apunta|av[ií]sa|remind|recordatorio|reminder|borra|elimina|delete|remove|ya\s+(?:hice|no)|mark\s+done|prefiero|prefer|soy\s+|i\s+am|i'm\s+|mi\s+nombre|my\s+name|me\s+llamo|toma\s+nota|take\s+note|pon\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder|quita|tacha|cancela|cancel|dismiss|descartar?|no\s+recuerdes|don't\s+remember|no\s+olvides|don't\s+forget|listo\s+el|completed?|global)/i;
+const ORDER_PREFILTER = /(?:recuerda|recu[eé]rd[ae]me|remember|olvida|forget|nota|note|anota|apunta|av[ií]sa|remind|recordatorio|reminder|borra|elimina|delete|remove|ya\s+(?:hice|no)|mark\s+done|prefiero|prefer|soy\s+|i\s+am|i'm\s+|mi\s+nombre|my\s+name|me\s+llamo|toma\s+nota|take\s+note|pon\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder|quita|tacha|cancela|cancel|dismiss|descartar?|no\s+recuerdes|don't\s+remember|no\s+olvides|don't\s+forget|listo\s+el|completed?|global)/i;
 
 /**
  * Lines that look like tool outputs — never process as user orders.
@@ -1856,12 +1909,12 @@ function classifyIntentRegex(line) {
   if (/(?:prefiero|i\s+prefer|me\s+gusta\s+(?:más|mas))\s+(.+)/i.test(t)) return { intent: 'SAVE', content: t };
   if (/^(?:toma\s+nota|anota|apunta|nota|take\s+(?:a\s+)?note|note\s+(?:down|this)|note)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, global: true };
   if (/^(?:toma\s+nota|anota|apunta|nota|take\s+(?:a\s+)?note|note\s+(?:down|this)|note)[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1 };
-  if (/^(?:av[ií]same|recuerd[ae]me|remind\s+me)\s+global\s+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, global: true };
-  if (/^(?:av[ií]same|recuerd[ae]me|remind\s+me)\s+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1 };
-  if (/^(?:pon(?:me)?\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, global: true };
-  if (/^(?:pon(?:me)?\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder)[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1 };
-  if (/^(?:reminder|recordatorio)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, global: true };
-  if (/^(?:reminder|recordatorio)[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1 };
+  if (/^(?:av[ií]same|recu[eé]rd[ae]me|remind\s+me)\s+global\s+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, global: true, remind: true };
+  if (/^(?:av[ií]same|recu[eé]rd[ae]me|remind\s+me)\s+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, remind: true };
+  if (/^(?:pon(?:me)?\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, global: true, remind: true };
+  if (/^(?:pon(?:me)?\s+(?:un\s+)?recordatorio|set\s+(?:a\s+)?reminder)[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, remind: true };
+  if (/^(?:reminder|recordatorio)\s+global[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, global: true, remind: true };
+  if (/^(?:reminder|recordatorio)[:\s]+(.+)/i.test(t)) return { intent: 'SAVE', content: RegExp.$1, remind: true };
 
   // ── FORGET ── every phrasing that used to delete a memory, a note or
   // complete a reminder now removes the matching item from the index.
@@ -1919,7 +1972,7 @@ async function processSecretaryOrders(messages, db, cwd, sessionId) {
     switch (classification.intent) {
       // Sync action (SQLite only, instant):
       case 'SAVE':
-        await actionSave(classification.content || line, db, effectiveCwd, sessionId);
+        await actionSave(classification.content || line, db, effectiveCwd, sessionId, { remind: classification.remind });
         break;
       // LLM-dependent action — queue for background:
       case 'FORGET':
@@ -1955,21 +2008,47 @@ async function processSecretaryOrders(messages, db, cwd, sessionId) {
 // under the CURRENT session_id exactly like an automatic summary. There are no
 // categories, no prefixes and no lifecycle columns: one index, one shape.
 
-async function actionSave(content, db, cwd, sessionId) {
+async function actionSave(content, db, cwd, sessionId, { remind = false } = {}) {
+  insertItem(db, { content, cwd, sessionId, ...itemDates(content, remind) });
+}
+
+// '2026-11-03' → '3 nov'.
+const itemDateLabel = (day) => new Date(`${day}T12:00:00`).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+// ' ⏰ 3 nov ⌛ hasta 7 nov' for the dates a saved item carries.
+const itemDatesLabel = (e) => `${e.remind_at ? ` ⏰ ${itemDateLabel(e.remind_at)}` : ''}${e.expires_at ? ` ⌛ hasta ${itemDateLabel(e.expires_at)}` : ''}`;
+
+const localDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// The dates a saved item carries: "hasta el viernes" / "until friday" is its
+// last day; a reminder ("avísame el lunes…") is due on the date it names.
+function itemDates(content, remind) {
+  const until = content.match(/\b(?:hasta|until|till)\s+(.+)/i);
+  const end = until && parseDateRange(until[1], new Date(), { future: true });
+  // The date must follow "hasta" right away, an article aside ("hasta el 15/11").
+  const expires = end && /^\s*(?:el|la|the|on|this)?\s*$/i.test(until[1].slice(0, end.index)) ? end : null;
+  const rest = expires ? content.replace(until[0], until[1].slice(expires.index + expires.phrase.length)) : content;
+  const due = remind && parseDateRange(rest, new Date(), { future: true });
+  return { remindAt: due ? localDay(due.from) : null, expiresAt: expires ? localDay(expires.from) : null };
+}
+
+// One saved item (message_count = 0) under the session that wrote it. Skipped
+// when an item with the same text is already there. Returns true when written.
+function insertItem(db, { content, cwd, sessionId, remindAt = null, expiresAt = null, createdAt = null }) {
   const existing = db.prepare(`
     SELECT summary FROM all_items
     WHERE (src = 'p' OR project_dir = '__global__') AND message_count = 0
   `).all().map(r => r.summary.toLowerCase());
 
   const normalized = content.toLowerCase();
-  if (existing.some(e => e.includes(normalized) || normalized.includes(e))) return;
+  if (existing.some(e => e.includes(normalized) || normalized.includes(e))) return false;
 
   const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM all_items WHERE session_id = ?').get(sessionId);
   const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
-  db.prepare(`INSERT INTO ${itemTable(db, cwd === '__global__')} (session_id, project_dir, chunk_index, summary, message_count) VALUES (?, ?, ?, ?, ?)`).run(
-    sessionId, cwd || '', chunkIndex, content, 0
+  db.prepare(`INSERT INTO ${itemTable(db, cwd === '__global__')} (session_id, project_dir, chunk_index, summary, message_count, remind_at, expires_at, created_at) VALUES (?, ?, ?, ?, 0, ?, ?, COALESCE(?, datetime('now')))`).run(
+    sessionId, cwd || '', chunkIndex, content, remindAt, expiresAt, createdAt
   );
-  process.stderr.write(`[secretary] 💾 Saved: "${content.slice(0, 80)}"\n`);
+  process.stderr.write(`[secretary] 💾 Saved: "${content.slice(0, 80)}"${remindAt ? ` ⏰ ${remindAt}` : ''}${expiresAt ? ` ⌛ ${expiresAt}` : ''}\n`);
+  return true;
 }
 
 // ── FORGET ──
@@ -2341,6 +2420,9 @@ The single most likely first action when the user returns. Be specific (a file t
 ## Open questions / decisions pending
 Things the user has not decided yet that would block progress.
 
+## Decisions made
+Choices the user settled this session (a name, an approach, an option rejected), one line each, with the reason when the conversation gives one.
+
 ## Don't break / hard rules
 Constraints repeated by the user this session: backups required, naming conventions, "never revert without permission", language rules, etc. Anything that, if forgotten, would frustrate the user.
 
@@ -2543,7 +2625,7 @@ async function restore(hookInput) {
     // subfolder a session opens in — same tree resolution as the conversation
     // summaries above. '__global__' items are always included.
     const savedItems = cwd ? db.prepare(`
-      SELECT summary, created_at FROM all_items
+      SELECT summary, created_at, remind_at, expires_at FROM all_items
       WHERE (${tree.clause} OR project_dir = '__global__') AND message_count = 0
       ORDER BY created_at ASC
     `).all(...tree.params) : [];
@@ -2577,6 +2659,16 @@ async function restore(hookInput) {
 
     // ── Build output ──
     let output = '';
+
+    // Reminders due today or earlier stay on top until the user drops them
+    // ("ya hice…", "cancela el recordatorio…").
+    const today = localDay(new Date());
+    const dueItems = savedItems.filter((e) => e.remind_at && e.remind_at <= today);
+    if (dueItems.length > 0) {
+      output += `## ⏰ Avisos pendientes\n\n_Díselos al usuario en tu primera respuesta, una línea cada uno._\n\n`;
+      for (const e of dueItems) output += `- ${e.summary} _(${itemDateLabel(e.remind_at)})_\n`;
+      output += '\n';
+    }
 
     // 1. Conversation context from bullets.md (strictly per-project).
     //    bullets.md is built incrementally by updateBulletsCache() after each
@@ -2728,7 +2820,7 @@ async function restore(hookInput) {
       output += `\n## Saved items (NEVER ignore these)\n`;
       for (const e of savedItems) {
         const date = e.created_at ? new Date(e.created_at + 'Z').toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }) : '';
-        output += `- ${e.summary}${date ? ` _(${date})_` : ''}\n`;
+        output += `- ${e.summary}${date ? ` _(${date})_` : ''}${itemDatesLabel(e)}\n`;
       }
     }
 
@@ -2747,7 +2839,8 @@ async function restore(hookInput) {
     const formattedDate = lastDate !== 'unknown' ? new Date(lastDate + 'Z').toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : lastDate;
 
     process.stdout.write(output + `\n\n☑ Session memory recovered from ${formattedDate} (${totalItems} items restored)`);
-    writeStatusEvent(session_id, `☑ Memory recovered from ${formattedDate} (${totalItems} items)`);
+    const dueLabel = dueItems.length ? ` · ⏰ ${dueItems.length} aviso${dueItems.length === 1 ? '' : 's'}` : '';
+    writeStatusEvent(session_id, `☑ Memory recovered from ${formattedDate} (${totalItems} items)${dueLabel}`);
 
     // ── Fresh-context watermark ──
     // Record max(created_at) of summaries known at restore-time for this project.
@@ -2909,7 +3002,9 @@ async function inject(hookInput) {
 }
 
 async function recall(hookInput) {
-  const cwd = hookInput.cwd || process.argv[3] || process.cwd();
+  const filter = HANDOFF_FILTERS[(process.argv[3] || '').toLowerCase()];
+  const cwd = hookInput.cwd || process.argv[filter ? 4 : 3] || process.cwd();
+  if (filter) return recallSections(cwd, filter);
 
   const db = openDb(cwd);
   if (!db) {
@@ -2922,7 +3017,7 @@ async function recall(hookInput) {
 
     // Saved items — one flat list. No categories, no prefixes, no lifecycle.
     const entries = db.prepare(`
-      SELECT id, summary, created_at, project_dir FROM all_items
+      SELECT id, summary, created_at, project_dir, remind_at, expires_at FROM all_items
       WHERE (src = 'p' OR project_dir = '__global__') AND message_count = 0
       ORDER BY created_at ASC
     `).all();
@@ -2932,7 +3027,7 @@ async function recall(hookInput) {
       for (const e of entries) {
         const date = e.created_at ? new Date(e.created_at + 'Z').toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
         const globalTag = e.project_dir === '__global__' ? ' [global]' : '';
-        output += `- ${e.summary}${date ? ` _(${date})_` : ''}${globalTag}\n`;
+        output += `- ${e.summary}${date ? ` _(${date})_` : ''}${itemDatesLabel(e)}${globalTag}\n`;
       }
       output += '\n';
     }
@@ -3012,6 +3107,55 @@ SUMMARIES:\n${allSummaries}`;
     }
 
     process.stdout.write(output);
+  } finally {
+    db.close();
+  }
+}
+
+// `recall <filter>`: one kind of line, gathered from the project's handoffs.
+const HANDOFF_FILTERS = {};
+for (const [names, headings] of [
+  [['decisiones', 'decisions'], ['Decisions made']],
+  [['reglas', 'rules'], ["Don't break"]],
+  [['pendiente', 'pendientes', 'pending'], ['Open questions', 'Next step']],
+  [['hecho', 'done'], ['What was accomplished']],
+]) for (const n of names) HANDOFF_FILTERS[n] = headings;
+
+// The body of the handoff section whose `## ` heading starts with `heading`.
+function handoffSection(handoff, heading) {
+  const at = handoff.search(new RegExp(`^##\\s+${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'mi'));
+  if (at < 0) return '';
+  const body = handoff.slice(at).replace(/^[^\n]*\n?/, '');
+  const end = body.search(/^##\s/m);
+  return (end < 0 ? body : body.slice(0, end)).trim();
+}
+
+// The project's handoffs (newest first) with their creation date, off-project ones left out.
+function projectHandoffs(db, cwd, { from = '', to = '9999', limit = 1000 } = {}) {
+  const tree = projectTreeClause(resolveProjectRoot(cwd));
+  return db.prepare(`
+    SELECT summary, created_at FROM all_items
+    WHERE ${tree.clause} AND summary LIKE '[HANDOFF]%' AND summary NOT LIKE ?
+      AND created_at >= ? AND created_at < ?
+    ORDER BY created_at DESC LIMIT ?
+  `).all(...tree.params, `[HANDOFF] ${OFF_PROJECT_TAG}%`, from, to, limit)
+    .map((r) => ({ body: r.summary.replace(/^\[HANDOFF\]\s*/i, ''), at: new Date(`${r.created_at.replace(' ', 'T')}Z`) }));
+}
+
+function recallSections(cwd, headings) {
+  const db = openDb(cwd);
+  if (!db) { process.stdout.write('No database available.\n'); return; }
+  try {
+    const seen = new Set();
+    let output = '';
+    for (const h of projectHandoffs(db, cwd, { limit: 10 })) {
+      const lines = headings.flatMap((heading) => handoffSection(h.body, heading).split('\n'))
+        .map((l) => l.trim()).filter((l) => l && !/^_?\(?none|nada|ninguna?\)?_?$/i.test(l.replace(/^[-*]\s*/, '')));
+      const fresh = lines.filter((l) => !seen.has(l.replace(/^[-*]\s*/, '').toLowerCase()));
+      fresh.forEach((l) => seen.add(l.replace(/^[-*]\s*/, '').toLowerCase()));
+      if (fresh.length) output += `### ${h.at.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })}\n${fresh.map((l) => (/^[-*]\s/.test(l) ? l : `- ${l}`)).join('\n')}\n\n`;
+    }
+    process.stdout.write(output || 'Nada de ese tipo en los handoffs de este proyecto.\n');
   } finally {
     db.close();
   }
@@ -3658,8 +3802,10 @@ async function userPromptHook(hookInput) {
   // Trim, hold the prompt and have the launcher reopen the session with it.
   // Only a cut made now reopens: the reopened session's file is already short.
   const launcher = Number(process.env.SECRETARY_LAUNCHER_PID);
-  const tokens = limitOff(hookInput.session_id) ? 0 : contextTokens(hookInput.transcript_path);
-  const trim = tokens >= config.context_clear_tokens && trimSession(hookInput);
+  const limits = limitsFor(hookInput.session_id);
+  const tokens = limits ? contextTokens(hookInput.transcript_path) : 0;
+  const over = Boolean(limits) && tokens >= limits.clear;
+  const trim = over && trimSession(hookInput, limits.keep);
   if (launcher && trim === 'trimmed') {
     const dir = join(homedir(), '.claude', 'the-secretary', 'relaunch');
     mkdirSync(dir, { recursive: true });
@@ -3686,7 +3832,7 @@ async function userPromptHook(hookInput) {
   // turn the longer it runs. The handoff makes /clear cheap; say when to do it.
   // Under the launcher the reopen above does it, and a file already short was
   // just reopened (its last usage predates the cut); an uncuttable one still asks.
-  if (tokens >= config.context_clear_tokens && !(launcher && trim)) {
+  if (over && !(launcher && trim)) {
     const howTo = trim
       ?`dale en un bloque de código el comando que retoma esta misma sesión, ya recortada a los últimos mensajes: ` +
         `\`/resume ${hookInput.session_id}\``
@@ -3789,8 +3935,8 @@ async function checkFreshContextWatermark(hookInput) {
 
 /**
  * handoff-status: `statusLine` command. Shows the context size against the
- * clear limit (`92K/500K`): sage, amber past `context_warn_tokens`, coral with
- * a /resume hint past `context_clear_tokens`, then the session details and,
+ * clear limit (`92K/500K`, see limitsFor): sage, amber past the warning, coral with
+ * a /resume hint past the limit, then the session details and,
  * for a few seconds, Secretary's last notice (writeStatusEvent).
  */
 // Extra status fields Claude Code sends: model + effort, session cost, plan
@@ -3919,8 +4065,9 @@ function handoffStatus(statusInput) {
   const tokens = live
     ? (live.input_tokens || 0) + (live.cache_read_input_tokens || 0) + (live.cache_creation_input_tokens || 0)
     : contextTokens(transcript_path);
-  const off = limitOff(session_id);
-  const warn = off ? Infinity : config.context_warn_tokens, clear = off ? Infinity : config.context_clear_tokens;
+  const limits = limitsFor(session_id);
+  const off = !limits;
+  const { warn, clear } = limits || { warn: Infinity, clear: Infinity };
   const level = !tokens ? 'ok' : tokens >= clear ? 'alert' : tokens >= warn ? 'warn' : 'ok';
   if (tokens) {
     const color = STATUS_PALETTE[level];
@@ -3943,6 +4090,12 @@ function handoffStatus(statusInput) {
     const bar = off ? cells.join('') : `${cells.slice(0, mark).join('')}${markHalf('▕', mark - 1)}${markHalf('▏', mark)}${cells.slice(mark).join('')}`;
     const kilo = n => `${Math.round(n / 1000)}K`;
     parts.push(`${bar}   ${paint(color, `${kilo(tokens)}/${off ? 'off' : kilo(clear)}${hint}`)}`);
+    // Near the limit: which prompts a trim would keep (written by the Stop hook).
+    const preview = tokens >= clear * 0.9 && tokens < clear && readTrimPreview(session_id);
+    if (preview) {
+      const first = preview.first.length > 32 ? `${preview.first.slice(0, 31)}…` : preview.first;
+      parts.push(paint(color, `✂ conserva ${preview.prompts} prompt${preview.prompts === 1 ? '' : 's'} desde «${first}»`));
+    }
   }
   parts.push(...statusDetails(statusInput));
   const event = readStatusEvent(session_id);
@@ -3956,15 +4109,59 @@ function handoffStatus(statusInput) {
  * hook cannot do it: it runs after the transcript is already loaded.) The
  * running session keeps appending to the file and keeps its context in memory.
  * The parent chain is walked back from the last message; the cut lands on the
- * earliest user prompt whose tail stays under `trim_keep_tokens`, measured
- * from the `usage` the transcript records for each request. Everything from the cut on is kept in file order (parallel tool
+ * earliest user prompt whose tail stays under `keepTokens` (see trimPlan).
+ * Everything from the cut on is kept in file order (parallel tool
  * results hang on sibling branches), minus sidechains and tool calls still
  * waiting for a result. Every dropped line is first appended to
  * `<transcript>.bak`, which so keeps the whole history. Returns 'trimmed' when
  * the file was just cut, 'short' when it already was, false otherwise.
  */
-function trimSession({ transcript_path: transcriptPath, session_id, cwd }) {
-  if (!transcriptPath || !existsSync(transcriptPath)) return false;
+function trimSession({ transcript_path: transcriptPath, session_id, cwd }, keepTokens) {
+  try {
+    const plan = trimPlan(transcriptPath, keepTokens);
+    if (!plan || plan.cut < 0) return false;
+    if (plan.cut === 0) return 'short';
+    const { raw, rawLines, parsed, lines, chain, cut, CHAIN } = plan;
+
+    const start = lines.indexOf(chain[cut]);
+    let kept = lines.slice(start).filter((l) => l.uuid && CHAIN.has(l.type) && !l.isSidechain);
+    const blocks = (l) => (Array.isArray(l.message?.content) ? l.message.content : []);
+    const answered = new Set(kept.flatMap((l) => blocks(l).filter((c) => c.type === 'tool_result').map((c) => c.tool_use_id)));
+    kept = kept.filter((l) => !(l.type === 'assistant' && blocks(l).some((c) => c.type === 'tool_use' && !answered.has(c.id))));
+    const keptLines = new Set(kept.map((l) => parsed.indexOf(l)));
+    kept[0] = { ...kept[0], parentUuid: null };
+
+    const bakPath = `${transcriptPath}.bak`;
+    const saved = new Set();
+    if (existsSync(bakPath)) {
+      for (const l of readFileSync(bakPath, 'utf-8').split('\n')) {
+        const m = l.match(/"uuid":"([^"]+)"/);
+        if (m) saved.add(m[1]);
+      }
+    }
+    const dropped = rawLines.filter((l, i) => !keptLines.has(i) && !(parsed[i]?.uuid && saved.has(parsed[i].uuid)));
+    if (dropped.length) appendFileSync(bakPath, dropped.join('\n') + '\n');
+
+    // Claude Code appends to this file while it runs: carry over whatever
+    // landed after the read so no line is lost.
+    const late = readFileSync(transcriptPath, 'utf-8').slice(raw.length);
+    writeFileSync(transcriptPath, kept.map((l) => JSON.stringify(l)).join('\n') + '\n' + late);
+    remapReadPositions(cwd, session_id, keptLines, rawLines.length);
+    return 'trimmed';
+  } catch (err) {
+    process.stderr.write(`[secretary] trim error: ${err.message}\n`);
+    return false;
+  }
+}
+
+/**
+ * Where a trim of the transcript would cut, without touching it: the earliest
+ * user prompt whose tail stays under `keepTokens`, measured from the `usage`
+ * the transcript records for each request. `cut` is -1 when no prompt fits,
+ * 0 when the file is already short; `prompts` are the prompts a cut keeps.
+ */
+function trimPlan(transcriptPath, keepTokens) {
+  if (!transcriptPath || !existsSync(transcriptPath)) return null;
   try {
     const raw = readFileSync(transcriptPath, 'utf-8');
     // Same line numbering as parseTranscript: the stored read positions count these.
@@ -4003,43 +4200,15 @@ function trimSession({ transcript_path: transcriptPath, session_id, cwd }) {
         if (next != null) tail += Math.max(0, next - own);
         next = own;
       }
-      if (tail > config.trim_keep_tokens) break;
+      if (tail > keepTokens) break;
       if (isPrompt(chain[i])) cut = i;
     }
-    if (cut < 0) return false;
-    if (cut === 0) return 'short';
-
-    const start = lines.indexOf(chain[cut]);
-    let kept = lines.slice(start).filter((l) => l.uuid && CHAIN.has(l.type) && !l.isSidechain);
-    const blocks = (l) => (Array.isArray(l.message?.content) ? l.message.content : []);
-    const answered = new Set(kept.flatMap((l) => blocks(l).filter((c) => c.type === 'tool_result').map((c) => c.tool_use_id)));
-    kept = kept.filter((l) => !(l.type === 'assistant' && blocks(l).some((c) => c.type === 'tool_use' && !answered.has(c.id))));
-    const keptLines = new Set(kept.map((l) => parsed.indexOf(l)));
-    kept[0] = { ...kept[0], parentUuid: null };
-
-    const bakPath = `${transcriptPath}.bak`;
-    const saved = new Set();
-    if (existsSync(bakPath)) {
-      for (const l of readFileSync(bakPath, 'utf-8').split('\n')) {
-        const m = l.match(/"uuid":"([^"]+)"/);
-        if (m) saved.add(m[1]);
-      }
-    }
-    const dropped = rawLines.filter((l, i) => !keptLines.has(i) && !(parsed[i]?.uuid && saved.has(parsed[i].uuid)));
-    if (dropped.length) appendFileSync(bakPath, dropped.join('\n') + '\n');
-
-    // Claude Code appends to this file while it runs: carry over whatever
-    // landed after the read so no line is lost.
-    const late = readFileSync(transcriptPath, 'utf-8').slice(raw.length);
-    writeFileSync(transcriptPath, kept.map((l) => JSON.stringify(l)).join('\n') + '\n' + late);
-    remapReadPositions(cwd, session_id, keptLines, rawLines.length);
-    return 'trimmed';
+    return { raw, rawLines, parsed, lines, chain, cut, CHAIN, prompts: chain.slice(Math.max(cut, 0)).filter(isPrompt).map((l) => promptText(l.message.content)) };
   } catch (err) {
-    process.stderr.write(`[secretary] trim error: ${err.message}\n`);
-    return false;
+    process.stderr.write(`[secretary] trim plan error: ${err.message}\n`);
+    return null;
   }
 }
-
 /**
  * After a trim, moves the summarizer's and the turn index's read positions
  * (line numbers into the transcript) onto the trimmed file, so neither skips
@@ -4071,8 +4240,28 @@ function remapReadPositions(cwd, sessionId, keptLines, oldCount) {
  * line shows `/resume`, the file it reopens is already short.
  */
 function trimIfOverLimit(hookInput) {
-  if (limitOff(hookInput.session_id) || contextTokens(hookInput.transcript_path) < config.context_clear_tokens) return false;
-  return trimSession(hookInput);
+  const limits = limitsFor(hookInput.session_id);
+  if (!limits || contextTokens(hookInput.transcript_path) < limits.clear) return false;
+  return trimSession(hookInput, limits.keep);
+}
+
+// Between 90% and 100% of the limit, the end of each turn records what a trim
+// would keep, for the status line: nothing enters the conversation, so it costs
+// no tokens. Out of that band the file is removed.
+const trimPreviewPath = sessionId => join(tmpdir(), `secretary-trim-${String(sessionId).replace(/[^\w-]/g, '_')}.json`);
+
+function writeTrimPreview(hookInput) {
+  if (!hookInput.session_id) return;
+  const path = trimPreviewPath(hookInput.session_id);
+  const limits = limitsFor(hookInput.session_id);
+  const tokens = limits ? contextTokens(hookInput.transcript_path) : 0;
+  const plan = tokens >= limits?.clear * 0.9 && tokens < limits.clear && trimPlan(hookInput.transcript_path, limits.keep);
+  if (!plan || plan.cut <= 0) return rmSync(path, { force: true });
+  writeFileSync(path, JSON.stringify({ prompts: plan.prompts.length, first: plan.prompts[0].replace(/\s+/g, ' ').trim() }));
+}
+
+function readTrimPreview(sessionId) {
+  try { return JSON.parse(readFileSync(trimPreviewPath(sessionId), 'utf-8')); } catch { return null; }
 }
 
 /**
@@ -4217,26 +4406,145 @@ function cmdBackend(args) {
   process.stdout.write(`The Secretary backend: ${backendLabel({ ...config, ...next })} (was ${backendLabel(current)})\n`);
 }
 
-// `limit off|on [session]`: skip or restore the clear limit for one session
-// (the current one by default); no argument shows its state.
-function cmdLimit(state, sessionId) {
+// `limit off | on | <K>`: skip the clear limit for this session, go back to
+// the default, or set it to K thousand tokens (`300`, `300k`); no argument
+// shows it. The session is the current one (CLAUDE_CODE_SESSION_ID) unless
+// `--session <id>` names another.
+function cmdLimit(arg, sessionId) {
   if (!sessionId) {
-    process.stdout.write('No session id: pass it as `limit off|on <session>`.\n');
+    process.stdout.write('No session id: run it from inside a session, or pass `--session <id>`.\n');
     process.exitCode = 1;
     return;
   }
-  if (state === 'off') {
-    mkdirSync(LIMIT_OFF_DIR, { recursive: true });
-    writeFileSync(limitOffPath(sessionId), '');
-  } else if (state === 'on') {
-    rmSync(limitOffPath(sessionId), { force: true });
-  } else if (state) {
-    process.stdout.write(`Unknown option "${state}". Options: off | on\n`);
+  const thousands = /^\d+(?:\.\d+)?k?$/i.test(arg || '') ? parseFloat(arg) : 0;
+  if (arg === 'off') writeSessionLimit(sessionId, 'off');
+  else if (arg === 'on') writeSessionLimit(sessionId, null);
+  else if (thousands) writeSessionLimit(sessionId, Math.round(thousands * 1000));
+  else if (arg) {
+    process.stdout.write(`Unknown option "${arg}". Options: off | on | <thousands of tokens, e.g. 300>\n`);
     process.exitCode = 1;
     return;
   }
-  const label = limitOff(sessionId) ? 'off (no trim, no /clear advice)' : `on (${Math.round(config.context_clear_tokens / 1000)}K)`;
+  const limits = limitsFor(sessionId);
+  const label = limits ? `${Math.round(limits.clear / 1000)}K` : 'off (no trim, no /clear advice)';
   process.stdout.write(`The Secretary limit for this session: ${label}\n`);
+}
+
+// `status`: one look at the summarizing AI, the databases, this session's
+// limit and the saved reminders.
+async function cmdStatus(cwd, sessionId) {
+  const size = (path) => (existsSync(path) ? `${(statSync(path).size / 1048576).toFixed(1)} MB` : 'no existe');
+  const when = (utc) => (utc ? new Date(`${utc.replace(' ', 'T')}Z`).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'nunca');
+  const out = [];
+
+  let ai = backendLabel(config);
+  if (backendName(config) === 'claude') {
+    const { degradedUntil } = readClaudeState();
+    ai += degradedUntil > Date.now() ? ` — en pausa por fallos hasta ${new Date(degradedUntil).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}` : ' — ok';
+  } else {
+    ai += (await isLLMAvailable()) ? ' — servidor activo' : ' — servidor parado (arranca al resumir)';
+  }
+  out.push(`IA que resume: ${ai}`);
+
+  const limits = limitsFor(sessionId);
+  out.push(`Límite de esta sesión: ${limits ? `${Math.round(limits.clear / 1000)}K` : 'off'}`);
+
+  const db = openDb(cwd);
+  if (!db) {
+    out.push('Base de datos: no se pudo abrir');
+  } else {
+    try {
+      const root = resolveProjectRoot(cwd);
+      const tree = projectTreeClause(root);
+      const count = (where, ...params) => db.prepare(`SELECT COUNT(*) AS c FROM all_items WHERE ${where}`).get(...params).c;
+      const notes = count(`(${tree.clause} OR project_dir = '__global__') AND message_count = 0`, ...tree.params);
+      const handoffs = count(`${tree.clause} AND summary LIKE '[HANDOFF]%'`, ...tree.params);
+      const summaries = count(`${tree.clause} AND message_count > 0`, ...tree.params);
+      const last = db.prepare(`SELECT MAX(created_at) AS at FROM all_items WHERE ${tree.clause} AND message_count > 0`).get(...tree.params).at;
+      const today = localDay(new Date());
+      const reminders = db.prepare(`SELECT remind_at FROM all_items WHERE (${tree.clause} OR project_dir = '__global__') AND remind_at IS NOT NULL`).all(...tree.params);
+      const due = reminders.filter((r) => r.remind_at <= today).length;
+      if (root) out.push(`Proyecto: ${projectDbPath(root)} (${size(projectDbPath(root))})`);
+      out.push(`Global: ${config.db_path} (${size(config.db_path)})`);
+      out.push(`Guardado: ${notes} notas, ${summaries} resúmenes, ${handoffs} handoffs; último resumen ${when(last)}`);
+      out.push(`Avisos: ${due} pendientes, ${reminders.length - due} para más adelante`);
+    } finally {
+      db.close();
+    }
+  }
+  process.stdout.write(out.join('\n') + '\n');
+}
+
+// `summary` / `resumen` / `diario [fecha]`: what was done each day, from the
+// "What was accomplished" of the project's handoffs. No date: the last 7 days.
+// Read straight from the DB, no AI call.
+function cmdSummary(args, cwd) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const range = parseDateRange(args.join(' ')) || { from: new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6), to: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1) };
+  const db = openDb(cwd);
+  if (!db) { process.stdout.write('No database available.\n'); return; }
+  try {
+    const [from, to] = dateBounds(range).summaries;
+    const byDay = new Map();
+    for (const h of projectHandoffs(db, cwd, { from, to }).reverse()) {
+      const day = h.at.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+      const done = handoffSection(h.body, 'What was accomplished') || h.body.split('\n').slice(0, 3).join('\n');
+      if (!byDay.has(day)) byDay.set(day, []);
+      byDay.get(day).push(`_${h.at.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}_\n${done}`);
+    }
+    if (!byDay.size) { process.stdout.write('No hay handoffs de este proyecto en esas fechas.\n'); return; }
+    process.stdout.write([...byDay].map(([day, items]) => `## ${day}\n\n${items.join('\n\n')}`).join('\n\n') + '\n');
+  } finally {
+    db.close();
+  }
+}
+
+// `export [file]`: the saved items of the project (and the global ones) as
+// Markdown, one `- ` line each with its dates in an HTML comment, so `import`
+// reads them back. Default file: ./secretary-notes.md.
+function cmdExport(file, cwd) {
+  const db = openDb(cwd);
+  if (!db) { process.stdout.write('No database available.\n'); return; }
+  try {
+    const tree = projectTreeClause(resolveProjectRoot(cwd));
+    const rows = db.prepare(`
+      SELECT summary, created_at, remind_at, expires_at, project_dir FROM all_items
+      WHERE (${tree.clause} OR project_dir = '__global__') AND message_count = 0
+      ORDER BY created_at
+    `).all(...tree.params);
+    const meta = (r) => [`created: ${r.created_at}`, r.remind_at && `remind: ${r.remind_at}`, r.expires_at && `expires: ${r.expires_at}`, r.project_dir === '__global__' && 'global'].filter(Boolean).join('; ');
+    const body = rows.map((r) => `- ${r.summary.replace(/\s+/g, ' ').trim()} <!-- ${meta(r)} -->`).join('\n');
+    const path = file || join(cwd, 'secretary-notes.md');
+    writeFileSync(path, `# The Secretary — saved items (${basename(resolveProjectRoot(cwd) || cwd)})\n\n${body}\n`);
+    process.stdout.write(`Exported ${rows.length} item(s) to ${path}\n`);
+  } finally {
+    db.close();
+  }
+}
+
+// `import <file>`: adds the `- ` lines of a Markdown file as saved items of
+// this project (`global` in the comment: global), skipping ones already there.
+function cmdImport(file, cwd, sessionId) {
+  if (!file || !existsSync(file)) { process.stdout.write(`No file to import: ${file || '(none given)'}\n`); process.exitCode = 1; return; }
+  const db = openDb(cwd);
+  if (!db) { process.stdout.write('No database available.\n'); return; }
+  try {
+    let added = 0, skipped = 0;
+    for (const line of readFileSync(file, 'utf-8').split('\n')) {
+      const m = line.match(/^\s*[-*]\s+(.+?)\s*(?:<!--(.*?)-->)?\s*$/);
+      if (!m) continue;
+      const meta = Object.fromEntries((m[2] || '').split(';').map((p) => p.trim().split(/:\s*/)).filter((p) => p[0]).map(([k, ...v]) => [k, v.join(':') || true]));
+      const ok = insertItem(db, {
+        content: m[1], cwd: meta.global ? '__global__' : cwd, sessionId: sessionId || 'import',
+        remindAt: meta.remind || null, expiresAt: meta.expires || null, createdAt: meta.created || null,
+      });
+      ok ? added++ : skipped++;
+    }
+    process.stdout.write(`Imported ${added} item(s); ${skipped} already there\n`);
+  } finally {
+    db.close();
+  }
 }
 
 // ═══════════════════ MAIN ═══════════════════
@@ -4336,8 +4644,16 @@ async function main() {
     return;
   }
 
+  const sessionId = process.env.CLAUDE_CODE_SESSION_ID;
+  if (command === 'status') { await cmdStatus(process.cwd(), sessionId); return; }
+  if (['summary', 'resumen', 'diario'].includes(command)) { cmdSummary(process.argv.slice(3), process.cwd()); return; }
+  if (command === 'export') { cmdExport(process.argv[3], process.cwd()); return; }
+  if (command === 'import') { cmdImport(process.argv[3], process.cwd(), sessionId); return; }
+
   if (command === 'limit') {
-    cmdLimit(process.argv[3], process.argv[4] || process.env.CLAUDE_CODE_SESSION_ID);
+    const at = process.argv.indexOf('--session');
+    const args = process.argv.slice(3).filter((_, i) => at < 0 || (i + 3 !== at && i + 3 !== at + 1));
+    cmdLimit(args[0], at >= 0 ? process.argv[at + 1] : process.env.CLAUDE_CODE_SESSION_ID);
     return;
   }
 
@@ -4372,6 +4688,12 @@ async function main() {
     process.stderr.write('  recall            Show the whole index: saved items + context\n');
     process.stderr.write('  search <query>    Search cache + DB for a query\n');
     process.stderr.write('  backend [name]    Show or switch the summarizing AI: local | apple | claude [model] [--account <name|email|folder>]\n');
+    process.stderr.write('  limit [off|on|K]  Show, skip, restore or set (thousands of tokens) this session\'s context limit\n');
+    process.stderr.write('  status            Summarizing AI, databases, session limit and reminders at a glance\n');
+    process.stderr.write('  summary [date]    What was done each day (also: resumen, diario); default the last 7 days\n');
+    process.stderr.write('  recall [filter]   Filters: decisiones | reglas | pendiente | hecho (from the handoffs)\n');
+    process.stderr.write('  export [file]     Saved items to Markdown (default ./secretary-notes.md)\n');
+    process.stderr.write('  import <file>     Saved items from such a Markdown file\n');
     process.stderr.write('  index-turns       Backfill the verbatim FTS index from transcripts on disk\n');
     process.stderr.write('  index-vectors     Build the semantic index (optional; needs embedding venv)\n');
     process.stderr.write('  sync              Refresh both indexes in the background (SessionStart hook)\n');
@@ -4400,6 +4722,7 @@ async function main() {
         // After the handoff has read the full transcript. Under the launcher the
         // next prompt trims, so that cut is the one that reopens the session.
         if (!process.env.SECRETARY_LAUNCHER_PID) trimIfOverLimit(hookInput);
+        writeTrimPreview(hookInput);
         break;
       case 'inject': await inject(hookInput); break;
       case 'recall': await recall(hookInput); break;

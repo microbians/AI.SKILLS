@@ -223,7 +223,9 @@ Start Claude with `secretary` instead of `claude` and that step is automatic. `s
 
 To try it without filling a large context, `secretary -limit 30k` (or `-limit 30`, always in thousands) sets that session's limit in place of `context_clear_tokens`. Either way the warning (amber bar, nervous face, `/clear` advice) is always at 75% of the limit and the kept tail is half of it. `-limit` is not passed to `claude`.
 
-To go past the limit for a while in one session, `/secretary limit off` (no trim, no relaunch, no `/clear` advice; the status line shows `600K/off`); `/secretary limit on` restores it. It is stored per session id under `~/.claude/the-secretary/limit-off/`, so the launcher's relaunch keeps it, and other sessions are unaffected.
+To change the limit of one running session, `/secretary limit 300` (thousands of tokens) sets it, `/secretary limit off` skips it (no trim, no relaunch, no `/clear` advice; the status line shows `600K/off`) and `/secretary limit on` goes back to the default. It is stored per session id under `~/.claude/the-secretary/limit/`, so the launcher's relaunch keeps it, and other sessions are unaffected. It wins over `-limit` and `context_clear_tokens`.
+
+Between 90% and 100% of the limit the status line also shows what a trim would keep (`✂ conserva 6 prompts desde «…»`). The end of each turn works it out from the transcript and leaves it in a temp file the status line reads; nothing enters the conversation, so it costs no tokens.
 
 The status line starts with a small face and `Secretary`. The face blinks every few seconds and every two minutes plays a short gesture (surprise, laugh, frown, dizzy, goofy); every face is `( ∵E M E∵ )` with one narrow character per eye and mouth, so it is always 11 cells wide and the rest of the line never moves. Its mood follows the context: nervous past the warn limit (`( ∵• ~ •∵ )`, eyes darting every few seconds), angry past the clear limit (`( ∵╾ ⁔ ╼∵ )`, fuming every few seconds). A 16-cell bar spans the model's context window on a solid gray background: the fill fades in from its start (`▒▓█`, solid at the head) and a centered mark (`▕▏`, on the boundary between two cells) sits at the clear limit. Colors are soft 24-bit tones: teal face, sage under the warn limit, amber past it, coral past the clear limit. Then it shows the context against the clear limit (`56K/500K`), then the model and effort, the session cost, plan usage for 5 h and 7 days (amber from 75%, red from 90%), the minutes left on the prompt cache (`cache frío` in amber once it expired) and the account: `CLAUDE_PROFILE` when your launcher sets it, otherwise the user part of the account's email. Secretary's own notices (memory recovered on start, previous handoff included after `/clear`) appear at the end of the line for 15 s; there are no desktop notifications.
 
@@ -428,6 +430,29 @@ or just a few of those letters in order. Accounts are `~/.claude.json` (`default
 
 Switching away from a local backend stops its server; the next summary starts the new one.
 
+The other chat commands:
+
+```
+/secretary status                      # summarizing AI, databases, this session's limit, reminders
+/secretary limit [off|on|300]          # this session's context limit (see Context trim)
+/secretary summary [fecha]             # what was done each day (also: resumen, diario); default last 7 days
+/secretary recall decisiones           # also: reglas, pendiente, hecho (decisions, rules, pending, done)
+/secretary export [file]               # saved items to Markdown (default ./secretary-notes.md)
+/secretary import <file>               # saved items from such a file, duplicates skipped
+```
+
+`summary` reads the "What was accomplished" of each handoff, grouped by day; `recall <filter>`
+gathers one handoff section (Decisions made, Don't break, Open questions + Next step, What was
+accomplished) across the last 10 handoffs. Neither calls an AI. `export` writes one `- ` line
+per item with its dates in an HTML comment (`<!-- created: …; remind: …; expires: …; global -->`),
+which `import` reads back.
+
+**Dated items.** A reminder ("avísame el lunes que hay deploy", "recuérdame mañana…", "remind me
+next friday…") stores the day it names (`remind_at`); from that day on it opens every session
+under `⏰ Avisos pendientes` and the status line notice counts it, until "ya hice…" or "cancela el
+recordatorio…" drops it. "hasta el viernes" / "until friday" stores the item's last day
+(`expires_at`); the item is deleted the first time the DB is opened after it.
+
 ```bash
 # Same as /secretary ai, from a shell
 node ~/.claude/the-secretary/summarize.mjs backend claude sonnet
@@ -614,6 +639,7 @@ TheSecretary/
 
 | Version | Date | Change |
 |---|---|---|
+| 2.20.0 | 2026-10-30 | `/secretary limit <K>` sets the running session's limit (one store, `limit/<session>`, holds `off` or the number). Near the limit (90%) the status line shows which prompts a trim would keep, worked out at the end of each turn, no tokens. Reminders carry the day they name and open the session under `⏰ Avisos pendientes` once due; "hasta <fecha>" makes a note expire. `/secretary status`, `/secretary summary` (also `resumen`, `diario`), `recall decisiones / reglas / pendiente / hecho`, `export` / `import` of saved items. Handoffs gain a "Decisions made" section. "Recuérdame" with its accent and "mañana" were not recognized |
 | 2.19.0 | 2026-10-30 | The context trim kept only the last prompt when earlier prompts carried pasted images (their content is a block list, not a string, so none qualified as a cut point): it now accepts them, and keeps the last half of the limit as intended. The warning and the kept tail now always derive from the limit (75% and 50%): with only `context_clear_tokens` set in the config, the warning stayed at the old fixed 130K, so a 500K limit warned and turned the face nervous at a quarter of it. `/clear` no longer waits for the previous handoff: `await-handoff`, its async hook, the prompt-hook notice and the status line spinner are gone; the verbatim tail injected at once grows to 12000 chars. The status line face gets nervous past the warn limit and angry past the clear limit. `/secretary limit off|on` skips or restores the limit for the current session |
 | 2.18.0 | 2026-10-30 | Status line palette: soft 24-bit colors (teal face, sage / amber / coral levels) instead of raw ANSI. Context bar on a solid gray background, fill fades in from its start with the solid end at the head, clear-limit mark `▕▏` centered on a cell boundary |
 | 2.17.0 | 2026-10-30 | Desktop notifications removed (`osascript`, the SessionEnd `--notify` flag and its LLM blurb). "Memory recovered" (restore) and "Previous session handoff included" (`await-handoff --rewake`) now show in the status line after the face and `Secretary` for 15 s |

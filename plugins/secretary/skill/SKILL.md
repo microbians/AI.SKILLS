@@ -2,7 +2,7 @@
 name: secretary
 description: AI-powered context persistence for Claude Code — keeps ONE flat index per project (no memory types) plus conversation summaries, via local LLM hooks and SQLite. Use whenever the user mentions remembering/forgetting something, taking notes, or asks recall questions ("recuerda que...", "olvida que...", "anota...", "borra la nota...", "avísame...", "recuérdame...", "cancela el recordatorio...", "qué recuerdas?", "muestra mis notas", "show my reminders", "remember that...", "forget...", "take note...", "remind me...", "do you remember...?"). Runs entirely in background via hooks; this skill defines the behavior rules and recall commands Claude must follow when interacting with it.
 argument-hint: "[ai [local | apple | claude [model] [--account <name | email | folder>]]]"
-version: 2.19.0
+version: 2.20.0
 updated: 2026-10-30
 license: MIT
 ---
@@ -22,7 +22,12 @@ A local-LLM secretary that auto-summarizes the conversation, captures anything t
 - **Items under `## Saved items (NEVER ignore these)`** must always be respected.
 - **When the user asks "qué recuerdas?", "muestra mis notas", "what do you remember"**: run the recall command below and show its output as the response.
 - **`/secretary ai [args]`** (or "qué IA usa el secretary", "cambia el secretary a apple/claude/local"): run `node ~/.claude/the-secretary/summarize.mjs backend [args]` and reply with its output line only. Args: none (show current) | `local` | `apple` | `claude [model] [--account <name | email | folder>]`.
-- **`/secretary limit off|on`** (or "salta el límite", "quita el límite del secretary", "vuelve a poner el límite"): run `node ~/.claude/the-secretary/summarize.mjs limit off|on` and reply with its output line only. `off` skips the context clear limit for the current session only (no trim, no relaunch, no `/clear` advice); `on` restores it; no arg shows the state.
+- **`/secretary limit [off|on|<K>]`** (or "salta el límite", "quita el límite del secretary", "vuelve a poner el límite", "pon el límite a 300"): run `node ~/.claude/the-secretary/summarize.mjs limit [off|on|<K>]` and reply with its output line only. For the current session only: `off` skips the context clear limit (no trim, no relaunch, no `/clear` advice), `on` goes back to the default, a number sets it in thousands of tokens (`300` = 300K); no arg shows it.
+- **`/secretary status`** (or "estado del secretary"): run `node ~/.claude/the-secretary/summarize.mjs status` and show its output as is.
+- **`/secretary summary|resumen|diario [fecha]`** (or "qué hice esta semana", "diario del mes pasado"): run `node ~/.claude/the-secretary/summarize.mjs summary [fecha]` (the date words as given: `ayer`, `la semana pasada`, `en octubre`…; none = last 7 days) and show its output as is. No AI call: it reads the handoffs.
+- **`/secretary recall decisiones|reglas|pendiente|hecho`** (or "qué decidimos", "qué reglas hay", "qué queda pendiente"): run `echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/the-secretary/summarize.mjs recall <filter>` and show its output as is. English works too: `decisions`, `rules`, `pending`, `done`.
+- **`/secretary export [file]`** / **`/secretary import <file>`**: run `node ~/.claude/the-secretary/summarize.mjs export [file]` (default `./secretary-notes.md`) or `node ~/.claude/the-secretary/summarize.mjs import <file>` and reply with its output line only.
+- **`## ⏰ Avisos pendientes`** at session start: tell the user each one in one line in your first reply. They stay until the user drops them ("ya hice…", "cancela el recordatorio…").
 
 ## Recall commands (run on user request)
 
@@ -77,6 +82,7 @@ hit shows one and the answer may be in the picture, open that path with Read.
 ## Triggers (auto-detected by hooks — Claude does not invoke these)
 
 - **Save (all of these write ONE item into the index):** "Recuerda que..." / "Remember that..." / "Toma nota..." / "Anota..." / "Apunta..." / "Take note..." / "Avísame..." / "Recuérdame..." / "Pon un recordatorio..." / "Remind me..."
+- **Dates on a saved item:** a reminder ("avísame el lunes…", "recuérdame mañana…", "remind me next friday…") is due on the day it names and shows up under `⏰ Avisos pendientes` from then on. "hasta <fecha>" / "until <date>" ("recuerda hasta el viernes que…") is the item's last day: it is deleted after it.
 - **Forget:** "Olvida que..." / "Forget..." / "Borra la memoria de..." / "Borra la nota de..." / "Cancela el recordatorio de..." / "Ya hice..."
 - **Recall (auto-injection):** "¿Recuerdas X?" / "Te acuerdas de X?" / "Do you remember X?" / "Do you recall X?" / "Remember when X?"
 - **Global modifier:** add the word "global" to make the item visible across all projects ("Anota global...", "Recuerda global...", "Avísame global...").
