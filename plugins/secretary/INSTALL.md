@@ -87,7 +87,7 @@ What each hook does:
 | `UserPromptSubmit` | `user-prompt` | Recall questions → search the memory and inject the hits |
 | `PostToolUse` | `incremental` | Index new turns verbatim; every N calls, summarize in background |
 | `Stop` | `force --stop-llm` | Index the turns of the reply that just ended (pure chat included); write the handoff |
-| `SessionEnd` | `force --stop-llm --notify` | Same, plus a desktop notification |
+| `SessionEnd` | `force --stop-llm` | Same, when the session closes |
 | `PreCompact` | `compact` | Index + final summary before Claude Code compacts |
 | `SessionStart` | `restore` + `sync` | Inject the saved context; catch up both indexes in background |
 | `SessionStart` (`clear`, async) | `await-handoff --rewake` | Wait for the previous session's handoff and wake Claude with it |

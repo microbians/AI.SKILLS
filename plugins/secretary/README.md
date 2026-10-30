@@ -223,7 +223,7 @@ Start Claude with `secretary` instead of `claude` and that step is automatic. `s
 
 To try it without filling a large context, `secretary -limit 30k` (or `-limit 30`, always in thousands) sets that session's limit (`context_clear_tokens`; the warning goes to 75% of it and the kept tail to half). `-limit` is not passed to `claude`.
 
-The status line starts with a small face and `Secretary`. The face blinks every few seconds and every two minutes plays a short gesture (surprise, laugh, frown, dizzy, goofy); every face is `( ∵E M E∵ )` with one narrow character per eye and mouth, so it is always 11 cells wide and the rest of the line never moves. A 16-cell bar spans the model's context window, with a mark at the clear limit. Then it shows the context against the clear limit (`56K/500K`), then the model and effort, the session cost, plan usage for 5 h and 7 days (amber from 75%, red from 90%), the minutes left on the prompt cache (`cache frío` in amber once it expired) and the account: `CLAUDE_PROFILE` when your launcher sets it, otherwise the user part of the account's email.
+The status line starts with a small face and `Secretary`. The face blinks every few seconds and every two minutes plays a short gesture (surprise, laugh, frown, dizzy, goofy); every face is `( ∵E M E∵ )` with one narrow character per eye and mouth, so it is always 11 cells wide and the rest of the line never moves. A 16-cell bar spans the model's context window, with a mark at the clear limit. Then it shows the context against the clear limit (`56K/500K`), then the model and effort, the session cost, plan usage for 5 h and 7 days (amber from 75%, red from 90%), the minutes left on the prompt cache (`cache frío` in amber once it expired) and the account: `CLAUDE_PROFILE` when your launcher sets it, otherwise the user part of the account's email. Secretary's own notices (memory recovered on start, previous handoff included after `/clear`) appear at the end of the line for 15 s; there are no desktop notifications.
 
 ```
 ( ∵ᴖ ᴗ ᴖ∵ ) Secretary █░░░░░░░│░░░░░░░░   56K/500K · Opus 5.5 medium · $21.48 · 5h 12% 7d 78% · cache 41m · work
@@ -612,6 +612,7 @@ TheSecretary/
 
 | Version | Date | Change |
 |---|---|---|
+| 2.17.0 | 2026-10-30 | Desktop notifications removed (`osascript`, the SessionEnd `--notify` flag and its LLM blurb). "Memory recovered" (restore) and "Previous session handoff included" (`await-handoff --rewake`) now show in the status line after the face and `Secretary` for 15 s |
 | 2.16.0 | 2026-10-30 | Status line face is now `( ∵ᴖ ᴗ ᴖ∵ )`: blinks `( ∵⸌ ᴗ ⸍∵ )` and every two minutes plays a gesture (surprise, laugh, frown, dizzy, goofy), always 11 cells wide. Context bar shortened to 16 cells. Docs: launcher in the install steps and the file list |
 | 2.15.0 | 2026-10-30 | Status line starts with `(·_·) Secretary`: the face blinks and every two minutes plays a short gesture, always five characters wide so the line never shifts |
 | 2.14.0 | 2026-10-30 | Status line: context as `56K/500K` (against the clear limit) set apart from the bar, plus model and effort, session cost, 5 h / 7 d plan usage, minutes left on the prompt cache and the account, separated by ` · ` |

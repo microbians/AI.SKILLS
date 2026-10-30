@@ -1116,37 +1116,27 @@ async function waitForPreviousHandoff(cwd, sessionId) {
   }
 }
 
-// ═══════════════════ NOTIFICATIONS ═══════════════════
+// ═══════════════════ STATUS LINE EVENTS ═══════════════════
 
-/**
- * Short project name for notification titles.
- * Prefers the git repo root so every subdirectory of one repo notifies under the
- * same name; resolveProjectRoot() anchors on any nested .claude/ marker, which
- * would otherwise title the same project differently depending on the cwd.
- */
-function projectLabel(cwd) {
+// One-off message (memory recovered, handoff included) that the status line
+// shows after the Secretary label for STATUS_EVENT_SECONDS. One file per session.
+const STATUS_EVENT_SECONDS = 15;
+
+function statusEventPath(sessionId) {
+  return join(tmpdir(), `secretary-event-${String(sessionId).replace(/[^\w-]/g, '_')}`);
+}
+
+function writeStatusEvent(sessionId, message) {
+  if (!sessionId) return;
+  try { writeFileSync(statusEventPath(sessionId), `${Date.now()}|${message}`, 'utf-8'); } catch { /* ignore */ }
+}
+
+function readStatusEvent(sessionId) {
+  if (!sessionId) return '';
   try {
-    if (!cwd || cwd === '__global__') return '';
-    try {
-      const gitRoot = execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {
-        encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-      if (gitRoot) return basename(gitRoot);
-    } catch { /* not a repo, or git unavailable */ }
-    const root = resolveProjectRoot(cwd);
-    return root ? basename(root) : '';
+    const [at, ...message] = readFileSync(statusEventPath(sessionId), 'utf-8').split('|');
+    return Date.now() - Number(at) < STATUS_EVENT_SECONDS * 1000 ? message.join('|') : '';
   } catch { return ''; }
-}
-
-function notifyMemoryRecovered(cwd, message) {
-  const proj = projectLabel(cwd);
-  notify(proj ? `${proj} — Memory recovered` : 'The Secretary — Memory recovered', message);
-}
-
-function notify(title, message) {
-  try {
-    execSync(`osascript -e 'display notification "${message.replace(/"/g, '\\"')}" with title "${title.replace(/"/g, '\\"')}"'`, { timeout: 3000, stdio: 'ignore' });
-  } catch { /* silent */ }
 }
 
 // ═══════════════════ TRANSCRIPT PARSING ═══════════════════
@@ -2269,7 +2259,7 @@ ${joined}`;
  * Background summarization worker — called as a forked child process.
  * Args: _bg_summarize <session_id> <cwd> <message_count> <tmpFile>
  */
-async function bgSummarize(sessionId, cwd, messageCount, tmpFile, { notify: shouldNotify = false, isHandoff = false } = {}) {
+async function bgSummarize(sessionId, cwd, messageCount, tmpFile, { isHandoff = false } = {}) {
   let text;
   try {
     text = readFileSync(tmpFile, 'utf-8');
@@ -2447,17 +2437,6 @@ ${text}`;
     db.close();
   }
 
-  if (shouldNotify) {
-    let blurb = '';
-    try {
-      const blurbPrompt = `From this coding session summary, write ONE short sentence in ENGLISH (max 90 characters, no quotes, no markdown) describing what was accomplished or the current state. Be concrete — mention the main thing done. Output only the sentence, nothing else.\n\nSUMMARY:\n${finalSummary}`;
-      const raw = await callLLM(blurbPrompt, 60);
-      blurb = (raw || '').replace(/^["'`]+|["'`]+$/g, '').replace(/\s+/g, ' ').trim();
-      if (blurb.length > 120) blurb = blurb.slice(0, 117) + '...';
-    } catch { /* notify without blurb */ }
-    const proj = projectLabel(cwd);
-    notify(proj ? `${proj} — Session saved` : 'Claude Code — Session saved', blurb || 'Context stored by The Secretary');
-  }
 }
 
 async function compact(hookInput) {
@@ -2785,8 +2764,8 @@ async function restore(hookInput) {
     process.stdout.write(output + `\n\n☑ Session memory recovered from ${formattedDate} (${totalItems} items restored)`);
     // After /clear the previous session's handoff is usually still being
     // written, so recovery is not over yet: the `await-handoff --rewake` hook
-    // notifies once it lands.
-    if (source !== 'clear') notifyMemoryRecovered(cwd, `From ${formattedDate} (${totalItems} items)`);
+    // announces it once it lands.
+    if (source !== 'clear') writeStatusEvent(session_id, `☑ Memory recovered from ${formattedDate} (${totalItems} items)`);
 
     // ── Fresh-context watermark ──
     // Record max(created_at) of summaries known at restore-time for this project.
@@ -2817,7 +2796,7 @@ async function restore(hookInput) {
   }
 }
 
-async function force(hookInput, { stopLlm = false, notify: shouldNotify = false } = {}) {
+async function force(hookInput, { stopLlm = false } = {}) {
   const { session_id, transcript_path, cwd } = hookInput;
   if (!session_id || !transcript_path) return;
 
@@ -2888,7 +2867,6 @@ async function force(hookInput, { stopLlm = false, notify: shouldNotify = false 
     const { spawn } = await import('child_process');
     const spawnArgs = [new URL(import.meta.url).pathname, '_bg_summarize', session_id, cwd || '', String(messages.length), tmpFile];
     if (stopLlm) spawnArgs.push('--stop-llm');
-    if (shouldNotify) spawnArgs.push('--notify');
     const child = spawn('node', spawnArgs, {
       detached: true,
       stdio: workerStdio(),
@@ -3965,6 +3943,9 @@ function handoffStatus(statusInput) {
   if (session_id && cwd && previousHandoffPid(cwd, session_id)) {
     const frame = HANDOFF_WAITING_FRAMES[Math.floor(Date.now() / 1000) % HANDOFF_WAITING_FRAMES.length];
     parts.push(`${HANDOFF_WAITING_MESSAGE} ${frame}`);
+  } else {
+    const event = readStatusEvent(session_id);
+    if (event) parts.push(event);
   }
   if (parts.length) process.stdout.write(`${secretaryLabel()} ${parts.join(' · ')}\n`);
 }
@@ -4151,7 +4132,7 @@ async function awaitHandoff(hookInput, { rewake = false } = {}) {
     process.stdout.write('## 📥 The Secretary: el resumen de la sesión anterior terminó sin añadir contexto nuevo\n');
   }
   if (rewake) {
-    notifyMemoryRecovered(cwd, fresh ? 'Previous session handoff included' : 'No new context from the previous session');
+    writeStatusEvent(session_id, fresh ? '☑ Previous session handoff included' : 'No new context from the previous session');
     process.exitCode = 2;
   }
 }
@@ -4278,7 +4259,6 @@ async function main() {
       // Stop hook implies "session is closing" → write a richer handoff
       // brief instead of the regular incremental summary.
       await bgSummarize(sessionId, cwd, messageCount, tmpFile, {
-        notify: flags.includes('--notify'),
         isHandoff: flags.includes('--stop-llm'),
       });
     } catch (err) {
@@ -4420,7 +4400,7 @@ async function main() {
       case 'compact': await compact(hookInput); break;
       case 'restore': await restore(hookInput); break;
       case 'force':
-        await force(hookInput, { stopLlm: process.argv.includes('--stop-llm'), notify: process.argv.includes('--notify') });
+        await force(hookInput, { stopLlm: process.argv.includes('--stop-llm') });
         // After the handoff has read the full transcript. Under the launcher the
         // next prompt trims, so that cut is the one that reopens the session.
         if (!process.env.SECRETARY_LAUNCHER_PID) trimIfOverLimit(hookInput);
