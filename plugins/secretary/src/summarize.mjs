@@ -3857,9 +3857,37 @@ const HANDOFF_WAITING_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦',
  * /clear that is when the handoff has already landed — so the wait itself is
  * shown here: the status line prints the message while the previous session's
  * handoff is being written and goes blank once it is done. It also shows the
- * context size (`ctx 92k`): dim, amber past `context_warn_tokens`, red with a
- * /clear hint past `context_clear_tokens`.
+ * context size against the clear limit (`92K/500K`): dim, amber past
+ * `context_warn_tokens`, red with a /clear hint past `context_clear_tokens`.
  */
+// Extra status fields Claude Code sends: model + effort, session cost, plan
+// usage (5h / 7d, amber at 75%, red at 90%), minutes left on the prompt cache, account.
+function statusDetails(statusInput) {
+  const dim = text => `\x1b[2m${text}\x1b[0m`;
+  const out = [];
+  const model = statusInput.model?.display_name;
+  const effort = statusInput.effort?.level;
+  if (model) out.push(dim(effort ? `${model} ${effort}` : model));
+  const cost = statusInput.cost?.total_cost_usd;
+  if (cost) out.push(dim(`$${cost.toFixed(2)}`));
+  const limits = statusInput.rate_limits || {};
+  const usage = [['5h', limits.five_hour], ['7d', limits.seven_day]]
+    .filter(([, l]) => l?.used_percentage != null)
+    .map(([label, l]) => {
+      const pct = l.used_percentage;
+      return `\x1b[${pct >= 90 ? '31' : pct >= 75 ? '33' : '2'}m${label} ${pct}%\x1b[0m`;
+    });
+  if (usage.length) out.push(usage.join(' '));
+  const cache = statusInput.prompt_cache;
+  if (cache?.expires_at) {
+    const minutes = Math.round((cache.expires_at * 1000 - Date.now()) / 60000);
+    out.push(minutes > 0 && cache.warm ? dim(`cache ${minutes}m`) : '\x1b[33mcache frío\x1b[0m');
+  }
+  const account = sessionAccountName();
+  if (account) out.push(dim(account));
+  return out;
+}
+
 function handoffStatus(statusInput) {
   const { session_id, transcript_path } = statusInput;
   const cwd = statusInput.cwd || statusInput.workspace?.current_dir;
@@ -3884,14 +3912,15 @@ function handoffStatus(statusInput) {
     const mark = Math.min(CELLS - 1, Math.round((clear / windowSize) * CELLS));
     const cells = Array.from({ length: CELLS }, (_, i) => (i < filled ? '█' : '░'));
     const bar = `\x1b[${color}m${cells.slice(0, mark).join('')}\x1b[0m\x1b[1m│\x1b[0m\x1b[${color}m${cells.slice(mark).join('')}`;
-    const account = sessionAccountName();
-    parts.push(`${bar} ${Math.round(tokens / 1000)}k${account ? ` ${account}` : ''}${hint}\x1b[0m`);
+    const kilo = n => `${Math.round(n / 1000)}K`;
+    parts.push(`${bar}\x1b[0m   \x1b[${color}m${kilo(tokens)}/${kilo(clear)}${hint}\x1b[0m`);
   }
+  parts.push(...statusDetails(statusInput));
   if (session_id && cwd && previousHandoffPid(cwd, session_id)) {
     const frame = HANDOFF_WAITING_FRAMES[Math.floor(Date.now() / 1000) % HANDOFF_WAITING_FRAMES.length];
     parts.push(`${HANDOFF_WAITING_MESSAGE} ${frame}`);
   }
-  if (parts.length) process.stdout.write(parts.join('  ·  ') + '\n');
+  if (parts.length) process.stdout.write(parts.join(' · ') + '\n');
 }
 
 /**
