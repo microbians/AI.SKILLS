@@ -213,7 +213,7 @@ The Secretary handles this automatically:
 
 The check is cheap (a single SQLite query per prompt) and fires only when there is genuinely new content to show. No-op for sessions that had nothing pending.
 
-**Waiting for the handoff without a prompt (v2.8.0).** The notice above needs the user to type something first. On `/clear` an async SessionStart hook (`await-handoff --rewake`, `asyncRewake`) waits for the previous session's handoff worker instead, and when that worker exits it wakes Claude with what was stored — or with a one-line notice that the handoff added nothing, so every `/clear` ends with a visible answer. While it waits, the status line (`handoff-status`, [`statusline.json`](statusline.json)) shows `⏳ The Secretary: waiting for the previous handoff` plus a spinner, and goes blank once it is done. If the user does type first, the prompt hook prints the pending notice together with the `await-handoff` command for Claude to run in the background.
+**Waiting for the handoff without a prompt (v2.8.0).** The notice above needs the user to type something first. On `/clear` an async SessionStart hook (`await-handoff --rewake`, `asyncRewake`) waits for the previous session's handoff worker instead, and when that worker exits it wakes Claude with what was stored — or with a one-line notice that the handoff added nothing, so every `/clear` ends with a visible answer. While it waits, the status line (`handoff-status`, [`statusline.json`](statusline.json)) adds `⏳ The Secretary: waiting for the previous handoff` plus a spinner, and drops it once it is done. If the user does type first, the prompt hook prints the pending notice together with the `await-handoff` command for Claude to run in the background.
 
 ### Context trim and the `secretary` launcher (v2.13.0)
 
@@ -223,10 +223,10 @@ Start Claude with `secretary` instead of `claude` and that step is automatic. `s
 
 To try it without filling a large context, `secretary -limit 30k` (or `-limit 30`, always in thousands) sets that session's limit (`context_clear_tokens`; the warning goes to 75% of it and the kept tail to half). `-limit` is not passed to `claude`.
 
-The status line starts with a small face and `Secretary`. The face blinks every few seconds and every two minutes plays a short gesture (looks around, dozes off, smiles, frowns, startles); every frame is five characters wide, so the rest of the line never moves. Then it shows the context against the clear limit (`56K/500K`), then the model and effort, the session cost, plan usage for 5 h and 7 days (amber from 75%, red from 90%), the minutes left on the prompt cache (`cache frío` in amber once it expired) and the account: `CLAUDE_PROFILE` when your launcher sets it, otherwise the user part of the account's email.
+The status line starts with a small face and `Secretary`. The face blinks every few seconds and every two minutes plays a short gesture (surprise, laugh, frown, dizzy, goofy); every face is `( ∵E M E∵ )` with one narrow character per eye and mouth, so it is always 11 cells wide and the rest of the line never moves. A 16-cell bar spans the model's context window, with a mark at the clear limit. Then it shows the context against the clear limit (`56K/500K`), then the model and effort, the session cost, plan usage for 5 h and 7 days (amber from 75%, red from 90%), the minutes left on the prompt cache (`cache frío` in amber once it expired) and the account: `CLAUDE_PROFILE` when your launcher sets it, otherwise the user part of the account's email.
 
 ```
-(·_·) Secretary ██░░░░░░░░░░░░░│░░░░░░░░░░░░░░░   56K/500K · Opus 5.5 medium · $21.48 · 5h 12% 7d 78% · cache 41m · work
+( ∵ᴖ ᴗ ᴖ∵ ) Secretary █░░░░░░░│░░░░░░░░   56K/500K · Opus 5.5 medium · $21.48 · 5h 12% 7d 78% · cache 41m · work
 ```
 
 ## How it works
@@ -389,7 +389,7 @@ bash install.sh
 
 The installer will:
 1. Migrate any legacy install from `~/.claude/summarizer/` to `~/.claude/the-secretary/` (preserves DB, models, watermarks, cache)
-2. Create `~/.claude/the-secretary/` with all files
+2. Create `~/.claude/the-secretary/` with all files, and link the `secretary` launcher to `~/.local/bin/secretary` (that folder must be in your `PATH`)
 3. Install the `secretary` skill at `~/.claude/skills/secretary/` (defines the behavior rules Claude must follow)
 4. Install the `better-sqlite3` and `sqlite-vec` dependencies
 5. Set up the summary model: MLX downloads the one sized to your machine on first run (see [Model auto-selection by RAM](#model-auto-selection-by-ram)); without MLX, the 3B GGUF for llama.cpp is downloaded now
@@ -589,12 +589,13 @@ TheSecretary/
 ├── INSTALL.md          ← Manual installation guide
 ├── install.sh          ← Automatic installer/uninstaller
 ├── hooks.json          ← Hook definitions (single source of truth)
-├── statusline.json     ← Status line definition (handoff wait notice)
+├── statusline.json     ← Status line definition (face, context bar, usage, handoff wait)
 ├── skill/
 │   └── SKILL.md        ← Behavior rules; its `version:` is the package version
 ├── backups/            ← Previous versions (gitignored)
 └── src/
     ├── summarize.mjs   ← Main secretary script
+    ├── secretary.mjs   ← `secretary` launcher (runs claude, reopens trimmed sessions)
     ├── embed.py        ← Embedding helper (Qwen3-Embedding-0.6B via MLX)
     ├── start-llm.sh    ← LLM server manager
     ├── config.json     ← Default configuration
@@ -611,6 +612,7 @@ TheSecretary/
 
 | Version | Date | Change |
 |---|---|---|
+| 2.16.0 | 2026-10-30 | Status line face is now `( ∵ᴖ ᴗ ᴖ∵ )`: blinks `( ∵⸌ ᴗ ⸍∵ )` and every two minutes plays a gesture (surprise, laugh, frown, dizzy, goofy), always 11 cells wide. Context bar shortened to 16 cells. Docs: launcher in the install steps and the file list |
 | 2.15.0 | 2026-10-30 | Status line starts with `(·_·) Secretary`: the face blinks and every two minutes plays a short gesture, always five characters wide so the line never shifts |
 | 2.14.0 | 2026-10-30 | Status line: context as `56K/500K` (against the clear limit) set apart from the bar, plus model and effort, session cost, 5 h / 7 d plan usage, minutes left on the prompt cache and the account, separated by ` · ` |
 | 2.13.0 | 2026-10-30 | `secretary` launcher: runs `claude` with the same arguments and, past `context_clear_tokens`, reopens the trimmed session with the prompt just sent, so `/resume` no longer has to be pasted. Status line shows the account (`CLAUDE_PROFILE` or the email's user) after the context size |

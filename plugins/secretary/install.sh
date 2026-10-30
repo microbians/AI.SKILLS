@@ -256,12 +256,12 @@ node -e "
     settings.hooks[event].push(...matchers);
   }
 
-  // The status line shows the wait for the previous session's handoff after
-  // /clear. Claude Code has ONE status line: a foreign one is left alone.
+  // The status line shows the context bar, usage and the wait for the previous
+  // session's handoff after /clear. Claude Code has ONE status line: a foreign one is left alone.
   if (!settings.statusLine || settings.statusLine.command?.includes('summarize')) {
     settings.statusLine = newStatusLine;
   } else {
-    console.log('[!] settings.json already has a statusLine — kept as is; the handoff wait will not be shown (see INSTALL.md step 5)');
+    console.log('[!] settings.json already has a statusLine — kept as is; the Secretary status line will not be shown (see INSTALL.md step 5)');
   }
 
   if (!settings.permissions) settings.permissions = {};
@@ -380,5 +380,7 @@ case "$PKG_INSTALLED" in
     ;;
 esac
 echo "  Restart Claude Code to activate the hooks."
+echo "  Start it with \`secretary\` (same arguments as \`claude\`) to reopen trimmed sessions automatically."
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) warn "~/.local/bin is not in your PATH — add it to use \`secretary\`" ;; esac
 echo "  To uninstall: bash $SCRIPT_DIR/install.sh --uninstall"
 echo ""

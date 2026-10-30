@@ -13,9 +13,14 @@ cp src/start-llm.sh         ~/.claude/the-secretary/   # local LLM server manage
 cp -n src/config.json       ~/.claude/the-secretary/   # -n: never overwrite your own config
 cp src/package.json         ~/.claude/the-secretary/
 cp src/inject-claude-md.mjs ~/.claude/the-secretary/   # writes the versioned section into CLAUDE.md
+cp src/secretary.mjs        ~/.claude/the-secretary/   # `secretary` launcher
 
-chmod +x ~/.claude/the-secretary/start-llm.sh
+chmod +x ~/.claude/the-secretary/start-llm.sh ~/.claude/the-secretary/secretary.mjs
+mkdir -p ~/.local/bin
+ln -sf ~/.claude/the-secretary/secretary.mjs ~/.local/bin/secretary   # ~/.local/bin must be in your PATH
 ```
+
+Start Claude with `secretary` (same arguments as `claude`) and a session past `context_clear_tokens` is trimmed and reopened by itself with the prompt you just sent. See [README → Context trim and the `secretary` launcher](README.md#context-trim-and-the-secretary-launcher-v2130).
 
 Machine-specific behaviour (for example yielding the GPU to another program) does not go into these files: put it in `~/.claude/the-secretary/local/hooks.mjs` and `local/hooks.sh`, which nothing here ever overwrites. See [README → Local hooks](README.md#local-hooks-machine-specific-behaviour).
 
@@ -73,7 +78,7 @@ python3 -m venv ~/.claude/the-secretary/venv
 
 Merge the contents of [`hooks.json`](hooks.json) into the `"hooks"` object of `~/.claude/settings.json`, keeping any hooks you already have. `hooks.json` is the single source of truth: copy it instead of retyping it here, because a hand-written copy in this file once drifted and was missing three hooks.
 
-Then set the contents of [`statusline.json`](statusline.json) as the `"statusLine"` key of the same file. After a `/clear` it shows `⏳ The Secretary: waiting for the previous handoff` plus an animated spinner below the input box while that handoff is being written, and stays blank the rest of the time. Claude Code has one status line: if you already use your own, keep it and call `summarize.mjs handoff-status` from it (it reads the status line JSON on stdin and prints the notice or nothing).
+Then set the contents of [`statusline.json`](statusline.json) as the `"statusLine"` key of the same file. It shows the Secretary face, the context bar against the clear limit (`56K/500K`), model and effort, cost, 5 h / 7 d plan usage, prompt-cache minutes left and the account; after a `/clear` it adds `⏳ The Secretary: waiting for the previous handoff` plus a spinner while that handoff is being written. Claude Code has one status line: if you already use your own, keep it and call `summarize.mjs handoff-status` from it (it reads the status line JSON on stdin and prints one line).
 
 What each hook does:
 

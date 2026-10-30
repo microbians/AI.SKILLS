@@ -111,6 +111,8 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 - **Verbatim conversation index (v2.5.0)** — every user/assistant message is read straight from Claude Code's transcripts by every hook (its own cursor, so no turn is skipped), stored whole in 800-char chunks with pasted screenshots saved to `images/`, and kept after Claude Code deletes the transcript. Search fuses FTS5 (literal) and sqlite-vec (meaning) with reciprocal rank fusion; exact matches always first. Upgrade: `index-turns --rebuild` once per project
 - **Handoff wait after `/clear` (v2.8.0)** — an async SessionStart hook waits for the previous session's handoff and wakes Claude with it, so no first prompt is needed; a status line shows the wait
 - **Local hooks (v2.9.0)** — machine-specific behaviour lives in `~/.claude/the-secretary/local/`, which `install.sh` never overwrites
+- **`secretary` launcher (v2.13.0)** — start Claude with `secretary` (same arguments as `claude`); past the context limit the session is trimmed and reopened by itself with the prompt you just sent. `-limit 80` sets that session's limit in thousands
+- **Status line (v2.14.0–v2.16.0)** — an animated `( ∵ᴖ ᴗ ᴖ∵ ) Secretary` face that never shifts the line, a context bar against the limit (`56K/500K`), model and effort, cost, 5 h / 7 d plan usage, prompt-cache minutes left and the account
 - **Pick the summarizing AI from the chat (v2.11.0)** — `/secretary ai local | apple | claude [model] [--account <name | email | folder>]`; with several Claude accounts, `--account` finds one by config folder, email (with or without `@`) or a fragment of either
 - **Recall-on-demand** — detects recall-style prompts (`do you remember`, `do you recall`, `remember when`, plus `¿recuerdas?` / `te acuerdas?` in Spanish) via UserPromptSubmit hook and auto-injects matching snippets from cache + DB before Claude replies
 - **Chunked summarization + immediate LLM call** — conversation is broken into bounded chunks (every `summarize_every_n` tool calls, minimum `min_new_chars` of new content), each chunk is sent to the local LLM right away for a fresh summary, then stored with an incremental `chunk_index` in SQLite and appended to the per-project `.md` cache. This keeps every LLM call small and fast, prevents context blow-up, and ensures no long conversation is ever summarized in a single oversized request
@@ -123,7 +125,7 @@ Local LLM-powered conversation summarizer for Claude Code. Preserves context acr
 - SQLite storage for persistent summaries across sessions (per-project DB + attached global DB, unified `all_items` view)
 - Configurable: model, summarization frequency (`summarize_every_n`), min content threshold (`min_new_chars`), token limits, remote LLM support
 
-**Includes:** `summarize.mjs`, `embed.py`, `start-llm.sh`, `config.json`, `inject-claude-md.mjs`, `hooks.json`, `statusline.json`, `install.sh`, `claude-md-snippet.md`, `skill/SKILL.md` (behavior rules skill, installed to `~/.claude/skills/secretary/`)
+**Includes:** `summarize.mjs`, `secretary.mjs` (launcher, linked to `~/.local/bin/secretary`), `embed.py`, `start-llm.sh`, `config.json`, `inject-claude-md.mjs`, `hooks.json`, `statusline.json`, `install.sh`, `claude-md-snippet.md`, `skill/SKILL.md` (behavior rules skill, installed to `~/.claude/skills/secretary/`)
 
 **Install path:** `~/.claude/the-secretary/` (engine, config, LLM; auto-migrates from legacy `~/.claude/summarizer/` on re-install). Project data lives in each project's `.claude/the-secretary/`.
 
@@ -602,6 +604,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-10-30 | TheSecretary v2.16.0: status line face `( ∵ᴖ ᴗ ᴖ∵ )` with blinks and gestures, always the same width; shorter context bar; launcher documented in the install steps |
 | 2026-10-30 | TheSecretary v2.15.0: status line starts with an animated `(·_·) Secretary` face that blinks and now and then plays a short gesture without shifting the line |
 | 2026-10-30 | TheSecretary v2.14.0: status line shows context against the limit (`56K/500K`), model and effort, cost, 5 h / 7 d plan usage, prompt-cache minutes left and the account |
 | 2026-10-30 | TheSecretary v2.13.0: `secretary` launcher — start with `secretary` (same arguments as `claude`) and a trimmed session reopens by itself with the prompt just sent; status line shows the account |

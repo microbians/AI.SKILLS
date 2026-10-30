@@ -3888,23 +3888,44 @@ function statusDetails(statusInput) {
   return out;
 }
 
-// The face before "Secretary" blinks now and then and, every couple of
-// minutes, plays a short gag — one frame per status line refresh (one per
-// second). Every frame is 5 narrow characters, so nothing after it moves.
-const SECRETARY_FACE = '(·_·)';
+// The face before "Secretary" blinks, winks and smiles now and then and,
+// every couple of minutes, plays a short gag — one frame per status line
+// refresh (one per second, the shortest a frame can last). Every face is
+// `( ∵E M E∵ )`: one narrow character per eye and mouth, so it is always
+// 11 cells wide and nothing after it moves.
+const face = (eye, mouth, eye2 = eye) => `( ∵${eye} ${mouth} ${eye2}∵ )`;
+const SECRETARY_FACE = face('•', 'ᴗ');
+const SECRETARY_BLINK = face('-', 'ᴗ');
+const SECRETARY_WINK = face('•', 'ᴗ', '-');
+const SECRETARY_HAPPY = [face('◉', '◡'), face('⨀', '◡')];
 const SECRETARY_GAGS = [
-  ['(<_<)', '(>_>)', '(<_<)', '(·_~)'],
-  ['(-_-)', '(=_=)', '(-.-)', '(=_=)', '(°o°)'],
-  ['(·_·)', '(^_^)', '(^o^)', '(^_^)'],
-  ['(·_·)', '(¬_¬)', '(¬_¬)', '(·_·)', '(^_~)'],
-  ['(°_°)', '(°o°)', '(>_<)', '(·_·)'],
+  // surprise
+  [face('◉', 'ᴗ'), face('⨀', 'ᴗ'), face('●', '◦'), face('⌾', '◦'), face('⌾', 'ᴗ')],
+  // laugh
+  [face('ᴖ', '⩌'), face('❯', '◡', '❮'), face('╾', '◡', '╼'), face('ᴖ', '⩌')],
+  // anger
+  [face('╾', '⌓', '╼'), face('❯', '⁔', '❮'), face('╾', '⁔', '╼'), face('⦿', '⁔')],
+  // dizzy
+  [face('⌽', 'o'), face('❉', '◡'), face('◉', '◡'), face('⨀', 'o')],
+  // silly
+  [face('U', '◡'), face('-', 'ʚ'), face('◍', 'ʚ'), face('U', '◡')],
+  // look around
+  [face('◐', 'ᴗ'), face('◐', 'ᴗ'), face('◑', 'ᴗ'), face('◑', 'ᴗ'), face('•', '◦')],
+  // yawn
+  [face('-', 'o'), face('-', 'O'), face('-', 'O'), face('-', 'ᴗ'), face('-', 'ᴗ')],
 ];
 const GAG_EVERY_SECONDS = 120;
+const HAPPY_EVERY_SECONDS = 60;
+const WINK_EVERY_SECONDS = 20;
 const BLINK_EVERY_SECONDS = 9;
 
 function secretaryFace(seconds) {
   const gag = SECRETARY_GAGS[Math.floor(seconds / GAG_EVERY_SECONDS) % SECRETARY_GAGS.length];
-  return gag[seconds % GAG_EVERY_SECONDS] || (seconds % BLINK_EVERY_SECONDS === 0 ? '(-_-)' : SECRETARY_FACE);
+  if (gag[seconds % GAG_EVERY_SECONDS]) return gag[seconds % GAG_EVERY_SECONDS];
+  if (seconds % HAPPY_EVERY_SECONDS === 0) return SECRETARY_HAPPY[Math.floor(seconds / HAPPY_EVERY_SECONDS) % 2];
+  if (seconds % WINK_EVERY_SECONDS === WINK_EVERY_SECONDS / 2) return SECRETARY_WINK;
+  if (seconds % BLINK_EVERY_SECONDS === 0) return SECRETARY_BLINK;
+  return SECRETARY_FACE;
 }
 
 function secretaryLabel() {
@@ -3930,10 +3951,12 @@ function handoffStatus(statusInput) {
     const hint = tokens < clear ? '' : process.env.SECRETARY_LAUNCHER_PID ? ' ↻ al enviar' : ` /resume ${session_id}`;
     // Bar spans the model's whole context window; a mark sits at the clear threshold.
     const windowSize = statusInput.context_window?.context_window_size || 200000;
-    const CELLS = 30;
+    const CELLS = 16;
     const filled = Math.min(CELLS, Math.round((tokens / windowSize) * CELLS));
     const mark = Math.min(CELLS - 1, Math.round((clear / windowSize) * CELLS));
-    const cells = Array.from({ length: CELLS }, (_, i) => (i < filled ? '█' : '░'));
+    // Filled part fades out at its edge (█ → ▓ → ▒) into the empty track (░).
+    const FADE = ['▒', '▓'];
+    const cells = Array.from({ length: CELLS }, (_, i) => (i >= filled ? '░' : FADE[filled - 1 - i] || '█'));
     const bar = `\x1b[${color}m${cells.slice(0, mark).join('')}\x1b[0m\x1b[1m│\x1b[0m\x1b[${color}m${cells.slice(mark).join('')}`;
     const kilo = n => `${Math.round(n / 1000)}K`;
     parts.push(`${bar}\x1b[0m   \x1b[${color}m${kilo(tokens)}/${kilo(clear)}${hint}\x1b[0m`);
