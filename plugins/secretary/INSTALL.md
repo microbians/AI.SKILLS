@@ -78,7 +78,7 @@ python3 -m venv ~/.claude/the-secretary/venv
 
 Merge the contents of [`hooks.json`](hooks.json) into the `"hooks"` object of `~/.claude/settings.json`, keeping any hooks you already have. `hooks.json` is the single source of truth: copy it instead of retyping it here, because a hand-written copy in this file once drifted and was missing three hooks.
 
-Then set the contents of [`statusline.json`](statusline.json) as the `"statusLine"` key of the same file. It shows the Secretary face, the context bar against the clear limit (`56K/500K`), model and effort, cost, 5 h / 7 d plan usage, prompt-cache minutes left and the account; after a `/clear` it adds `⏳ The Secretary: waiting for the previous handoff` plus a spinner while that handoff is being written. Claude Code has one status line: if you already use your own, keep it and call `summarize.mjs handoff-status` from it (it reads the status line JSON on stdin and prints one line).
+Then set the contents of [`statusline.json`](statusline.json) as the `"statusLine"` key of the same file. It shows the Secretary face, the context bar against the clear limit (`56K/500K`), model and effort, cost, 5 h / 7 d plan usage, prompt-cache minutes left and the account, plus Secretary's notices for a few seconds. Claude Code has one status line: if you already use your own, keep it and call `summarize.mjs handoff-status` from it (it reads the status line JSON on stdin and prints one line).
 
 What each hook does:
 
@@ -90,7 +90,6 @@ What each hook does:
 | `SessionEnd` | `force --stop-llm` | Same, when the session closes |
 | `PreCompact` | `compact` | Index + final summary before Claude Code compacts |
 | `SessionStart` | `restore` + `sync` | Inject the saved context; catch up both indexes in background |
-| `SessionStart` (`clear`, async) | `await-handoff --rewake` | Wait for the previous session's handoff and wake Claude with it |
 
 `PreCompact` and `SessionStart` also call `start-llm.sh start` first; with `provider: claude_cli` that is a no-op.
 

@@ -62,10 +62,8 @@ function loadConfig() {
     min_new_chars: 2000,
     max_summary_tokens: 800,
     restore_recent_items: 15,
-    restore_tail_chars: 5000,
-    context_warn_tokens: 130000,
+    restore_tail_chars: 12000,
     context_clear_tokens: 170000,
-    trim_keep_tokens: 60000,
     db_path: join(SECRETARY_DIR, 'summaries.db'),
   };
   try {
@@ -79,14 +77,21 @@ function loadConfig() {
   }
 }
 
-// `secretary -limit <thousands>` sets this session's limit (in tokens here); warn and keep scale with it.
+// The clear limit comes from `secretary -limit <thousands>` (in tokens here) or the config;
+// warn and keep always scale with it.
 function applySessionLimit(cfg) {
-  const limit = Number(process.env.SECRETARY_LIMIT);
-  if (!limit) return cfg;
+  const limit = Number(process.env.SECRETARY_LIMIT) || cfg.context_clear_tokens;
   return { ...cfg, context_clear_tokens: limit, context_warn_tokens: Math.round(limit * 0.75), trim_keep_tokens: Math.round(limit / 2) };
 }
 
 const config = applySessionLimit(loadConfig());
+
+// `/secretary limit off` skips the clear limit for one session (no trim, no
+// relaunch, no /clear advice) until `limit on`. Keyed by session id, so the
+// relaunch that resumes the same session keeps it.
+const LIMIT_OFF_DIR = join(SECRETARY_DIR, 'limit-off');
+const limitOffPath = sessionId => join(LIMIT_OFF_DIR, String(sessionId));
+const limitOff = sessionId => Boolean(sessionId) && existsSync(limitOffPath(sessionId));
 
 // ═══════════════════ PROJECT-ROOT RESOLUTION ═══════════════════
 //
@@ -1094,26 +1099,6 @@ function previousSessionId(cwd, sessionId) {
     const prev = readFileSync(handoffLockPath(cwd), 'utf-8').trim().split('|')[2] || '';
     return prev === sessionId ? '' : prev;
   } catch { return ''; }
-}
-
-// Live handoff summarizer of a PREVIOUS session in this terminal, or 0. This
-// session's own handoffs (one per reply, via the Stop hook) do not count.
-function previousHandoffPid(cwd, sessionId) {
-  const lockFile = handoffLockPath(cwd);
-  const pid = liveLockPid(lockFile);
-  if (!pid) return 0;
-  try {
-    if (readFileSync(lockFile, 'utf-8').trim().split('|')[2] === sessionId) return 0;
-  } catch { return 0; }
-  return pid;
-}
-
-// Blocks until that summarizer exits. No time cap: liveLockPid() checks the pid,
-// so a lock left by a dead worker ends the wait on the next poll.
-async function waitForPreviousHandoff(cwd, sessionId) {
-  while (previousHandoffPid(cwd, sessionId)) {
-    await new Promise((r) => setTimeout(r, 1000));
-  }
 }
 
 // ═══════════════════ STATUS LINE EVENTS ═══════════════════
@@ -2689,7 +2674,7 @@ async function restore(hookInput) {
     //      folder, so the previous one sits next to this session's.
     const prevSessionId = source === 'clear' && cwd && transcript_path ? previousSessionId(cwd, session_id) : '';
     if (prevSessionId) {
-      const tailChars = Math.max(500, parseInt(config.restore_tail_chars, 10) || 5000);
+      const tailChars = Math.max(500, parseInt(config.restore_tail_chars, 10) || 12000);
       const { messages } = parseTranscript(join(dirname(transcript_path), `${prevSessionId}.jsonl`));
       const tail = transcriptTail(messages, tailChars);
       if (tail) {
@@ -2762,10 +2747,7 @@ async function restore(hookInput) {
     const formattedDate = lastDate !== 'unknown' ? new Date(lastDate + 'Z').toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : lastDate;
 
     process.stdout.write(output + `\n\n☑ Session memory recovered from ${formattedDate} (${totalItems} items restored)`);
-    // After /clear the previous session's handoff is usually still being
-    // written, so recovery is not over yet: the `await-handoff --rewake` hook
-    // announces it once it lands.
-    if (source !== 'clear') writeStatusEvent(session_id, `☑ Memory recovered from ${formattedDate} (${totalItems} items)`);
+    writeStatusEvent(session_id, `☑ Memory recovered from ${formattedDate} (${totalItems} items)`);
 
     // ── Fresh-context watermark ──
     // Record max(created_at) of summaries known at restore-time for this project.
@@ -2839,7 +2821,7 @@ async function force(hookInput, { stopLlm = false } = {}) {
     const minChars = stopLlm ? 600 : 100;
     // Record this session as the terminal's latest even when no handoff is
     // written, so the next /clear reads the right transcript tail. A live
-    // summarizer keeps its lock: it is what await-handoff waits on.
+    // summarizer keeps its lock (it already names this terminal's session).
     if (stopLlm && !liveLockPid(handoffLockPath(cwd))) registerHandoffWorker(cwd, session_id, 0);
     if (text.length < minChars) {
       process.stderr.write('☑ Session memory: nothing new to save\n');
@@ -3676,7 +3658,7 @@ async function userPromptHook(hookInput) {
   // Trim, hold the prompt and have the launcher reopen the session with it.
   // Only a cut made now reopens: the reopened session's file is already short.
   const launcher = Number(process.env.SECRETARY_LAUNCHER_PID);
-  const tokens = contextTokens(hookInput.transcript_path);
+  const tokens = limitOff(hookInput.session_id) ? 0 : contextTokens(hookInput.transcript_path);
   const trim = tokens >= config.context_clear_tokens && trimSession(hookInput);
   if (launcher && trim === 'trimmed') {
     const dir = join(homedir(), '.claude', 'the-secretary', 'relaunch');
@@ -3713,25 +3695,6 @@ async function userPromptHook(hookInput) {
       `## 🧹 The Secretary: contexto en ${Math.round(tokens / 1000)}k tokens\n\n` +
       `Termina la tarea en curso y, al acabar, ${howTo}. No lo repitas si ya lo dijiste en este contexto.\n\n`
     );
-  }
-
-  // ── Previous session still being summarized (typically right after /clear) ──
-  // The context SessionStart restored predates that summary. Blocking the prompt
-  // until it lands stalls the user, so hand Claude a background command instead:
-  // it exits when the summarizer does and prints what it wrote, and its
-  // completion notice wakes Claude with the fresh context.
-  const { session_id, cwd } = hookInput;
-  if (session_id && cwd && previousHandoffPid(cwd, session_id)) {
-    const cmd = `echo '${JSON.stringify({ cwd, session_id })}' | node ~/.claude/the-secretary/summarize.mjs await-handoff`;
-    process.stdout.write(
-      `## ⏳ The Secretary: el resumen de la sesión anterior todavía se está generando\n\n` +
-      `El contexto restaurado al inicio es anterior a ese resumen. Lanza YA este comando con Bash ` +
-      `\`run_in_background: true\`; termina cuando llega el resumen e imprime su contenido:\n\n` +
-      `\`\`\`bash\n${cmd}\n\`\`\`\n\n` +
-      `Si la petición depende de la sesión anterior ("por dónde vamos", "sigue con…"), dile al usuario ` +
-      `en una línea que estás esperando el resumen y respóndele cuando llegue el aviso. Si no depende, sigue con ella.\n\n`
-    );
-    return;
   }
 
   // ── Fresh-context watermark check ──
@@ -3774,7 +3737,7 @@ function watermarkFilePath(sessionId) {
   return join(WATERMARKS_DIR, `${sessionId}.json`);
 }
 
-async function checkFreshContextWatermark(hookInput, { snippetChars = 400 } = {}) {
+async function checkFreshContextWatermark(hookInput) {
   const { session_id, cwd } = hookInput;
   if (!session_id || !cwd) return;
 
@@ -3807,7 +3770,7 @@ async function checkFreshContextWatermark(hookInput, { snippetChars = 400 } = {}
     } catch { /* best-effort */ }
 
     const MAX_SHOW = 5;
-    const SNIP = snippetChars;
+    const SNIP = 400;
     const shown = rows.slice(-MAX_SHOW);
 
     let out = `\n## 📥 The Secretary: contexto nuevo disponible\n\n`;
@@ -3824,19 +3787,11 @@ async function checkFreshContextWatermark(hookInput, { snippetChars = 400 } = {}
   }
 }
 
-const HANDOFF_WAITING_MESSAGE = '⏳ The Secretary: waiting for the previous handoff';
-// One frame per status line refresh (`refreshInterval: 1` → one per second).
-const HANDOFF_WAITING_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
 /**
- * handoff-status: `statusLine` command. The async `await-handoff --rewake`
- * SessionStart hook stays silent until the summary lands, and a SessionStart
- * systemMessage is only painted when the transcript next renders — after
- * /clear that is when the handoff has already landed — so the wait itself is
- * shown here: the status line prints the message while the previous session's
- * handoff is being written and goes blank once it is done. It also shows the
- * context size against the clear limit (`92K/500K`): dim, amber past
- * `context_warn_tokens`, red with a /clear hint past `context_clear_tokens`.
+ * handoff-status: `statusLine` command. Shows the context size against the
+ * clear limit (`92K/500K`): sage, amber past `context_warn_tokens`, coral with
+ * a /resume hint past `context_clear_tokens`, then the session details and,
+ * for a few seconds, Secretary's last notice (writeStatusEvent).
  */
 // Extra status fields Claude Code sends: model + effort, session cost, plan
 // usage (5h / 7d, amber at 75%, red at 90%), minutes left on the prompt cache, account.
@@ -3915,7 +3870,30 @@ const HAPPY_EVERY_SECONDS = 60;
 const WINK_EVERY_SECONDS = 20;
 const BLINK_EVERY_SECONDS = 9;
 
-function secretaryFace(seconds) {
+// Context level moods: nervous near the clear limit (warn), angry past it
+// (alert). Each has its own resting face and a short gag every few seconds.
+const LEVEL_MOODS = {
+  warn: {
+    face: face('•', '~'),
+    blink: face('-', '~'),
+    gag: [face('◐', '~'), face('◑', '~'), face('◐', '~'), face('◑', '~'), face('°', '~')],
+  },
+  alert: {
+    face: face('╾', '⁔', '╼'),
+    blink: face('-', '⁔'),
+    gag: SECRETARY_GAGS[2], // anger
+  },
+};
+const MOOD_GAG_EVERY_SECONDS = 12;
+const MOOD_BLINK_EVERY_SECONDS = 4;
+
+function secretaryFace(seconds, level) {
+  const mood = LEVEL_MOODS[level];
+  if (mood) {
+    const frame = mood.gag[seconds % MOOD_GAG_EVERY_SECONDS];
+    if (frame) return frame;
+    return seconds % MOOD_BLINK_EVERY_SECONDS === 0 ? mood.blink : mood.face;
+  }
   const gag = SECRETARY_GAGS[Math.floor(seconds / GAG_EVERY_SECONDS) % SECRETARY_GAGS.length];
   if (gag[seconds % GAG_EVERY_SECONDS]) return gag[seconds % GAG_EVERY_SECONDS];
   if (seconds % HAPPY_EVERY_SECONDS === 0) return SECRETARY_HAPPY[Math.floor(seconds / HAPPY_EVERY_SECONDS) % 2];
@@ -3924,8 +3902,8 @@ function secretaryFace(seconds) {
   return SECRETARY_FACE;
 }
 
-function secretaryLabel() {
-  return `${paint(STATUS_PALETTE.face, secretaryFace(Math.floor(Date.now() / 1000)))} \x1b[1mSecretary\x1b[0m`;
+function secretaryLabel(level) {
+  return `${paint(STATUS_PALETTE.face, secretaryFace(Math.floor(Date.now() / 1000), level))} \x1b[1mSecretary\x1b[0m`;
 }
 
 function handoffStatus(statusInput) {
@@ -3941,9 +3919,11 @@ function handoffStatus(statusInput) {
   const tokens = live
     ? (live.input_tokens || 0) + (live.cache_read_input_tokens || 0) + (live.cache_creation_input_tokens || 0)
     : contextTokens(transcript_path);
+  const off = limitOff(session_id);
+  const warn = off ? Infinity : config.context_warn_tokens, clear = off ? Infinity : config.context_clear_tokens;
+  const level = !tokens ? 'ok' : tokens >= clear ? 'alert' : tokens >= warn ? 'warn' : 'ok';
   if (tokens) {
-    const warn = config.context_warn_tokens, clear = config.context_clear_tokens;
-    const color = STATUS_PALETTE[tokens >= clear ? 'alert' : tokens >= warn ? 'warn' : 'ok'];
+    const color = STATUS_PALETTE[level];
     const hint = tokens < clear ? '' : process.env.SECRETARY_LAUNCHER_PID ? ' ↻ al enviar' : ` /resume ${session_id}`;
     // Bar spans the model's whole context window; a mark sits at the clear threshold.
     const windowSize = statusInput.context_window?.context_window_size || 200000;
@@ -3960,19 +3940,14 @@ function handoffStatus(statusInput) {
     // on the boundary between two cells, so it is centered in any font. `│` is not.
     // Each half takes the background of the side it belongs to.
     const markHalf = (glyph, i) => paint(STATUS_PALETTE.mark, glyph, i < filled ? color : track);
-    const bar = `${cells.slice(0, mark).join('')}${markHalf('▕', mark - 1)}${markHalf('▏', mark)}${cells.slice(mark).join('')}`;
+    const bar = off ? cells.join('') : `${cells.slice(0, mark).join('')}${markHalf('▕', mark - 1)}${markHalf('▏', mark)}${cells.slice(mark).join('')}`;
     const kilo = n => `${Math.round(n / 1000)}K`;
-    parts.push(`${bar}   ${paint(color, `${kilo(tokens)}/${kilo(clear)}${hint}`)}`);
+    parts.push(`${bar}   ${paint(color, `${kilo(tokens)}/${off ? 'off' : kilo(clear)}${hint}`)}`);
   }
   parts.push(...statusDetails(statusInput));
-  if (session_id && cwd && previousHandoffPid(cwd, session_id)) {
-    const frame = HANDOFF_WAITING_FRAMES[Math.floor(Date.now() / 1000) % HANDOFF_WAITING_FRAMES.length];
-    parts.push(`${HANDOFF_WAITING_MESSAGE} ${frame}`);
-  } else {
-    const event = readStatusEvent(session_id);
-    if (event) parts.push(event);
-  }
-  if (parts.length) process.stdout.write(`${secretaryLabel()} ${parts.join(' · ')}\n`);
+  const event = readStatusEvent(session_id);
+  if (event) parts.push(event);
+  if (parts.length) process.stdout.write(`${secretaryLabel(level)} ${parts.join(' · ')}\n`);
 }
 
 /**
@@ -4004,7 +3979,13 @@ function trimSession({ transcript_path: transcriptPath, session_id, cwd }) {
 
     // A prompt the user typed: system-made user entries (task notifications,
     // command output) are meta or start with a tag.
-    const isPrompt = (l) => l.type === 'user' && !l.isMeta && typeof l.message?.content === 'string' && !l.message.content.startsWith('<');
+    // A prompt with pasted images arrives as blocks (text + image), not a string.
+    const promptText = (c) => (typeof c === 'string' ? c
+      : Array.isArray(c) && !c.some((b) => b.type === 'tool_result') ? c.find((b) => b.type === 'text')?.text || '' : '');
+    const isPrompt = (l) => {
+      const text = l.type === 'user' && !l.isMeta ? promptText(l.message?.content) : '';
+      return text !== '' && !text.startsWith('<');
+    };
     // Tokens a tail adds, measured from the `usage` of each request: the sum of
     // the growths between consecutive requests after the cut. A drop (an
     // earlier resume or compaction restarted the context) adds nothing.
@@ -4090,7 +4071,7 @@ function remapReadPositions(cwd, sessionId, keptLines, oldCount) {
  * line shows `/resume`, the file it reopens is already short.
  */
 function trimIfOverLimit(hookInput) {
-  if (contextTokens(hookInput.transcript_path) < config.context_clear_tokens) return false;
+  if (limitOff(hookInput.session_id) || contextTokens(hookInput.transcript_path) < config.context_clear_tokens) return false;
   return trimSession(hookInput);
 }
 
@@ -4123,42 +4104,6 @@ function contextTokens(transcriptPath) {
     return 0;
   } finally {
     if (fd !== undefined) closeSync(fd);
-  }
-}
-
-/**
- * await-handoff: run by Claude in the background when the user-prompt hook
- * reports that the previous session's handoff is still being written. Exits
- * once that summarizer does and prints what it stored — the task's completion
- * notice is how the fresh context reaches Claude.
- *
- * With `rewake` it runs as an async SessionStart hook (`asyncRewake`) instead:
- * exit code 2 is what wakes Claude with what was printed, so the user does
- * not have to type anything after /clear. It wakes even when nothing new
- * landed (a short session's handoff is discarded as NOTHING TO REPORT), so
- * every /clear ends with a visible answer instead of silence.
- */
-async function awaitHandoff(hookInput, { rewake = false } = {}) {
-  const { session_id, cwd } = hookInput;
-  if (!session_id || !cwd) {
-    process.stderr.write('[secretary] await-handoff needs {"cwd","session_id"} on stdin\n');
-    process.exit(1);
-  }
-  if (rewake) {
-    // `restore` runs as a sibling SessionStart hook: the watermark it writes is
-    // what the check below compares against, so let it land first.
-    for (let i = 0; i < 120 && !existsSync(watermarkFilePath(session_id)); i++) {
-      await new Promise((r) => setTimeout(r, 500));
-    }
-  }
-  await waitForPreviousHandoff(cwd, session_id);
-  const fresh = await checkFreshContextWatermark(hookInput, { snippetChars: Infinity });
-  if (!fresh) {
-    process.stdout.write('## 📥 The Secretary: el resumen de la sesión anterior terminó sin añadir contexto nuevo\n');
-  }
-  if (rewake) {
-    writeStatusEvent(session_id, fresh ? '☑ Previous session handoff included' : 'No new context from the previous session');
-    process.exitCode = 2;
   }
 }
 
@@ -4272,6 +4217,28 @@ function cmdBackend(args) {
   process.stdout.write(`The Secretary backend: ${backendLabel({ ...config, ...next })} (was ${backendLabel(current)})\n`);
 }
 
+// `limit off|on [session]`: skip or restore the clear limit for one session
+// (the current one by default); no argument shows its state.
+function cmdLimit(state, sessionId) {
+  if (!sessionId) {
+    process.stdout.write('No session id: pass it as `limit off|on <session>`.\n');
+    process.exitCode = 1;
+    return;
+  }
+  if (state === 'off') {
+    mkdirSync(LIMIT_OFF_DIR, { recursive: true });
+    writeFileSync(limitOffPath(sessionId), '');
+  } else if (state === 'on') {
+    rmSync(limitOffPath(sessionId), { force: true });
+  } else if (state) {
+    process.stdout.write(`Unknown option "${state}". Options: off | on\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const label = limitOff(sessionId) ? 'off (no trim, no /clear advice)' : `on (${Math.round(config.context_clear_tokens / 1000)}K)`;
+  process.stdout.write(`The Secretary limit for this session: ${label}\n`);
+}
+
 // ═══════════════════ MAIN ═══════════════════
 
 async function main() {
@@ -4357,7 +4324,7 @@ async function main() {
     process.exit(0);
   }
 
-  const validCommands = ['incremental', 'compact', 'restore', 'force', 'inject', 'recall', 'search', 'index-turns', 'index-vectors', 'sync', 'user-prompt', 'handoff-status', 'await-handoff', 'drain-global'];
+  const validCommands = ['incremental', 'compact', 'restore', 'force', 'inject', 'recall', 'search', 'index-turns', 'index-vectors', 'sync', 'user-prompt', 'handoff-status', 'drain-global'];
 
   if (command === 'drain-global') {
     cmdDrainGlobal(process.argv.includes('--dry-run'));
@@ -4366,6 +4333,11 @@ async function main() {
 
   if (command === 'backend') {
     cmdBackend(process.argv.slice(3));
+    return;
+  }
+
+  if (command === 'limit') {
+    cmdLimit(process.argv[3], process.argv[4] || process.env.CLAUDE_CODE_SESSION_ID);
     return;
   }
 
@@ -4405,7 +4377,6 @@ async function main() {
     process.stderr.write('  sync              Refresh both indexes in the background (SessionStart hook)\n');
     process.stderr.write('  user-prompt       UserPromptSubmit hook: auto-inject context on recall-style prompts\n');
     process.stderr.write('  handoff-status    Tell the user the previous session\'s handoff is still being written (statusLine command)\n');
-    process.stderr.write('  await-handoff     Wait for the previous session\'s handoff summary, then print it\n');
     process.exit(1);
   }
 
@@ -4434,7 +4405,6 @@ async function main() {
       case 'recall': await recall(hookInput); break;
       case 'user-prompt': await userPromptHook(hookInput); break;
       case 'handoff-status': handoffStatus(hookInput); break;
-      case 'await-handoff': await awaitHandoff(hookInput, { rewake: process.argv.includes('--rewake') }); break;
     }
   } catch (err) {
     process.stderr.write(`[secretary] ${err.message}\n`);
