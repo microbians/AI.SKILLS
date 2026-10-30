@@ -602,6 +602,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-10-30 | TheSecretary v2.15.0: status line starts with an animated `(·_·) Secretary` face that blinks and now and then plays a short gesture without shifting the line |
 | 2026-10-30 | TheSecretary v2.14.0: status line shows context against the limit (`56K/500K`), model and effort, cost, 5 h / 7 d plan usage, prompt-cache minutes left and the account |
 | 2026-10-30 | TheSecretary v2.13.0: `secretary` launcher — start with `secretary` (same arguments as `claude`) and a trimmed session reopens by itself with the prompt just sent; status line shows the account |
 | 2026-10-28 | TheSecretary v2.11.0: `/secretary ai` shows or switches the summarizing AI (`local`, `apple`, `claude [model]`) and, with `--account`, which Claude account the CLI bills (by folder, email or fragment); the skill is renamed `the-secretary` → `secretary`; off-project sessions get one `OFF-PROJECT:` line instead of the handoff. GFXPerf v1.2.0. CLAUDE.Global v1.4.0: The Secretary section marker bumped to `secretary` v2.11.0 |

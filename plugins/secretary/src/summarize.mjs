@@ -3888,6 +3888,29 @@ function statusDetails(statusInput) {
   return out;
 }
 
+// The face before "Secretary" blinks now and then and, every couple of
+// minutes, plays a short gag — one frame per status line refresh (one per
+// second). Every frame is 5 narrow characters, so nothing after it moves.
+const SECRETARY_FACE = '(·_·)';
+const SECRETARY_GAGS = [
+  ['(<_<)', '(>_>)', '(<_<)', '(·_~)'],
+  ['(-_-)', '(=_=)', '(-.-)', '(=_=)', '(°o°)'],
+  ['(·_·)', '(^_^)', '(^o^)', '(^_^)'],
+  ['(·_·)', '(¬_¬)', '(¬_¬)', '(·_·)', '(^_~)'],
+  ['(°_°)', '(°o°)', '(>_<)', '(·_·)'],
+];
+const GAG_EVERY_SECONDS = 120;
+const BLINK_EVERY_SECONDS = 9;
+
+function secretaryFace(seconds) {
+  const gag = SECRETARY_GAGS[Math.floor(seconds / GAG_EVERY_SECONDS) % SECRETARY_GAGS.length];
+  return gag[seconds % GAG_EVERY_SECONDS] || (seconds % BLINK_EVERY_SECONDS === 0 ? '(-_-)' : SECRETARY_FACE);
+}
+
+function secretaryLabel() {
+  return `\x1b[36m${secretaryFace(Math.floor(Date.now() / 1000))}\x1b[0m \x1b[1mSecretary\x1b[0m`;
+}
+
 function handoffStatus(statusInput) {
   const { session_id, transcript_path } = statusInput;
   const cwd = statusInput.cwd || statusInput.workspace?.current_dir;
@@ -3920,7 +3943,7 @@ function handoffStatus(statusInput) {
     const frame = HANDOFF_WAITING_FRAMES[Math.floor(Date.now() / 1000) % HANDOFF_WAITING_FRAMES.length];
     parts.push(`${HANDOFF_WAITING_MESSAGE} ${frame}`);
   }
-  if (parts.length) process.stdout.write(parts.join(' · ') + '\n');
+  if (parts.length) process.stdout.write(`${secretaryLabel()} ${parts.join(' · ')}\n`);
 }
 
 /**

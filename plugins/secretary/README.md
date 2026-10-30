@@ -223,10 +223,10 @@ Start Claude with `secretary` instead of `claude` and that step is automatic. `s
 
 To try it without filling a large context, `secretary -limit 30k` (or `-limit 30`, always in thousands) sets that session's limit (`context_clear_tokens`; the warning goes to 75% of it and the kept tail to half). `-limit` is not passed to `claude`.
 
-The status line shows the context against the clear limit (`56K/500K`), then the model and effort, the session cost, plan usage for 5 h and 7 days (amber from 75%, red from 90%), the minutes left on the prompt cache (`cache frío` in amber once it expired) and the account: `CLAUDE_PROFILE` when your launcher sets it, otherwise the user part of the account's email.
+The status line starts with a small face and `Secretary`. The face blinks every few seconds and every two minutes plays a short gesture (looks around, dozes off, smiles, frowns, startles); every frame is five characters wide, so the rest of the line never moves. Then it shows the context against the clear limit (`56K/500K`), then the model and effort, the session cost, plan usage for 5 h and 7 days (amber from 75%, red from 90%), the minutes left on the prompt cache (`cache frío` in amber once it expired) and the account: `CLAUDE_PROFILE` when your launcher sets it, otherwise the user part of the account's email.
 
 ```
-██░░░░░░░░░░░░░│░░░░░░░░░░░░░░░   56K/500K · Opus 5.5 medium · $21.48 · 5h 12% 7d 78% · cache 41m · work
+(·_·) Secretary ██░░░░░░░░░░░░░│░░░░░░░░░░░░░░░   56K/500K · Opus 5.5 medium · $21.48 · 5h 12% 7d 78% · cache 41m · work
 ```
 
 ## How it works
@@ -611,6 +611,7 @@ TheSecretary/
 
 | Version | Date | Change |
 |---|---|---|
+| 2.15.0 | 2026-10-30 | Status line starts with `(·_·) Secretary`: the face blinks and every two minutes plays a short gesture, always five characters wide so the line never shifts |
 | 2.14.0 | 2026-10-30 | Status line: context as `56K/500K` (against the clear limit) set apart from the bar, plus model and effort, session cost, 5 h / 7 d plan usage, minutes left on the prompt cache and the account, separated by ` · ` |
 | 2.13.0 | 2026-10-30 | `secretary` launcher: runs `claude` with the same arguments and, past `context_clear_tokens`, reopens the trimmed session with the prompt just sent, so `/resume` no longer has to be pasted. Status line shows the account (`CLAUDE_PROFILE` or the email's user) after the context size |
 | 2.12.0 | 2026-10-28 | Search by date: a date in the query ("ayer", "el martes pasado", "la semana pasada", "hace 3 días", "el 5 de octubre", "2026-10-28", and the English forms) limits literal, vector and summary results to that span of local time; the other words are what is searched. A query that is only a date returns that day's session handoffs |
