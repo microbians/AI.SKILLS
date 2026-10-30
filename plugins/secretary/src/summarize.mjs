@@ -79,7 +79,14 @@ function loadConfig() {
   }
 }
 
-const config = loadConfig();
+// `secretary -limit <thousands>` sets this session's limit (in tokens here); warn and keep scale with it.
+function applySessionLimit(cfg) {
+  const limit = Number(process.env.SECRETARY_LIMIT);
+  if (!limit) return cfg;
+  return { ...cfg, context_clear_tokens: limit, context_warn_tokens: Math.round(limit * 0.75), trim_keep_tokens: Math.round(limit / 2) };
+}
+
+const config = applySessionLimit(loadConfig());
 
 // ═══════════════════ PROJECT-ROOT RESOLUTION ═══════════════════
 //
@@ -3687,6 +3694,21 @@ async function cmdSearch() {
 async function userPromptHook(hookInput) {
   const prompt = hookInput.prompt || hookInput.user_prompt || '';
 
+  // ── Context past the clear threshold, run under the `secretary` launcher ──
+  // Trim, hold the prompt and have the launcher reopen the session with it.
+  // Only a cut made now reopens: the reopened session's file is already short.
+  const launcher = Number(process.env.SECRETARY_LAUNCHER_PID);
+  const tokens = contextTokens(hookInput.transcript_path);
+  const trim = tokens >= config.context_clear_tokens && trimSession(hookInput);
+  if (launcher && trim === 'trimmed') {
+    const dir = join(homedir(), '.claude', 'the-secretary', 'relaunch');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${launcher}.json`), JSON.stringify({ session_id: hookInput.session_id, prompt }));
+    process.stdout.write(JSON.stringify({ decision: 'block', reason: 'The Secretary: reabriendo la sesión recortada…' }));
+    process.kill(launcher, 'SIGUSR2');
+    return;
+  }
+
   // ── Recall question → load the skill, said in the turn it applies to ──
   // The CLAUDE.md rule is read once at session start. By the time the question
   // arrives the handoff already sits in context, and answering straight from it
@@ -3702,10 +3724,11 @@ async function userPromptHook(hookInput) {
   // ── Context past the clear threshold ──
   // Every turn resends the whole context, so a long session costs more per
   // turn the longer it runs. The handoff makes /clear cheap; say when to do it.
-  const tokens = contextTokens(hookInput.transcript_path);
-  if (tokens >= config.context_clear_tokens) {
-    const howTo = trimIfOverLimit(hookInput)
-      ? `dale en un bloque de código el comando que retoma esta misma sesión, ya recortada a los últimos mensajes: ` +
+  // Under the launcher the reopen above does it, and a file already short was
+  // just reopened (its last usage predates the cut); an uncuttable one still asks.
+  if (tokens >= config.context_clear_tokens && !(launcher && trim)) {
+    const howTo = trim
+      ?`dale en un bloque de código el comando que retoma esta misma sesión, ya recortada a los últimos mensajes: ` +
         `\`/resume ${hookInput.session_id}\``
       : `dile que haga \`/clear\` (el handoff conserva el hilo)`;
     process.stdout.write(
@@ -3853,7 +3876,7 @@ function handoffStatus(statusInput) {
   if (tokens) {
     const warn = config.context_warn_tokens, clear = config.context_clear_tokens;
     const color = tokens >= clear ? '31' : tokens >= warn ? '33' : '2';
-    const hint = tokens >= clear ? ` /resume ${session_id}` : '';
+    const hint = tokens < clear ? '' : process.env.SECRETARY_LAUNCHER_PID ? ' ↻ al enviar' : ` /resume ${session_id}`;
     // Bar spans the model's whole context window; a mark sits at the clear threshold.
     const windowSize = statusInput.context_window?.context_window_size || 200000;
     const CELLS = 30;
@@ -3861,7 +3884,8 @@ function handoffStatus(statusInput) {
     const mark = Math.min(CELLS - 1, Math.round((clear / windowSize) * CELLS));
     const cells = Array.from({ length: CELLS }, (_, i) => (i < filled ? '█' : '░'));
     const bar = `\x1b[${color}m${cells.slice(0, mark).join('')}\x1b[0m\x1b[1m│\x1b[0m\x1b[${color}m${cells.slice(mark).join('')}`;
-    parts.push(`${bar} ${Math.round(tokens / 1000)}k${hint}\x1b[0m`);
+    const account = sessionAccountName();
+    parts.push(`${bar} ${Math.round(tokens / 1000)}k${account ? ` ${account}` : ''}${hint}\x1b[0m`);
   }
   if (session_id && cwd && previousHandoffPid(cwd, session_id)) {
     const frame = HANDOFF_WAITING_FRAMES[Math.floor(Date.now() / 1000) % HANDOFF_WAITING_FRAMES.length];
@@ -3880,8 +3904,8 @@ function handoffStatus(statusInput) {
  * from the `usage` the transcript records for each request. Everything from the cut on is kept in file order (parallel tool
  * results hang on sibling branches), minus sidechains and tool calls still
  * waiting for a result. Every dropped line is first appended to
- * `<transcript>.bak`, which so keeps the whole history. Returns true when the
- * file was trimmed or is already short.
+ * `<transcript>.bak`, which so keeps the whole history. Returns 'trimmed' when
+ * the file was just cut, 'short' when it already was, false otherwise.
  */
 function trimSession({ transcript_path: transcriptPath, session_id, cwd }) {
   if (!transcriptPath || !existsSync(transcriptPath)) return false;
@@ -3921,7 +3945,7 @@ function trimSession({ transcript_path: transcriptPath, session_id, cwd }) {
       if (isPrompt(chain[i])) cut = i;
     }
     if (cut < 0) return false;
-    if (cut === 0) return true;
+    if (cut === 0) return 'short';
 
     const start = lines.indexOf(chain[cut]);
     let kept = lines.slice(start).filter((l) => l.uuid && CHAIN.has(l.type) && !l.isSidechain);
@@ -3947,7 +3971,7 @@ function trimSession({ transcript_path: transcriptPath, session_id, cwd }) {
     const late = readFileSync(transcriptPath, 'utf-8').slice(raw.length);
     writeFileSync(transcriptPath, kept.map((l) => JSON.stringify(l)).join('\n') + '\n' + late);
     remapReadPositions(cwd, session_id, keptLines, rawLines.length);
-    return true;
+    return 'trimmed';
   } catch (err) {
     process.stderr.write(`[secretary] trim error: ${err.message}\n`);
     return false;
@@ -4074,10 +4098,19 @@ function backendName(cfg) {
 // Every Claude account on this machine: the default one (~/.claude.json, no
 // CLAUDE_CONFIG_DIR) plus each ~/.<folder> holding its own .claude.json.
 // `value` is what claude_config_dir stores.
+function emailOf(file) {
+  try { return JSON.parse(readFileSync(file, 'utf-8')).oauthAccount?.emailAddress || ''; } catch { return ''; }
+}
+
+// Account this session runs as: the launcher's profile name (CLAUDE_PROFILE),
+// else the user part of the account's email.
+function sessionAccountName() {
+  if (process.env.CLAUDE_PROFILE) return process.env.CLAUDE_PROFILE;
+  const dir = process.env.CLAUDE_CONFIG_DIR;
+  return emailOf(dir ? join(dir, '.claude.json') : join(homedir(), '.claude.json')).split('@')[0];
+}
+
 function listClaudeAccounts() {
-  const emailOf = (file) => {
-    try { return JSON.parse(readFileSync(file, 'utf-8')).oauthAccount?.emailAddress || ''; } catch { return ''; }
-  };
   const accounts = [{ value: 'default', folder: 'default', email: emailOf(join(homedir(), '.claude.json')) }];
   for (const entry of readdirSync(homedir())) {
     const file = join(homedir(), entry, '.claude.json');
@@ -4313,7 +4346,9 @@ async function main() {
       case 'restore': await restore(hookInput); break;
       case 'force':
         await force(hookInput, { stopLlm: process.argv.includes('--stop-llm'), notify: process.argv.includes('--notify') });
-        trimIfOverLimit(hookInput); // after the handoff has read the full transcript
+        // After the handoff has read the full transcript. Under the launcher the
+        // next prompt trims, so that cut is the one that reopens the session.
+        if (!process.env.SECRETARY_LAUNCHER_PID) trimIfOverLimit(hookInput);
         break;
       case 'inject': await inject(hookInput); break;
       case 'recall': await recall(hookInput); break;

@@ -215,6 +215,16 @@ The check is cheap (a single SQLite query per prompt) and fires only when there 
 
 **Waiting for the handoff without a prompt (v2.8.0).** The notice above needs the user to type something first. On `/clear` an async SessionStart hook (`await-handoff --rewake`, `asyncRewake`) waits for the previous session's handoff worker instead, and when that worker exits it wakes Claude with what was stored — or with a one-line notice that the handoff added nothing, so every `/clear` ends with a visible answer. While it waits, the status line (`handoff-status`, [`statusline.json`](statusline.json)) shows `⏳ The Secretary: waiting for the previous handoff` plus a spinner, and goes blank once it is done. If the user does type first, the prompt hook prints the pending notice together with the `await-handoff` command for Claude to run in the background.
 
+### Context trim and the `secretary` launcher (v2.13.0)
+
+Past `context_clear_tokens` the session transcript is trimmed in place to its last `trim_keep_tokens` (dropped lines go to `<transcript>.bak`). Claude Code cannot reload a running session's context, so the trim only takes effect when the session is reopened with `/resume <id>`, which the status line shows.
+
+Start Claude with `secretary` instead of `claude` and that step is automatic. `secretary` takes every argument `claude` takes (account flags of your own `claude` wrapper included) and runs `claude` with them. When the context is past the threshold, the prompt you send trims the transcript, is held, and `secretary` stops `claude` and starts it again with the same arguments plus `--resume <id> "<prompt>"`: the session comes back short and your prompt is sent. The status line shows `↻ al enviar` instead of `/resume`. Pasted images in that one prompt are not carried over.
+
+To try it without filling a large context, `secretary -limit 30k` (or `-limit 30`, always in thousands) sets that session's limit (`context_clear_tokens`; the warning goes to 75% of it and the kept tail to half). `-limit` is not passed to `claude`.
+
+The status line also shows the account after the context size: `CLAUDE_PROFILE` when your launcher sets it, otherwise the user part of the account's email.
+
 ## How it works
 
 1. **PostToolUse hook** — On every tool call, scans user messages for secretary orders (save / forget) via regex. Every N calls (default: 15), summarizes conversation via local LLM.
@@ -597,6 +607,7 @@ TheSecretary/
 
 | Version | Date | Change |
 |---|---|---|
+| 2.13.0 | 2026-10-30 | `secretary` launcher: runs `claude` with the same arguments and, past `context_clear_tokens`, reopens the trimmed session with the prompt just sent, so `/resume` no longer has to be pasted. Status line shows the account (`CLAUDE_PROFILE` or the email's user) after the context size |
 | 2.12.0 | 2026-10-28 | Search by date: a date in the query ("ayer", "el martes pasado", "la semana pasada", "hace 3 días", "el 5 de octubre", "2026-10-28", and the English forms) limits literal, vector and summary results to that span of local time; the other words are what is searched. A query that is only a date returns that day's session handoffs |
 | 2.11.1 | 2026-10-28 | A session opened in any subfolder of a repo now uses the memory at the repo root: the personal folder name that the project-root climb treated as a "container of unrelated projects" is gone from `GENERIC_CONTAINERS`, so subfolders no longer get a memory of their own |
 | 2.11.0 | 2026-10-28 | The skill is renamed `secretary` (`/secretary`); the installer removes the old `skills/the-secretary` folder. Data folders keep their `the-secretary` name. `/secretary ai` (and `summarize.mjs backend`) shows or switches the summarizing AI: `local`, `apple` or `claude [model]`. `--account <name | email | folder>` / the `claude_config_dir` key pick which Claude account the CLI bills when there is more than one. Off-project sessions get one `OFF-PROJECT:` line instead of taking over the handoff. The Apple backend gets no frequency penalty |

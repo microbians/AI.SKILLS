@@ -602,6 +602,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-10-30 | TheSecretary v2.13.0: `secretary` launcher — start with `secretary` (same arguments as `claude`) and a trimmed session reopens by itself with the prompt just sent; status line shows the account |
 | 2026-10-28 | TheSecretary v2.11.0: `/secretary ai` shows or switches the summarizing AI (`local`, `apple`, `claude [model]`) and, with `--account`, which Claude account the CLI bills (by folder, email or fragment); the skill is renamed `the-secretary` → `secretary`; off-project sessions get one `OFF-PROJECT:` line instead of the handoff. GFXPerf v1.2.0. CLAUDE.Global v1.4.0: The Secretary section marker bumped to `secretary` v2.11.0 |
 | 2026-10-16 | TheSecretary v2.10.0: after `/clear`, restore injects the verbatim end of the previous conversation (~5000 chars) so Claude can tell whether it broke off mid-task; the "Memory recovered" notification waits for the previous handoff to land. CLAUDE.Global v1.3.3: The Secretary section marker bumped to v2.10.0 |
 | 2026-10-11 | Add GFXPerf v1.0.0: performance method and rules for graphics code in the browser (JavaScript, Canvas2D, WebGPU), with a measuring harness, a findings log format and a WebGPU / WGSL specification fetcher |

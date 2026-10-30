@@ -178,6 +178,10 @@ cp "$SCRIPT_DIR/src/start-llm.sh" "$DEST/"
 [ -f "$DEST/config.json" ] || cp "$SCRIPT_DIR/src/config.json" "$DEST/"
 cp "$SCRIPT_DIR/src/package.json" "$DEST/"
 cp "$SCRIPT_DIR/src/inject-claude-md.mjs" "$DEST/"
+cp "$SCRIPT_DIR/src/secretary.mjs" "$DEST/"
+chmod +x "$DEST/secretary.mjs"
+mkdir -p "$HOME/.local/bin"
+ln -sf "$DEST/secretary.mjs" "$HOME/.local/bin/secretary"
 chmod +x "$DEST/start-llm.sh"
 
 # 2b. Install skill
