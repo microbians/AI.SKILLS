@@ -2323,7 +2323,7 @@ ${joined}`;
  * Background summarization worker — called as a forked child process.
  * Args: _bg_summarize <session_id> <cwd> <message_count> <tmpFile>
  */
-async function bgSummarize(sessionId, cwd, messageCount, tmpFile, { isHandoff = false } = {}) {
+async function bgSummarize(sessionId, cwd, messageCount, tmpFile, { isHandoff = false, topicUuid = null } = {}) {
   let text;
   try {
     text = readFileSync(tmpFile, 'utf-8');
@@ -2452,6 +2452,11 @@ ACCURACY RULES (mandatory — a wrong handoff misleads the next session for hour
 - If the assistant corrected an earlier claim during the session, keep the correction and drop the wrong claim entirely.
 - Never invent file paths, function names, versions, or metrics that do not appear in the conversation.
 
+LAST LINE: every answer, including the one-line answers above, ends with one line that
+judges the LAST [USER] message of the CONVERSATION against the work before it:
+TOPIC: NEW   it starts a different task or subject
+TOPIC: SAME  it continues, refines, asks about or follows up the work before it
+
 CONVERSATION:
 ${text}`;
 
@@ -2460,7 +2465,12 @@ ${text}`;
   // degenerates: once the content runs out before the budget does, it keeps
   // emitting and fills the remainder by repeating. Real output measures
   // 460-921 chars, so max_summary_tokens (800) clears it with margin to spare.
-  const summary = await callLLMForSummary(prompt, config.max_summary_tokens);
+  const answer = await callLLMForSummary(prompt, config.max_summary_tokens);
+  // The handoff's TOPIC line judges the prompt that just ended its turn: a new
+  // topic marks where a trim should cut (see trimPlan). It never reaches the handoff.
+  const TOPIC_LINE = /^\W*TOPIC\W*(NEW|SAME)\b.*$/im;
+  if (isHandoff && topicUuid && answer.match(TOPIC_LINE)?.[1].toUpperCase() === 'NEW') addTopicMark(cwd, sessionId, topicUuid);
+  const summary = answer.replace(TOPIC_LINE, '').trim();
   if (!summary || summary.length < 50) {
     process.stderr.write(`the-secretary: summary dropped (LLM returned ${summary ? summary.length : 0} chars)\n`);
     process.exit(0);
@@ -2941,7 +2951,12 @@ async function force(hookInput, { stopLlm = false } = {}) {
     // Launch LLM summarization in background using spawn (faster than fork)
     const { spawn } = await import('child_process');
     const spawnArgs = [new URL(import.meta.url).pathname, '_bg_summarize', session_id, cwd || '', String(messages.length), tmpFile];
-    if (stopLlm) spawnArgs.push('--stop-llm');
+    if (stopLlm) {
+      spawnArgs.push('--stop-llm');
+      // The prompt whose turn just ended: the handoff judges whether it starts a new topic.
+      const lastPrompt = trimPlan(transcript_path, Infinity)?.chain.findLast(isUserPrompt);
+      if (lastPrompt?.uuid) spawnArgs.push(`--topic=${lastPrompt.uuid}`);
+    }
     const child = spawn('node', spawnArgs, {
       detached: true,
       stdio: workerStdio(),
@@ -4118,7 +4133,7 @@ function handoffStatus(statusInput) {
  */
 function trimSession({ transcript_path: transcriptPath, session_id, cwd }, keepTokens) {
   try {
-    const plan = trimPlan(transcriptPath, keepTokens);
+    const plan = trimPlan(transcriptPath, keepTokens, readTopicMarks(cwd, session_id));
     if (!plan || plan.cut < 0) return false;
     if (plan.cut === 0) return 'short';
     const { raw, rawLines, parsed, lines, chain, cut, CHAIN } = plan;
@@ -4154,13 +4169,25 @@ function trimSession({ transcript_path: transcriptPath, session_id, cwd }, keepT
   }
 }
 
+// A prompt the user typed: system-made user entries (task notifications,
+// command output) are meta or start with a tag.
+// A prompt with pasted images arrives as blocks (text + image), not a string.
+const promptText = (c) => (typeof c === 'string' ? c
+  : Array.isArray(c) && !c.some((b) => b.type === 'tool_result') ? c.find((b) => b.type === 'text')?.text || '' : '');
+const isUserPrompt = (l) => {
+  const text = l.type === 'user' && !l.isMeta ? promptText(l.message?.content) : '';
+  return text !== '' && !text.startsWith('<');
+};
+
 /**
  * Where a trim of the transcript would cut, without touching it: the earliest
  * user prompt whose tail stays under `keepTokens`, measured from the `usage`
- * the transcript records for each request. `cut` is -1 when no prompt fits,
+ * the transcript records for each request. When the tail does not fit whole,
+ * the cut moves to the earliest topic start (`marks`, prompt uuids) that fits,
+ * so the kept part opens on a whole topic. `cut` is -1 when no prompt fits,
  * 0 when the file is already short; `prompts` are the prompts a cut keeps.
  */
-function trimPlan(transcriptPath, keepTokens) {
+function trimPlan(transcriptPath, keepTokens, marks = new Set()) {
   if (!transcriptPath || !existsSync(transcriptPath)) return null;
   try {
     const raw = readFileSync(transcriptPath, 'utf-8');
@@ -4174,15 +4201,6 @@ function trimPlan(transcriptPath, keepTokens) {
     const chain = [];
     for (let n = leaf; n; n = n.parentUuid ? byUuid.get(n.parentUuid) : null) chain.unshift(n);
 
-    // A prompt the user typed: system-made user entries (task notifications,
-    // command output) are meta or start with a tag.
-    // A prompt with pasted images arrives as blocks (text + image), not a string.
-    const promptText = (c) => (typeof c === 'string' ? c
-      : Array.isArray(c) && !c.some((b) => b.type === 'tool_result') ? c.find((b) => b.type === 'text')?.text || '' : '');
-    const isPrompt = (l) => {
-      const text = l.type === 'user' && !l.isMeta ? promptText(l.message?.content) : '';
-      return text !== '' && !text.startsWith('<');
-    };
     // Tokens a tail adds, measured from the `usage` of each request: the sum of
     // the growths between consecutive requests after the cut. A drop (an
     // earlier resume or compaction restarted the context) adds nothing.
@@ -4192,23 +4210,58 @@ function trimPlan(transcriptPath, keepTokens) {
       return u ? (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) : null;
     };
     let cut = -1;
+    let mark = -1;
     let tail = 0;
     let next = null; // context of the closest request after i
-    for (let i = chain.length - 1; i >= 0; i--) {
+    let i = chain.length - 1;
+    for (; i >= 0; i--) {
       const own = contextOf(chain[i]);
       if (own != null) {
         if (next != null) tail += Math.max(0, next - own);
         next = own;
       }
       if (tail > keepTokens) break;
-      if (isPrompt(chain[i])) cut = i;
+      if (isUserPrompt(chain[i])) {
+        cut = i;
+        if (marks.has(chain[i].uuid)) mark = i;
+      }
     }
-    return { raw, rawLines, parsed, lines, chain, cut, CHAIN, prompts: chain.slice(Math.max(cut, 0)).filter(isPrompt).map((l) => promptText(l.message.content)) };
+    if (i >= 0 && mark >= 0) cut = mark;
+    return { raw, rawLines, parsed, lines, chain, cut, CHAIN, prompts: chain.slice(Math.max(cut, 0)).filter(isUserPrompt).map((l) => promptText(l.message.content)) };
   } catch (err) {
     process.stderr.write(`[secretary] trim plan error: ${err.message}\n`);
     return null;
   }
 }
+// Prompts that start a new topic, by uuid, as the session's handoff judged them
+// (see bgSummarize). A trim prefers to cut at one of them.
+const topicMarksKey = sessionId => `topics:${sessionId}`;
+
+function readTopicMarks(cwd, sessionId) {
+  const db = sessionId ? openDb(cwd) : null;
+  if (!db) return new Set();
+  try {
+    return new Set(JSON.parse(db.prepare('SELECT value FROM state WHERE key = ?').get(topicMarksKey(sessionId))?.value || '[]'));
+  } catch {
+    return new Set();
+  } finally {
+    db.close();
+  }
+}
+
+function addTopicMark(cwd, sessionId, uuid) {
+  const marks = readTopicMarks(cwd, sessionId);
+  if (marks.has(uuid)) return;
+  const db = openDb(cwd);
+  if (!db) return;
+  try {
+    db.prepare(`INSERT OR REPLACE INTO state (key, value, updated_at) VALUES (?, ?, datetime('now'))`)
+      .run(topicMarksKey(sessionId), JSON.stringify([...marks, uuid]));
+  } finally {
+    db.close();
+  }
+}
+
 /**
  * After a trim, moves the summarizer's and the turn index's read positions
  * (line numbers into the transcript) onto the trimmed file, so neither skips
@@ -4255,7 +4308,8 @@ function writeTrimPreview(hookInput) {
   const path = trimPreviewPath(hookInput.session_id);
   const limits = limitsFor(hookInput.session_id);
   const tokens = limits ? contextTokens(hookInput.transcript_path) : 0;
-  const plan = tokens >= limits?.clear * 0.9 && tokens < limits.clear && trimPlan(hookInput.transcript_path, limits.keep);
+  const plan = tokens >= limits?.clear * 0.9 && tokens < limits.clear
+    && trimPlan(hookInput.transcript_path, limits.keep, readTopicMarks(hookInput.cwd, hookInput.session_id));
   if (!plan || plan.cut <= 0) return rmSync(path, { force: true });
   writeFileSync(path, JSON.stringify({ prompts: plan.prompts.length, first: plan.prompts[0].replace(/\s+/g, ' ').trim() }));
 }
@@ -4560,6 +4614,7 @@ async function main() {
       // brief instead of the regular incremental summary.
       await bgSummarize(sessionId, cwd, messageCount, tmpFile, {
         isHandoff: flags.includes('--stop-llm'),
+        topicUuid: flags.find((f) => f.startsWith('--topic='))?.slice('--topic='.length) || null,
       });
     } catch (err) {
       process.stderr.write(`[secretary-bg] ${err.message}\n`);
