@@ -1,8 +1,8 @@
 ---
 name: secure-coding
 description: Security and data-integrity rules for writing or reviewing server-side code — auth gates, CSRF, path handling, SQL, uploads, output escaping, and the destructive-write patterns that silently delete user data. Use when adding or changing an API endpoint, a file write, a permission check, a template filter, or any code that takes user input; and when auditing a codebase for vulnerabilities or data loss. Derived from a real audit that found a one-click admin-takeover CSRF, a recursive-wipe path traversal, and three separate bugs that destroyed user content. Examples in PHP and TypeScript/Next.js.
-version: 1.0.0
-updated: 2026-08-12
+version: 1.0.1
+updated: 2026-11-01
 license: MIT
 compatibility: opencode
 metadata:
