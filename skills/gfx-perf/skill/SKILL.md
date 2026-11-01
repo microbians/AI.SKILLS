@@ -1,8 +1,8 @@
 ---
 name: gfx-perf
 description: Performance work on JavaScript that runs per element or per frame — graphics or not — and on graphics code in the browser (Canvas2D, WebGPU). Use BEFORE optimizing, profiling or benchmarking a hot loop (a parser, a build or layout pass, a data transform over thousands of items, a render loop, a stroke/particle/shape pipeline), a shader or a buffer upload; when a page stutters, drops frames, a load or first frame is slow, or a change "should be faster"; and when writing a page that measures time. Gives the measuring protocol (real browser, warm-up, median, interleaved A/B), a symptom → cause guide, and the rules for allocation-free JavaScript, function size and JIT tiers, Canvas2D state and fill rate, and WebGPU pipelines, buffers, passes and shaders.
-version: 1.2.0
-updated: 2026-10-22
+version: 1.2.1
+updated: 2026-11-01
 license: MIT
 compatibility: opencode
 metadata:
@@ -43,8 +43,11 @@ how a week goes into making the wrong thing faster.
 5. **Measure again, interleaved with the baseline** (A, B, A, B — never all of
    A and then all of B: the JIT and the GPU warm up along the way and the
    second one measured looks faster or slower for no reason of its own).
-6. **Keep it or delete it.** A change that does not move the median is
-   removed, not left "just in case". Faster code that draws something
+6. **Keep it or delete it.** Keep a change that makes no measured number
+   worse and improves at least one — a step's own median counts even when
+   the frame's does not move (it frees budget for other work and shows once
+   the bottleneck moves). Delete it if it worsens any number or improves
+   none, not left "just in case". Faster code that draws something
    different is not an optimization: compare the output too.
 7. **Write the finding down** ([templates/findings.md](templates/findings.md)):
    what was tried, the numbers, kept or dropped, and why. The dropped ones
