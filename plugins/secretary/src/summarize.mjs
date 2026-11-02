@@ -21,7 +21,7 @@
  * Reads hook JSON from stdin.
  */
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync, readdirSync, statSync, unlinkSync, rmSync, openSync, readSync, closeSync, fstatSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync, readdirSync, statSync, unlinkSync, rmSync, openSync, readSync, closeSync, fstatSync, utimesSync } from 'fs';
 import { join, basename, dirname } from 'path';
 import { homedir, tmpdir } from 'os';
 import { createHash } from 'crypto';
@@ -1579,7 +1579,12 @@ let gpuLockDepth = 0;
 function acquireGpuLock(waitMs = GPU_LOCK_WAIT_MS) {
   // Reentrant: index-vectors holds it across every batch so the mlx_lm server
   // cannot slip a Metal context in between two embed runs.
-  if (gpuLockDepth > 0) { gpuLockDepth++; return true; }
+  // Re-entry refreshes the mtime, so a long index-vectors run is never taken for stale.
+  if (gpuLockDepth > 0) {
+    try { const now = new Date(); utimesSync(GPU_LOCK_DIR, now, now); } catch { /* ignore */ }
+    gpuLockDepth++;
+    return true;
+  }
   const deadline = Date.now() + waitMs;
   for (;;) {
     // An external GPU hold counts as held (see LOCAL HOOKS)
@@ -1609,7 +1614,7 @@ function releaseGpuLock() {
 }
 
 /** Embed texts via the helper process. Returns Float32Array[] or null on any failure. */
-function embedTexts(texts, { lockWaitMs } = {}) {
+function embedTexts(texts, { lockWaitMs, batch, pace } = {}) {
   if (!texts?.length || !semanticAvailable()) return null;
   if (!acquireGpuLock(lockWaitMs)) {
     process.stderr.write('[secretary] embed skipped: GPU lock busy\n');
@@ -1617,7 +1622,7 @@ function embedTexts(texts, { lockWaitMs } = {}) {
   }
   try {
     const out = execFileSync(embedPython(), [EMBED_SCRIPT], {
-      input: JSON.stringify({ texts }),
+      input: JSON.stringify({ texts, batch, pace }),
       maxBuffer: 256 * 1024 * 1024,
       encoding: 'utf-8',
       // stderr inherited on purpose: swallowing it is what hid six consecutive
@@ -3666,7 +3671,10 @@ async function cmdIndexVectors() {
     const insert = db.prepare('INSERT INTO vturns(rowid, embedding) VALUES (?, ?)');
     const alreadyIndexed = db.prepare('SELECT 1 FROM vturns WHERE rowid = ?');
     let done = 0;
-    const BATCH = 128;
+    // Each embedTexts call reloads the model, so slices are large; inside one,
+    // small paced batches keep the GPU mostly free for the rest of the machine.
+    const BATCH = 512;
+    const EMBED_PACE = { batch: 16, pace: 3 };
     if (!acquireGpuLock()) {
       process.stderr.write('[secretary] index-vectors: GPU busy, try again later\n');
       return;
@@ -3674,7 +3682,7 @@ async function cmdIndexVectors() {
     try {
     for (let i = 0; i < pending.length; i += BATCH) {
       const slice = pending.slice(i, i + BATCH);
-      const vecs = embedTexts(slice.map(r => r.body));
+      const vecs = embedTexts(slice.map(r => r.body), EMBED_PACE);
       if (!vecs) { process.stderr.write('[secretary] embedding failed — stopping\n'); break; }
       const tx = db.transaction((rows) => {
         rows.forEach((r, k) => {

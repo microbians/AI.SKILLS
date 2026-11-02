@@ -12,6 +12,7 @@ only when FTS5 alone could not answer.
 """
 import json
 import sys
+import time
 
 MODEL = "mlx-community/Qwen3-Embedding-0.6B-8bit"
 
@@ -44,8 +45,12 @@ def main():
 
     out = []
     batch = int(payload.get("batch") or 32)
+    # Background indexing must not saturate the GPU: after each batch, idle for
+    # `pace` times what it took, so the GPU is busy at most 1 / (1 + pace) of the time.
+    pace = float(payload.get("pace") or 0)
     try:
         for i in range(0, len(texts), batch):
+            started = time.monotonic()
             # Turns are stored in ≤800-char chunks (TURN_CHUNK_CHARS in summarize.mjs);
             # this cap only guards against rows written before chunking existed.
             chunk = [t[:1000] for t in texts[i:i + batch]]
@@ -60,6 +65,8 @@ def main():
             mx.eval(cast)
             mx.synchronize()
             out.append(np.array(cast))
+            if pace:
+                time.sleep((time.monotonic() - started) * pace)
     except Exception as e:
         json.dump({"error": f"embedding failed: {e}"}, sys.stdout)
         return 1
