@@ -3963,15 +3963,15 @@ async function checkFreshContextWatermark(hookInput) {
  * for a few seconds, Secretary's last notice (writeStatusEvent).
  */
 // Extra status fields Claude Code sends: model + effort, session cost, plan
-// usage (5h / 7d, amber at 75%, red at 90%), minutes left on the prompt cache, account.
+// usage (5h / 7d, amber at 75%, red at 90%), account.
 // Status line palette (24-bit): soft tones instead of the terminal's raw ANSI colors.
 const STATUS_PALETTE = {
-  face: '#7fc4c4',  // teal
-  ok: '#98c39a',    // sage
-  warn: '#e5c07b',  // amber
-  alert: '#e88388', // coral
-  track: '#3b404a', // bar background
-  mark: '#8b929e',  // clear-limit mark
+  face: '#ea8933',  // orange
+  ok: '#a5a388',    // warm gray
+  warn: '#eca344',  // yellow
+  alert: '#cf4722', // red
+  track: '#4a533f', // bar background: olive
+  mark: '#d6d5c0',  // clear-limit mark: cream
 };
 
 const rgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(';');
@@ -3981,28 +3981,44 @@ function paint(hex, text, bg) {
   return `${bg ? `\x1b[48;2;${rgb(bg)}m` : ''}\x1b[38;2;${rgb(hex)}m${text}\x1b[0m`;
 }
 
+// Bar of `cells` cells filled to `fraction` in `color`, with an optional mark
+// before cell `mark`.
+function statusBar(fraction, cells, color, mark = null) {
+  const filled = Math.min(cells, Math.round(fraction * cells));
+  // Filled part fades in from its start (▒ → ▓ → █): the head is the solid end.
+  const FADE = ['▒', '▓'];
+  // The whole bar sits on the track background; filled cells draw the color over it.
+  const { track } = STATUS_PALETTE;
+  const parts = Array.from({ length: cells }, (_, i) => paint(color, i >= filled ? ' ' : FADE[i] || '█', track));
+  if (mark == null) return parts.join('');
+  // Mark = right eighth of one cell + left eighth of the next (▕▏): the line sits
+  // on the boundary between two cells, so it is centered in any font. `│` is not.
+  // Each half takes the background of the side it belongs to.
+  const markHalf = (glyph, i) => paint(STATUS_PALETTE.mark, glyph, i < filled ? color : track);
+  return `${parts.slice(0, mark).join('')}${markHalf('▕', mark - 1)}${markHalf('▏', mark)}${parts.slice(mark).join('')}`;
+}
+
 function statusDetails(statusInput) {
   const dim = text => `\x1b[2m${text}\x1b[0m`;
   const out = [];
   const model = statusInput.model?.display_name;
   const effort = statusInput.effort?.level;
   if (model) out.push(dim(effort ? `${model} ${effort}` : model));
+  // Claude Code sends rate_limits only to subscription accounts; there the API-priced
+  // cost is not what gets billed, so it shows only for API-key sessions.
   const cost = statusInput.cost?.total_cost_usd;
-  if (cost) out.push(dim(`$${cost.toFixed(2)}`));
+  if (cost && !statusInput.rate_limits) out.push(dim(`$${cost.toFixed(2)}`));
   const limits = statusInput.rate_limits || {};
-  const usage = [['5h', limits.five_hour], ['7d', limits.seven_day]]
-    .filter(([, l]) => l?.used_percentage != null)
-    .map(([label, l]) => {
-      const pct = l.used_percentage;
-      const text = `${label} ${pct}%`;
-      return pct >= 90 ? paint(STATUS_PALETTE.alert, text) : pct >= 75 ? paint(STATUS_PALETTE.warn, text) : dim(text);
+  // 5h then 7d: a short bar and the percentage each.
+  const usage = [limits.five_hour, limits.seven_day]
+    .filter(l => l?.used_percentage != null)
+    .map(l => {
+      const pct = Math.round(l.used_percentage);
+      const color = STATUS_PALETTE[pct >= 90 ? 'alert' : pct >= 75 ? 'warn' : 'ok'];
+      const text = pct >= 75 ? paint(color, `${pct}%`) : dim(`${pct}%`);
+      return `${statusBar(pct / 100, 5, color)} ${text}`;
     });
   if (usage.length) out.push(usage.join(' '));
-  const cache = statusInput.prompt_cache;
-  if (cache?.expires_at) {
-    const minutes = Math.round((cache.expires_at * 1000 - Date.now()) / 60000);
-    out.push(minutes > 0 && cache.warm ? dim(`cache ${minutes}m`) : paint(STATUS_PALETTE.warn, 'cache frío'));
-  }
   const account = sessionAccountName();
   if (account) out.push(dim(account));
   return out;
@@ -4098,19 +4114,8 @@ function handoffStatus(statusInput) {
     // Bar spans the model's whole context window; a mark sits at the clear threshold.
     const windowSize = statusInput.context_window?.context_window_size || 200000;
     const CELLS = 16;
-    const filled = Math.min(CELLS, Math.round((tokens / windowSize) * CELLS));
-    const mark = Math.min(CELLS - 1, Math.round((clear / windowSize) * CELLS));
-    // Filled part fades in from its start (▒ → ▓ → █): the head is the solid end.
-    const FADE = ['▒', '▓'];
-    // The whole bar sits on the track background; filled cells draw the level color over it.
-    const { track } = STATUS_PALETTE;
-    const cell = i => paint(color, i >= filled ? ' ' : FADE[i] || '█', track);
-    const cells = Array.from({ length: CELLS }, (_, i) => cell(i));
-    // Mark = right eighth of one cell + left eighth of the next (▕▏): the line sits
-    // on the boundary between two cells, so it is centered in any font. `│` is not.
-    // Each half takes the background of the side it belongs to.
-    const markHalf = (glyph, i) => paint(STATUS_PALETTE.mark, glyph, i < filled ? color : track);
-    const bar = off ? cells.join('') : `${cells.slice(0, mark).join('')}${markHalf('▕', mark - 1)}${markHalf('▏', mark)}${cells.slice(mark).join('')}`;
+    const mark = off ? null : Math.min(CELLS - 1, Math.round((clear / windowSize) * CELLS));
+    const bar = statusBar(tokens / windowSize, CELLS, color, mark);
     const kilo = n => `${Math.round(n / 1000)}K`;
     parts.push(`${bar}   ${paint(color, `${kilo(tokens)}/${off ? 'off' : kilo(clear)}${hint}`)}`);
     // Near the limit: which prompts a trim would keep (written by the Stop hook).
