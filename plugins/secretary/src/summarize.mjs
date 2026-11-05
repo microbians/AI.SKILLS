@@ -4118,12 +4118,6 @@ function handoffStatus(statusInput) {
     const bar = statusBar(tokens / windowSize, CELLS, color, mark);
     const kilo = n => `${Math.round(n / 1000)}K`;
     parts.push(`${bar}   ${paint(color, `${kilo(tokens)}/${off ? 'off' : kilo(clear)}${hint}`)}`);
-    // Near the limit: which prompts a trim would keep (written by the Stop hook).
-    const preview = tokens >= clear * 0.9 && tokens < clear && readTrimPreview(session_id);
-    if (preview) {
-      const first = preview.first.length > 32 ? `${preview.first.slice(0, 31)}…` : preview.first;
-      parts.push(paint(color, `✂ conserva ${preview.prompts} prompt${preview.prompts === 1 ? '' : 's'} desde «${first}»`));
-    }
   }
   parts.push(...statusDetails(statusInput));
   const event = readStatusEvent(session_id);
@@ -4309,26 +4303,6 @@ function trimIfOverLimit(hookInput) {
   const limits = limitsFor(hookInput.session_id);
   if (!limits || contextTokens(hookInput.transcript_path) < limits.clear) return false;
   return trimSession(hookInput, limits.keep);
-}
-
-// Between 90% and 100% of the limit, the end of each turn records what a trim
-// would keep, for the status line: nothing enters the conversation, so it costs
-// no tokens. Out of that band the file is removed.
-const trimPreviewPath = sessionId => join(tmpdir(), `secretary-trim-${String(sessionId).replace(/[^\w-]/g, '_')}.json`);
-
-function writeTrimPreview(hookInput) {
-  if (!hookInput.session_id) return;
-  const path = trimPreviewPath(hookInput.session_id);
-  const limits = limitsFor(hookInput.session_id);
-  const tokens = limits ? contextTokens(hookInput.transcript_path) : 0;
-  const plan = tokens >= limits?.clear * 0.9 && tokens < limits.clear
-    && trimPlan(hookInput.transcript_path, limits.keep, readTopicMarks(hookInput.cwd, hookInput.session_id));
-  if (!plan || plan.cut <= 0) return rmSync(path, { force: true });
-  writeFileSync(path, JSON.stringify({ prompts: plan.prompts.length, first: plan.prompts[0].replace(/\s+/g, ' ').trim() }));
-}
-
-function readTrimPreview(sessionId) {
-  try { return JSON.parse(readFileSync(trimPreviewPath(sessionId), 'utf-8')); } catch { return null; }
 }
 
 /**
@@ -4790,7 +4764,6 @@ async function main() {
         // After the handoff has read the full transcript. Under the launcher the
         // next prompt trims, so that cut is the one that reopens the session.
         if (!process.env.SECRETARY_LAUNCHER_PID) trimIfOverLimit(hookInput);
-        writeTrimPreview(hookInput);
         break;
       case 'inject': await inject(hookInput); break;
       case 'recall': await recall(hookInput); break;
