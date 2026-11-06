@@ -1,8 +1,8 @@
 ---
 name: gfx-perf
 description: Performance work on JavaScript that runs per element or per frame — graphics or not — and on graphics code in the browser (Canvas2D, WebGPU). Use BEFORE optimizing, profiling or benchmarking a hot loop (a parser, a build or layout pass, a data transform over thousands of items, a render loop, a stroke/particle/shape pipeline), a shader or a buffer upload; when a page stutters, drops frames, a load or first frame is slow, or a change "should be faster"; and when writing a page that measures time. Gives the measuring protocol (real browser, warm-up, median, interleaved A/B), a symptom → cause guide, and the rules for allocation-free JavaScript, function size and JIT tiers, Canvas2D state and fill rate, and WebGPU pipelines, buffers, passes and shaders.
-version: 1.2.1
-updated: 2026-11-01
+version: 1.2.2
+updated: 2026-11-06
 license: MIT
 compatibility: opencode
 metadata:

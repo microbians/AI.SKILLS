@@ -65,6 +65,19 @@ one touches.
   fractional position or scaled it is a filtered resample. Round the
   position; set `imageSmoothingEnabled = false` when no resampling is wanted.
 - **Cache `measureText`** by string and font.
+- **Copy a canvas into another with `drawImage` straight from it** — an
+  `OffscreenCanvas`, an `HTMLCanvasElement` or an `ImageBitmap` are all valid
+  sources. Never through an encoded image (`convertToBlob` / `toBlob` /
+  `toDataURL`, then `createImageBitmap` or an `<img>`): that encodes and
+  decodes a PNG of every pixel. Measured: an 1800 × 1800 `OffscreenCanvas`
+  copied to a page canvas took 119 ms through `convertToBlob` +
+  `createImageBitmap`, 0 ms with `drawImage(offscreen, 0, 0)` (WebKit, M-series
+  Mac, 2026-11). For a transfer that empties the source, `transferToImageBitmap()`.
+- **Time a copy to its end, not to its call.** `drawImage` from one
+  accelerated canvas to another returns at once and the GPU does the work
+  later: a timer around it reads ~0 ms for any size. Read one pixel back
+  (`getImageData(0, 0, 1, 1)`) before stopping the clock when the copy itself
+  is what is measured — outside the frame path only.
 
 ## Readback
 
