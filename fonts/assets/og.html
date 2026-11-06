@@ -1,0 +1,50 @@
+<!doctype html>
+<!-- Source of og.png (1200x630). Regenerate:
+     chrome --headless=new --hide-scrollbars --window-size=1200,630 --screenshot=og.png og.html -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+@font-face { font-family: "Meslo Code"; font-weight: 400; src: url("fonts/MesloCode-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Meslo Code"; font-weight: 700; src: url("fonts/MesloCode-Bold.woff2") format("woff2"); }
+:root { --film: #e3e9e2; --graphite: #1f2427; --graphite-2: #475056; --construct: rgba(31,36,39,.26); --faint: rgba(31,36,39,.09); --rev: #b63b08; --cell: .60205em; --line: 1.1640625; }
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; background: var(--film); color: var(--graphite); font-family: "Meslo Code", Menlo, monospace; }
+.sheet { position: absolute; inset: 28px; border: 2px solid var(--graphite); outline: .5px solid var(--construct); outline-offset: 7px;
+  background-image: linear-gradient(var(--faint) 1px, transparent 1px), linear-gradient(90deg, var(--faint) 1px, transparent 1px);
+  background-size: 24px 24px; background-position: -1px -1px; }
+.top { position: absolute; left: 0; right: 0; top: 0; height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 28px; border-bottom: 1px solid var(--graphite); background: var(--film); font-size: 22px; font-weight: 700; letter-spacing: .06em; }
+.top i { font-style: normal; color: var(--rev); letter-spacing: 0; margin-left: 10px; }
+.top span { font-weight: 400; font-size: 17px; color: var(--graphite-2); letter-spacing: .04em; }
+.figure { position: absolute; left: 92px; top: 138px; font-size: 128px; line-height: var(--line); white-space: pre; }
+.guide { position: absolute; inset: 0; background-image: linear-gradient(90deg, var(--construct) 1px, transparent 1px); background-size: var(--cell) 100%; border-right: 1px solid var(--construct); opacity: .6; }
+.dv { position: absolute; left: -.5em; top: 0; height: calc(var(--line) * 1em); width: 1.5px; background: var(--graphite); }
+.dv::before, .dv::after { content: ""; position: absolute; left: -5px; width: 11px; height: 9px; background: var(--graphite); }
+.dv::before { top: 0; clip-path: polygon(50% 0, 100% 100%, 0 100%); } .dv::after { bottom: 0; clip-path: polygon(0 0, 100% 0, 50% 100%); }
+.ring { position: absolute; top: .08em; height: calc(var(--line) * 1em - .16em); width: calc(var(--cell) * 2 + .12em); border: 2px dashed var(--rev); border-radius: .14em; }
+.ring.a { left: calc(var(--cell) * 2 - .06em); } .ring.b { left: calc(var(--cell) * 7 - .06em); }
+.tb { position: absolute; right: 0; bottom: 0; width: 430px; display: grid; grid-template-columns: 1fr 1fr; background: var(--film); border-top: 1px solid var(--graphite); border-left: 1px solid var(--graphite); }
+.tb div { padding: 10px 16px 12px; border-left: 1px solid var(--graphite); border-bottom: 1px solid var(--graphite); }
+.tb div:nth-child(odd) { border-left: 0; }
+.tb .w { grid-column: 1 / -1; border-left: 0; }
+.tb small { display: block; font-size: 12px; letter-spacing: .14em; color: var(--graphite-2); }
+.tb b { font-size: 19px; letter-spacing: .03em; }
+.tb .rev { grid-column: 1 / -1; background: var(--rev); color: #fff; border: 0; font-weight: 700; font-size: 18px; letter-spacing: .06em; padding: 16px; }
+.lede { position: absolute; left: 44px; bottom: 34px; width: 610px; font-size: 21px; line-height: 1.5; color: var(--graphite-2); }
+.lede b { color: var(--graphite); }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <div class="top"><b>MESLO CODE <i>-&gt;</i></b><span>a monospaced font for code</span></div>
+  <div class="figure"><span class="guide"></span><span class="dv"></span><span class="ring a"></span><span class="ring b"></span>a -&gt; b != c</div>
+  <p class="lede"><b>Menlo’s line spacing.</b> ~140 ligatures from Fira Code. 10,611 Nerd Fonts icons. Free and open source.</p>
+  <div class="tb">
+    <div class="w"><small>TITLE</small><b>MESLO CODE</b></div>
+    <div><small>SHEETS</small><b>4 STYLES</b></div>
+    <div><small>LICENSE</small><b>SIL OFL 1.1</b></div>
+    <div class="rev">TTF + WOFF2 · FREE</div>
+  </div>
+</div>
+</body>
+</html>
