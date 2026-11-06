@@ -1,0 +1,751 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meslo Code — a monospaced font for code</title>
+<meta name="description" content="Meslo Code: Menlo's line spacing, Fira Code ligatures and 10,611 Nerd Fonts icons. Free and open source (SIL OFL 1.1).">
+<link rel="preload" href="assets/fonts/MesloCode-Regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/MesloCode-Bold.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+@font-face { font-family: "Meslo Code"; font-weight: 400; font-style: normal; font-display: block; src: url("assets/fonts/MesloCode-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Meslo Code"; font-weight: 700; font-style: normal; font-display: block; src: url("assets/fonts/MesloCode-Bold.woff2") format("woff2"); }
+@font-face { font-family: "Meslo Code"; font-weight: 400; font-style: italic; font-display: block; src: url("assets/fonts/MesloCode-Italic.woff2") format("woff2"); }
+@font-face { font-family: "Meslo Code"; font-weight: 700; font-style: italic; font-display: block; src: url("assets/fonts/MesloCode-BoldItalic.woff2") format("woff2"); }
+
+:root {
+  --film: #e3e9e2;
+  --film-raised: #ecf0eb;
+  --graphite: #1f2427;
+  --graphite-2: #475056;
+  --construct: rgba(31, 36, 39, .26);
+  --construct-faint: rgba(31, 36, 39, .09);
+  --rev: #b63b08;
+  --rev-ink: #9c3106;
+  --rev-wash: rgba(182, 59, 8, .1);
+  --cell: .60205em;          /* 1233 / 2048: the advance width */
+  --line: 1.1640625;         /* (1901 + 483) / 2048: Menlo's line height */
+  --line-lgs: 1.26171875;    /* (2001 + 583) / 2048: Meslo LG S */
+  --gutter: clamp(16px, 3vw, 40px);
+  --ease: cubic-bezier(.16, 1, .3, 1);
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+code, pre, kbd, samp, textarea, button { font-family: inherit; }
+html { background: var(--film); -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--film);
+  color: var(--graphite);
+  font: 400 15px/1.6 "Meslo Code", Menlo, monospace;
+  font-feature-settings: "calt" 1, "liga" 1;
+}
+::selection { background: var(--rev); color: #fff; }
+a { color: inherit; text-decoration-color: var(--rev); text-decoration-thickness: 1px; text-underline-offset: .28em; }
+a:hover { color: var(--rev-ink); }
+:focus-visible { outline: 2px solid var(--rev); outline-offset: 3px; }
+html { scrollbar-color: var(--graphite-2) var(--film); }
+
+.lig-off .lig-target { font-feature-settings: "calt" 0, "liga" 0; font-variant-ligatures: none; }
+.no-lig { font-feature-settings: "calt" 0, "liga" 0; font-variant-ligatures: none; }
+
+/* ---------- Sheet ---------- */
+.sheet {
+  position: relative;
+  margin: calc(var(--gutter) + 14px) var(--gutter);
+  border: 1.5px solid var(--graphite);
+  outline: .5px solid var(--construct);
+  outline-offset: 7px;
+}
+.zones {
+  position: absolute; left: 0; right: 0;
+  display: grid; grid-template-columns: repeat(8, 1fr);
+  font-size: 11px; letter-spacing: .1em; color: var(--graphite-2);
+  pointer-events: none;
+}
+.zones span { text-align: center; border-left: .5px solid var(--construct); height: 8px; line-height: 1; }
+.zones span:first-child { border-left: 0; }
+.zones.top { top: -22px; }
+.zones.top span { padding-top: 0; }
+.zones.bottom { bottom: -22px; }
+.zones.bottom span { display: flex; align-items: flex-end; justify-content: center; }
+
+/* ---------- Title bar ---------- */
+.titlebar {
+  display: flex; align-items: stretch; justify-content: space-between;
+  border-bottom: 1px solid var(--graphite);
+}
+.titlebar .mark {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 18px; font-weight: 700; letter-spacing: .06em; text-decoration: none;
+  border-right: 1px solid var(--graphite);
+}
+.titlebar .mark i { font-style: normal; color: var(--rev); font-weight: 700; }
+.titlebar nav { display: flex; }
+.titlebar nav a {
+  display: flex; align-items: center; padding: 12px 18px; text-decoration: none;
+  border-left: 1px solid var(--construct); font-size: 13px; letter-spacing: .04em;
+}
+.titlebar nav a:hover { background: var(--rev-wash); color: var(--graphite); }
+
+/* ---------- Hero drawing ---------- */
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  grid-template-rows: auto 1fr;
+  border-bottom: 1px solid var(--graphite);
+}
+.drawing {
+  grid-row: 1 / span 2;
+  position: relative;
+  padding: clamp(28px, 5vw, 64px) clamp(20px, 4vw, 56px) clamp(28px, 4vw, 48px);
+  border-right: 1px solid var(--graphite);
+  background-image:
+    linear-gradient(var(--construct-faint) 1px, transparent 1px),
+    linear-gradient(90deg, var(--construct-faint) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: -1px -1px;
+}
+.drawing h1 {
+  margin: 0 0 clamp(40px, 7vw, 88px);
+  font-size: clamp(15px, 1.25vw, 18px); font-weight: 400; line-height: 1.55;
+  max-width: 46ch; color: var(--graphite-2);
+}
+.drawing h1 strong { color: var(--graphite); font-weight: 700; }
+
+.figure {
+  --fig: clamp(40px, calc((100vw - 2 * var(--gutter) - 520px) / 7.2), 170px);
+  position: relative;
+  font-size: var(--fig);
+  line-height: var(--line);
+  margin-left: 1.15em;
+  width: max-content;
+}
+.specimen { margin: 0; white-space: pre; position: relative; z-index: 1; }
+.specimen .cell-guide {
+  position: absolute; inset: 0; z-index: -1;
+  background-image: linear-gradient(90deg, var(--construct) 1px, transparent 1px);
+  background-size: var(--cell) 100%;
+  border-right: 1px solid var(--construct);
+  opacity: .6;
+}
+
+/* dimension lines (positioned in the figure's em, labels in px) */
+.dim { position: absolute; color: var(--graphite); }
+.dim .line { position: absolute; background: currentColor; }
+.dim .label {
+  position: absolute; white-space: nowrap;
+  font-size: 12px; line-height: 1.3; letter-spacing: .04em;
+  background: var(--film); padding: 1px 6px;
+}
+.dim-v { left: -.62em; top: 0; height: calc(var(--line) * 1em); width: 0; }
+.dim-v .line { left: 0; top: 0; bottom: 0; width: 1px; transform-origin: top; }
+.dim-v::before, .dim-v::after {
+  content: ""; position: absolute; left: -5px; width: 11px; height: 9px; background: currentColor;
+}
+.dim-v::before { top: 0; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.dim-v::after { bottom: 0; clip-path: polygon(0 0, 100% 0, 50% 100%); }
+.dim-v .ext { position: absolute; left: -10px; width: calc(.62em + 10px); height: 0; border-top: .5px solid var(--construct); }
+.dim-v .ext.t { top: 0; } .dim-v .ext.b { bottom: 0; }
+.dim-v .label { left: 50%; top: 50%; transform: translate(-50%, -50%) rotate(-90deg); }
+
+.dim-h { top: calc(var(--line) * 1em + .22em); height: 0; }
+.dim-h .line { left: 0; right: 0; top: 0; height: 1px; transform-origin: left; }
+.dim-h::before, .dim-h::after {
+  content: ""; position: absolute; top: -5px; width: 9px; height: 11px; background: currentColor;
+}
+.dim-h::before { left: 0; clip-path: polygon(0 50%, 100% 0, 100% 100%); }
+.dim-h::after { right: 0; clip-path: polygon(0 0, 100% 50%, 0 100%); }
+.dim-h .ext { position: absolute; bottom: 0; height: .42em; border-left: .5px solid var(--construct); }
+.dim-h .ext.l { left: 0; } .dim-h .ext.r { right: 0; }
+.dim-h .label { left: 50%; top: 8px; transform: translateX(-50%); }
+
+/* revision callouts */
+.rev { position: absolute; top: 0; width: 0; height: 0; color: var(--rev); z-index: 2; }
+.rev .ring {
+  position: absolute; left: calc(var(--cell) * -1 - .06em); top: .08em;
+  width: calc(var(--cell) * 2 + .12em); height: calc(var(--line) * 1em - .16em);
+  border: 1.5px dashed currentColor; border-radius: .14em;
+}
+.rev .leader { position: absolute; background: currentColor; }
+.rev .tag {
+  position: absolute; white-space: nowrap; color: var(--rev-ink);
+  font-size: 12px; line-height: 1.35; letter-spacing: .03em;
+  display: flex; align-items: center; gap: 8px;
+}
+.rev .tag b {
+  display: inline-grid; place-items: center; width: 22px; height: 22px;
+  border: 1.5px solid var(--rev); color: var(--rev); font-size: 11px;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%); padding-top: 6px; border: 0;
+  background: var(--rev); color: #fff;
+}
+.rev.up .leader { left: 0; bottom: calc(var(--line) * -0em + 0px); top: -.32em; width: 1.5px; height: .32em; }
+.rev.up .tag { left: -11px; top: calc(var(--fig) * -.32 - 30px); }
+.rev.down .leader { left: 0; top: calc(var(--line) * 1em); width: 1.5px; height: .55em; }
+.rev.down .tag { right: -11px; top: calc(var(--fig) * (var(--line) + .55) + 6px); flex-direction: row-reverse; }
+
+/* controls under the figure */
+.controls {
+  display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center;
+  margin-top: clamp(64px, 8vw, 104px);
+}
+.seg { display: inline-flex; border: 1px solid var(--graphite); }
+.seg button {
+  font: inherit; font-size: 12px; letter-spacing: .06em; color: var(--graphite);
+  background: transparent; border: 0; border-left: 1px solid var(--graphite);
+  padding: 8px 12px; cursor: pointer;
+}
+.seg button:first-child { border-left: 0; }
+.seg button:hover { background: var(--rev-wash); }
+.seg button[aria-pressed="true"] { background: var(--rev); color: #fff; }
+.ctl-label { font-size: 11px; letter-spacing: .12em; color: var(--graphite-2); margin-right: 8px; }
+
+.live {
+  margin-top: 20px; position: relative;
+  border: 1px solid var(--graphite); background: var(--film-raised);
+}
+.live textarea {
+  display: block; width: 100%; min-height: 9.5em; resize: vertical;
+  font: inherit; font-size: clamp(15px, 1.5vw, 19px); line-height: var(--line);
+  color: var(--graphite); background: transparent; border: 0; padding: 16px 18px 34px;
+  caret-color: var(--rev);
+}
+.live textarea:focus-visible { outline: 2px solid var(--rev); outline-offset: -2px; }
+.live .readout {
+  position: absolute; right: 0; bottom: 0; display: flex;
+  font-size: 11px; letter-spacing: .08em; color: var(--graphite-2);
+  border-top: 1px solid var(--construct); border-left: 1px solid var(--construct);
+  background: var(--film);
+}
+.live .readout span { padding: 4px 10px; border-left: 1px solid var(--construct); }
+.live .readout span:first-child { border-left: 0; }
+.live .readout b { color: var(--graphite); font-weight: 700; }
+
+/* ---------- Title block ---------- */
+.titleblock { grid-column: 2; grid-row: 2; align-self: end; display: grid; grid-template-columns: 1fr 1fr; }
+.notes-aside { grid-column: 2; grid-row: 1; padding: 28px 24px; font-size: 13px; color: var(--graphite-2); }
+.notes-aside h2 { margin: 0 0 14px; font-size: 11px; letter-spacing: .14em; color: var(--graphite); font-weight: 700; }
+.notes-aside ol { margin: 0; padding-left: 0; list-style: none; counter-reset: n; }
+.notes-aside li { counter-increment: n; display: grid; grid-template-columns: 22px 1fr; margin-bottom: 10px; }
+.notes-aside li::before { content: counter(n) "."; color: var(--graphite); }
+.notes-aside li b { color: var(--graphite); font-weight: 700; }
+.tb { border-top: 1px solid var(--graphite); border-left: 1px solid var(--graphite); padding: 8px 12px 10px; min-width: 0; }
+.tb:nth-child(odd) { border-left: 0; }
+.tb.wide { grid-column: 1 / -1; border-left: 0; }
+.tb small { display: block; font-size: 11px; letter-spacing: .14em; color: var(--graphite-2); margin-bottom: 2px; }
+.tb span { font-size: 14px; font-weight: 700; letter-spacing: .02em; }
+.tb.title span { font-size: 22px; letter-spacing: .04em; }
+.download {
+  grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 18px 16px; text-decoration: none; font-weight: 700; font-size: 16px; letter-spacing: .06em;
+  background: var(--rev); color: #fff; border-top: 1px solid var(--graphite);
+  transition: background-color .25s var(--ease);
+}
+.download:hover { background: var(--graphite); color: var(--film); }
+.download small { font-weight: 400; font-size: 12px; opacity: .8; letter-spacing: .04em; }
+.download .ico { font-size: 20px; }
+
+/* ---------- Sections ---------- */
+section.band { border-bottom: 1px solid var(--graphite); }
+.band-head {
+  display: grid; grid-template-columns: 120px 1fr; border-bottom: 1px solid var(--construct);
+}
+.band-head .detail {
+  border-right: 1px solid var(--construct); padding: 18px 16px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  font-size: 11px; letter-spacing: .14em; color: var(--graphite-2);
+}
+.band-head .detail b {
+  display: grid; place-items: center; width: 46px; height: 46px; border-radius: 50%;
+  border: 1.5px solid var(--graphite); color: var(--graphite); font-size: 18px; letter-spacing: 0;
+}
+.band-head .text { padding: clamp(28px, 4vw, 48px) clamp(20px, 4vw, 48px) clamp(20px, 3vw, 32px); }
+.band-head h2 { margin: 0 0 10px; font-size: clamp(24px, 3.2vw, 42px); line-height: 1.15; font-weight: 700; letter-spacing: -.01em; text-wrap: balance; }
+.band-head p { margin: 0; max-width: 68ch; color: var(--graphite-2); }
+.band-body { padding: clamp(24px, 4vw, 56px) clamp(20px, 4vw, 48px) clamp(32px, 5vw, 64px); }
+
+/* line spacing comparison */
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(24px, 4vw, 64px); }
+.stack { position: relative; padding-left: 120px; }
+.stack h3 { margin: 0 0 16px; font-size: 12px; letter-spacing: .14em; font-weight: 700; display: flex; gap: 10px; align-items: baseline; }
+.stack h3 em { font-style: normal; font-weight: 400; color: var(--graphite-2); }
+.stack.old h3 { color: var(--graphite-2); text-decoration: line-through; text-decoration-color: var(--rev); }
+.stack pre {
+  margin: 0; font: inherit; font-size: clamp(14px, 1.45vw, 18px); position: relative;
+  background-image: linear-gradient(var(--construct) 1px, transparent 1px);
+  background-position: 0 -1px;
+}
+.stack.old pre { line-height: var(--line-lgs); background-size: 100% calc(var(--line-lgs) * 1em); color: var(--graphite-2); }
+.stack.new pre { line-height: var(--line); background-size: 100% calc(var(--line) * 1em); }
+.stack .vdim {
+  position: absolute; left: 22px; top: 0; width: 0; color: var(--graphite);
+  font-size: clamp(14px, 1.45vw, 18px);
+}
+.stack.old .vdim { height: calc(var(--line-lgs) * 1em); color: var(--graphite-2); }
+.stack.new .vdim { height: calc(var(--line) * 1em); color: var(--rev); }
+.stack .vdim i { position: absolute; left: 0; top: 0; bottom: 0; width: 1.5px; background: currentColor; }
+.stack .vdim::before, .stack .vdim::after { content: ""; position: absolute; left: -4px; width: 9.5px; height: 7px; background: currentColor; }
+.stack .vdim::before { top: 0; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.stack .vdim::after { bottom: 0; clip-path: polygon(0 0, 100% 0, 50% 100%); }
+.stack .vdim span {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  font-size: 11px; white-space: nowrap; letter-spacing: .04em; text-align: right; line-height: 1.3;
+}
+.stack .body-wrap { position: relative; }
+.compare-note { margin: 28px 0 0; color: var(--graphite-2); max-width: 70ch; }
+.compare-note b { color: var(--rev-ink); }
+
+/* ligature revision table */
+.revtable {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  border-top: 1px solid var(--graphite); border-left: 1px solid var(--graphite);
+}
+.revtable div {
+  border-right: 1px solid var(--graphite); border-bottom: 1px solid var(--graphite);
+  display: grid; grid-template-rows: auto auto; justify-items: center; gap: 6px;
+  padding: 18px 8px 10px; position: relative; background: var(--film);
+  transition: background-color .2s var(--ease);
+}
+.revtable div:hover { background: var(--film-raised); }
+.revtable div:hover .b { color: var(--rev); }
+.revtable .b { font-size: 34px; line-height: 1.1; white-space: pre; transition: color .2s var(--ease); }
+.revtable .a { font-size: 12px; color: var(--graphite-2); white-space: pre; letter-spacing: .08em; }
+.revtable .a::before { content: "A "; color: var(--rev-ink); }
+.revtable-legend { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-bottom: 18px; font-size: 13px; color: var(--graphite-2); }
+.revtable-legend b { color: var(--graphite); }
+
+/* parts list */
+.parts { width: 100%; border-collapse: collapse; font-size: 14px; }
+.parts caption { text-align: left; font-size: 11px; letter-spacing: .14em; font-weight: 700; padding-bottom: 10px; }
+.parts th, .parts td { border: 1px solid var(--graphite); padding: 7px 12px; text-align: left; }
+.parts th { font-size: 11px; letter-spacing: .14em; font-weight: 700; background: var(--film-raised); }
+.parts td.sym { font-size: 24px; line-height: 1; width: 64px; text-align: center; }
+.parts td.no, .parts td.cp { color: var(--graphite-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.parts td.no { width: 52px; }
+.parts tbody tr:hover td { background: var(--rev-wash); }
+.parts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(20px, 3vw, 40px); }
+.prompt {
+  margin: 0 0 clamp(28px, 4vw, 44px); padding: 18px 20px; overflow-x: auto;
+  font-size: clamp(14px, 1.4vw, 17px); line-height: var(--line);
+  background: var(--graphite); color: #dfe6de; white-space: pre;
+}
+.prompt .s1 { color: var(--graphite); background: #9fc2a8; }
+.prompt .s1e { color: #9fc2a8; }
+.prompt .s2 { color: var(--graphite); background: #e9b24a; }
+.prompt .s2e { color: #e9b24a; }
+.prompt .s3 { color: #fff; background: var(--rev); }
+.prompt .s3e { color: var(--rev); }
+
+/* install notes */
+.install { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--graphite); border-left: 1px solid var(--graphite); }
+.install > div { border-right: 1px solid var(--graphite); border-bottom: 1px solid var(--graphite); padding: 20px; min-width: 0; }
+.install h3 { margin: 0 0 12px; font-size: 13px; letter-spacing: .1em; display: flex; align-items: center; gap: 10px; }
+.install h3 .ico { font-size: 18px; font-weight: 400; }
+.install p { margin: 0 0 12px; color: var(--graphite-2); font-size: 14px; }
+.install .span2 { grid-column: span 2; }
+.install .span3 { grid-column: 1 / -1; }
+.code {
+  position: relative; margin: 0; padding: 14px 16px; padding-right: 88px;
+  background: var(--film-raised); border: 1px solid var(--construct);
+  font-size: 13.5px; line-height: var(--line); white-space: pre; overflow-x: auto;
+}
+.copy {
+  position: absolute; top: 8px; right: 8px; font: inherit; font-size: 11px; letter-spacing: .1em;
+  border: 1px solid var(--graphite); background: var(--film); color: var(--graphite);
+  padding: 5px 9px; cursor: pointer;
+}
+.copy:hover { background: var(--graphite); color: var(--film); }
+.copy.done { background: var(--rev); border-color: var(--rev); color: #fff; }
+.terms { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.terms td { padding: 6px 0; border-bottom: .5px solid var(--construct); vertical-align: top; }
+.terms td:first-child { font-weight: 700; width: 34%; padding-right: 12px; }
+.terms td.no { color: var(--graphite-2); }
+
+/* acknowledgements */
+.acks { list-style: none; margin: 0; padding: 0; columns: 2 380px; column-gap: clamp(24px, 4vw, 56px); }
+.acks li {
+  break-inside: avoid; display: grid; gap: 2px; padding: 12px 0 14px;
+  border-top: .5px solid var(--construct); font-size: 14px;
+}
+.acks b { font-weight: 700; }
+.acks span { color: var(--graphite-2); }
+
+/* revision history / footer */
+.history { width: 100%; border-collapse: collapse; font-size: 13px; }
+.history th, .history td { border: 1px solid var(--graphite); padding: 8px 12px; text-align: left; vertical-align: top; }
+.history th { font-size: 11px; letter-spacing: .14em; background: var(--film-raised); }
+.history td:first-child { width: 90px; color: var(--rev-ink); font-weight: 700; }
+.history td:nth-child(2) { width: 130px; white-space: nowrap; }
+footer.foot {
+  display: flex; flex-wrap: wrap; gap: 12px 32px; justify-content: space-between;
+  padding: 20px clamp(20px, 4vw, 48px); font-size: 12.5px; color: var(--graphite-2);
+}
+footer.foot a { color: var(--graphite); }
+
+/* ---------- Motion: dimension lines draw once ---------- */
+@media (prefers-reduced-motion: no-preference) {
+  .js .dim-v .line { animation: drawY .9s var(--ease) .15s both; }
+  .js .dim-h .line { animation: drawX .9s var(--ease) .35s both; }
+  .js .rev { animation: rev .5s var(--ease) both; }
+  .js .rev.r1 { animation-delay: .7s; } .js .rev.r2 { animation-delay: .85s; }
+  @keyframes drawY { from { transform: scaleY(0); } }
+  @keyframes drawX { from { transform: scaleX(0); } }
+  @keyframes rev { from { opacity: 0; transform: translateY(4px); } }
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width: 1100px) {
+  .hero { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
+  .drawing { grid-row: auto; border-right: 0; border-bottom: 1px solid var(--graphite); }
+  .figure { --fig: clamp(30px, calc((100vw - 2 * var(--gutter) - 110px) / 7.8), 150px); }
+  .notes-aside { grid-column: 1; grid-row: auto; }
+  .titleblock { grid-column: 1; grid-row: auto; }
+  .install { grid-template-columns: 1fr 1fr; }
+  .install .span2 { grid-column: 1 / -1; }
+}
+@media (max-width: 760px) {
+  .titlebar { flex-direction: column; }
+  .titlebar .mark { border-right: 0; border-bottom: 1px solid var(--construct); }
+  .titlebar nav { overflow-x: auto; }
+  .titlebar nav a:first-child { border-left: 0; }
+  .band-head { grid-template-columns: 1fr; }
+  .band-head .detail { flex-direction: row; justify-content: flex-start; border-right: 0; border-bottom: 1px solid var(--construct); padding: 10px 20px; gap: 10px; }
+  .band-head .detail b { width: 32px; height: 32px; font-size: 14px; }
+  .compare, .parts-grid, .install { grid-template-columns: 1fr; }
+  .install .span2, .install .span3 { grid-column: auto; }
+  .zones { display: none; }
+  .sheet { margin: var(--gutter); outline-offset: 4px; }
+  .history td:nth-child(2) { white-space: normal; width: auto; }
+  .rev .tag .t { display: none; }
+  .figure { --fig: clamp(30px, calc((100vw - 2 * var(--gutter) - 52px) / 7.9), 150px); }
+  .dim-v .label .t { display: none; }
+  .stack { padding-left: 96px; }
+  .stack pre { overflow-x: auto; }
+  .download { flex-wrap: wrap; }
+  .rev.up .tag { top: calc(var(--fig) * -.32 - 26px); }
+  .seg { flex-wrap: wrap; }
+  .controls > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+}
+</style>
+</head>
+<body>
+<div class="sheet">
+  <div class="zones top" aria-hidden="true"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span></div>
+  <div class="zones bottom" aria-hidden="true"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span></div>
+
+  <header class="titlebar">
+    <a class="mark" href="#top" id="top">MESLO CODE <i>-&gt;</i></a>
+    <nav aria-label="Sections">
+      <a href="#spacing">Line spacing</a>
+      <a href="#ligatures">Ligatures</a>
+      <a href="#icons">Icons</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/microbians/AI.SKILLS/tree/main/fonts">GitHub</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <div class="drawing">
+      <h1><strong>Meslo Code is a monospaced font for code.</strong> Menlo’s exact line spacing, ~140 programming ligatures from Fira Code and 10,611 Nerd Fonts icons. Free and open source.</h1>
+
+      <div class="figure" id="figure">
+        <div class="dim dim-v" aria-hidden="true"><i class="line"></i><i class="ext t"></i><i class="ext b"></i><span class="label">2384 u<span class="t"> · MENLO</span></span></div>
+        <p class="specimen lig-target" id="specimen" aria-label="Sample: a -> b != c"><span class="cell-guide" aria-hidden="true"></span>a -&gt; b != c</p>
+        <div class="dim dim-h" aria-hidden="true" style="left:0; width:var(--cell)"><i class="line"></i><i class="ext l"></i><i class="ext r"></i><span class="label">1233 u</span></div>
+        <div class="rev up r1" aria-hidden="true" style="left:calc(var(--cell) * 3)"><i class="ring"></i><i class="leader"></i><span class="tag"><b>B</b><span class="t">REV B · -&gt; set as one glyph</span></span></div>
+        <div class="rev down r2" aria-hidden="true" style="left:calc(var(--cell) * 8)"><i class="ring"></i><i class="leader"></i><span class="tag"><b>B</b><span class="t">REV B · != set as one glyph</span></span></div>
+      </div>
+
+      <div class="controls">
+        <div><span class="ctl-label" id="lbl-rev">LIGATURES</span>
+          <span class="seg" role="group" aria-labelledby="lbl-rev">
+            <button type="button" data-lig="off" aria-pressed="false">REV A · off</button>
+            <button type="button" data-lig="on" aria-pressed="true">REV B · on</button>
+          </span>
+        </div>
+        <div><span class="ctl-label" id="lbl-sheet">STYLE</span>
+          <span class="seg" role="group" aria-labelledby="lbl-sheet">
+            <button type="button" data-style="400 normal" aria-pressed="true">Regular</button>
+            <button type="button" data-style="700 normal" aria-pressed="false">Bold</button>
+            <button type="button" data-style="400 italic" aria-pressed="false">Italic</button>
+            <button type="button" data-style="700 italic" aria-pressed="false">Bold Italic</button>
+          </span>
+        </div>
+      </div>
+
+      <div class="live">
+        <label for="field" class="ctl-label" style="position:absolute;left:-9999px">Type to try Meslo Code</label>
+        <textarea id="field" class="lig-target" spellcheck="false" autocapitalize="off" autocomplete="off">const total = items
+  .filter((x) => x.price >= 10 && x.qty !== 0)
+  .reduce((sum, x) => sum + x.price * x.qty, 0);
+
+if (user?.name != null) greet(user.name) // -> "Hello"</textarea>
+        <div class="readout" aria-live="polite"><span>LINES <b id="r-lines">0</b></span><span>COLS <b id="r-cols">0</b></span><span>LIGATURES <b id="r-ligs">0</b></span></div>
+      </div>
+    </div>
+
+    <aside class="notes-aside" aria-labelledby="notes-h">
+      <h2 id="notes-h">GENERAL NOTES</h2>
+      <ol>
+        <li><span>Base design: <b>Meslo LG S</b>, a customized Menlo, with Menlo’s vertical metrics restored.</span></li>
+        <li><span>Ligatures from <b>Fira Code</b>. Every single character keeps Meslo’s drawing.</span></li>
+        <li><span>Icons from <b>Nerd Fonts 3.5.1</b>, complete set: Powerline, Devicons, Codicons, Octicons, Font Awesome, Material Design and more.</span></li>
+        <li><span>Desktop <b>.ttf</b> and web <b>.woff2</b> with a ready <b>@font-face</b> stylesheet.</span></li>
+      </ol>
+    </aside>
+
+    <div class="titleblock" aria-label="Download">
+      <div class="tb title wide"><small>TITLE</small><span>MESLO CODE</span></div>
+      <div class="tb"><small>DWG NO.</small><span>MC-1.0.0</span></div>
+      <div class="tb"><small>SHEETS</small><span>4 STYLES</span></div>
+      <div class="tb"><small>SCALE</small><span>1 : 1</span></div>
+      <div class="tb"><small>LICENSE</small><span>SIL OFL 1.1</span></div>
+      <a class="download" href="MesloCode.zip" download><span><span class="ico" aria-hidden="true">&#xF019;</span>&nbsp; DOWNLOAD</span><small>.zip · 11 MB · ttf + woff2</small></a>
+    </div>
+  </section>
+
+  <section class="band" id="spacing" aria-labelledby="spacing-h">
+    <div class="band-head">
+      <div class="detail" aria-hidden="true"><b>A</b>DETAIL</div>
+      <div class="text">
+        <h2 id="spacing-h">Menlo’s line spacing, to the unit.</h2>
+        <p>Meslo LG S adds 200 units to every line. Meslo Code takes them back out: ascent 1901, descent 483, the same numbers Menlo uses. The same code fills the same height as the font you are used to.</p>
+      </div>
+    </div>
+    <div class="band-body">
+      <div class="compare">
+        <div class="stack old">
+          <h3>MESLO LG S <em>superseded</em></h3>
+          <div class="body-wrap">
+            <span class="vdim" style="left:-42px"><i></i><span>2584 u<br>1.262 em</span></span>
+            <pre class="lig-target">fn main() {
+    let v = vec![1, 2, 3];
+    for x in &amp;v {
+        println!("{x}");
+    }
+}</pre>
+          </div>
+        </div>
+        <div class="stack new">
+          <h3>MESLO CODE <em>= Menlo</em></h3>
+          <div class="body-wrap">
+            <span class="vdim" style="left:-42px"><i></i><span>2384 u<br>1.164 em</span></span>
+            <pre class="lig-target">fn main() {
+    let v = vec![1, 2, 3];
+    for x in &amp;v {
+        println!("{x}");
+    }
+}</pre>
+          </div>
+        </div>
+      </div>
+      <p class="compare-note">Six lines, two heights. The width does not change at all: every character is <b>1233 units</b> wide in both, exactly like Menlo, so columns and alignment stay where they were.</p>
+    </div>
+  </section>
+
+  <section class="band" id="ligatures" aria-labelledby="lig-h">
+    <div class="band-head">
+      <div class="detail" aria-hidden="true"><b>B</b>REVISIONS</div>
+      <div class="text">
+        <h2 id="lig-h">Ligatures that keep the grid.</h2>
+        <p>Each ligature is drawn across the cells of the characters it replaces, so <code>-&gt;</code> still takes two columns and the cursor still stops between them. Large: the ligature (REV B). Small: the characters typed (REV A).</p>
+      </div>
+    </div>
+    <div class="band-body">
+      <div class="revtable-legend"><span><b>69</b> shown · ~140 in the font</span><span>Hover a cell to mark it</span><span>Turn ligatures off any time in your editor</span></div>
+      <div class="revtable" id="revtable"></div>
+    </div>
+  </section>
+
+  <section class="band" id="icons" aria-labelledby="icons-h">
+    <div class="band-head">
+      <div class="detail" aria-hidden="true"><b>C</b>PARTS</div>
+      <div class="text">
+        <h2 id="icons-h">10,611 icons, in the same font.</h2>
+        <p>The complete Nerd Fonts set is built in, so prompts, file trees and status bars render their symbols without a second font. A sample of the parts list:</p>
+      </div>
+    </div>
+    <div class="band-body">
+      <pre class="prompt lig-target" aria-label="Example shell prompt using Powerline symbols"><span class="s1"> &#xF07C; ~/projects/api </span><span class="s1e">&#xE0B0;</span><span class="s2"> &#xE0A0; main &#xF417; 2 </span><span class="s2e">&#xE0B0;</span><span class="s3"> &#xE718; 20.11 </span><span class="s3e">&#xE0B0;</span> npm run build &amp;&amp; ./deploy.sh --env=prod</pre>
+      <div class="parts-grid" id="parts"></div>
+    </div>
+  </section>
+
+  <section class="band" id="install" aria-labelledby="install-h">
+    <div class="band-head">
+      <div class="detail" aria-hidden="true"><b>D</b>ASSEMBLY</div>
+      <div class="text">
+        <h2 id="install-h">Install in a minute.</h2>
+        <p>Download the zip, install the four <code>.ttf</code> files, then pick <b>Meslo Code</b> in your editor and terminal. Close and reopen any app that was running.</p>
+      </div>
+    </div>
+    <div class="band-body">
+      <div class="install">
+        <div>
+          <h3><span class="ico" aria-hidden="true">&#xE711;</span>macOS</h3>
+          <p>Double-click each file and press <b>Install</b>, or:</p>
+          <pre class="code">cp MesloCode/*.ttf ~/Library/Fonts/<button class="copy" type="button">COPY</button></pre>
+        </div>
+        <div>
+          <h3><span class="ico" aria-hidden="true">&#xF17C;</span>Linux</h3>
+          <p>Copy to your fonts folder and refresh the cache:</p>
+          <pre class="code">mkdir -p ~/.local/share/fonts
+cp MesloCode/*.ttf ~/.local/share/fonts/
+fc-cache -f<button class="copy" type="button">COPY</button></pre>
+        </div>
+        <div>
+          <h3><span class="ico" aria-hidden="true">&#xF17A;</span>Windows</h3>
+          <p>Select the four <code>.ttf</code> files in <code>MesloCode\</code>, right-click and choose <b>Install</b>.</p>
+        </div>
+        <div class="span2">
+          <h3><span class="ico" aria-hidden="true">&#xE8DA;</span>VS Code</h3>
+          <p>The terminal does not inherit the editor font, so set both. Ligatures are off by default.</p>
+          <pre class="code">"editor.fontFamily": "'Meslo Code', Menlo, monospace",
+"editor.fontLigatures": true,
+"terminal.integrated.fontFamily": "'Meslo Code', Menlo, monospace",
+"terminal.integrated.fontLigatures.enabled": true<button class="copy" type="button">COPY</button></pre>
+        </div>
+        <div>
+          <h3><span class="ico" aria-hidden="true">&#xF120;</span>Terminals</h3>
+          <table class="terms">
+            <tr><td>iTerm2</td><td>Profiles → Text, check <b>Use ligatures</b></td></tr>
+            <tr><td>Ghostty</td><td><code>font-family = Meslo Code</code></td></tr>
+            <tr><td>kitty</td><td><code>font_family Meslo Code</code></td></tr>
+            <tr><td>WezTerm</td><td><code>wezterm.font 'Meslo Code'</code></td></tr>
+            <tr><td>Terminal.app</td><td class="no">font only, no ligatures</td></tr>
+          </table>
+        </div>
+        <div class="span3">
+          <h3><span class="ico" aria-hidden="true">&#xF0AC;</span>Web pages</h3>
+          <p>Copy <code>MesloCode/web/</code> next to your site. Pages without icons download only the 36 KB Latin files.</p>
+          <pre class="code">&lt;link rel="stylesheet" href="web/meslo-code.css"&gt;
+&lt;style&gt; code, pre { font-family: "Meslo Code", Menlo, monospace; } &lt;/style&gt;<button class="copy" type="button">COPY</button></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="hist-h">
+    <div class="band-body">
+      <table class="history">
+        <caption id="hist-h" style="text-align:left; font-size:11px; letter-spacing:.14em; font-weight:700; padding-bottom:10px">REVISION HISTORY</caption>
+        <thead><tr><th>REV</th><th>DATE</th><th>DESCRIPTION</th></tr></thead>
+        <tbody>
+          <tr><td>1.0.0</td><td>2026-11-06</td><td>First release. Meslo LG S 1.2.1 with Menlo’s vertical metrics, Fira Code ligatures, Nerd Fonts 3.5.1 complete icon set. Regular, Bold, Italic, Bold Italic. Desktop .ttf and web .woff2.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="band" id="acknowledgements" aria-labelledby="ack-h">
+    <div class="band-head">
+      <div class="detail" aria-hidden="true"><b>E</b>REFERENCES</div>
+      <div class="text">
+        <h2 id="ack-h">Acknowledgements</h2>
+        <p>Meslo Code is assembled, not drawn from scratch. Every letter, ligature and icon in it is the work of the people below.</p>
+      </div>
+    </div>
+    <div class="band-body">
+      <ul class="acks">
+        <li><b>Jim Lyles, Bitstream</b><span>Bitstream Vera Sans Mono, the original design every glyph descends from, released under a license that lets it grow.</span></li>
+        <li><b>Tavmjong Bah</b><span>Arev fonts, extending Vera with Greek, Cyrillic and many more glyphs.</span></li>
+        <li><b>The DejaVu project</b><span>Years of extending and maintaining the Vera family in the open.</span></li>
+        <li><b>Apple</b><span>Menlo, whose proportions and line spacing Meslo Code matches. Menlo itself is not included.</span></li>
+        <li><b>André Berg</b><span><a href="https://github.com/andreberg/Meslo-Font">Meslo LG</a>, the customized Menlo this font is built on (Apache 2.0).</span></li>
+        <li><b>Nikita Prokopov and the Fira Code authors</b><span><a href="https://github.com/tonsky/FiraCode">Fira Code</a>, where the programming ligatures come from (SIL OFL 1.1).</span></li>
+        <li><b>Ilya Skriblovsky, ToxicFrog and contributors</b><span><a href="https://github.com/ToxicFrog/Ligaturizer">Ligaturizer</a>, which grafts Fira Code’s ligatures onto other fonts.</span></li>
+        <li><b>Ryan L McIntyre and the Nerd Fonts contributors</b><span><a href="https://github.com/ryanoasis/nerd-fonts">Nerd Fonts</a> and its font patcher, plus the authors of every icon set it bundles.</span></li>
+        <li><b>George Williams and the FontForge team</b><span><a href="https://fontforge.org">FontForge</a>, the editor that runs every build step.</span></li>
+        <li><b>The fontTools maintainers</b><span><a href="https://github.com/fonttools/fonttools">fontTools</a>, used for the web subsets and woff2 files.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span>Meslo Code · SIL Open Font License 1.1 · includes Bitstream Vera, Meslo LG (Apache 2.0), Fira Code and Nerd Fonts, <a href="https://github.com/microbians/AI.SKILLS/tree/main/fonts/LICENSES">licenses</a></span>
+    <span>Part of <a href="https://github.com/microbians/AI.SKILLS">AI.SKILLS</a> · <a href="https://github.com/microbians/AI.SKILLS/tree/main/fonts/build">build from source</a></span>
+  </footer>
+</div>
+
+<script>
+document.documentElement.classList.add("js");
+
+const LIGATURES = "-> => <- <= >= != == === !== <-> <=> --> <-- <!-- -- ++ && || ?? ?. :: ::: ... .. ..< |> <| >>= =<< /* */ // /// ** := =/= ~> ~~> <$> <*> </> </ /> #{ #[ #( <<< >>> << >> www ;; !! ## ### #! |= ^= +++ <~> -< >- >>- -<< <<- ->> =:= ::= =>> <=< >=> |-> <-|".split(" ");
+
+// [Nerd Fonts name, codepoint]
+const PARTS = [
+  ["Powerline", [["pl-branch", "E0A0"], ["pl-left_hard_divider", "E0B0"], ["pl-right_hard_divider", "E0B2"], ["ple-right_half_circle_thick", "E0B4"], ["ple-upper_left_triangle", "E0BC"]]],
+  ["Version control", [["dev-git", "E702"], ["dev-git_branch", "E725"], ["oct-git_branch", "F418"], ["oct-git_commit", "F417"], ["oct-issue_opened", "F41B"], ["cod-source_control", "EA68"], ["fa-github_alt", "F113"]]],
+  ["Languages & tools", [["dev-nodejs_small", "E718"], ["dev-python", "E73C"], ["dev-javascript_alt", "E74E"], ["dev-rust", "E7A8"], ["seti-go", "E627"], ["seti-json", "E60B"], ["linux-docker", "F308"], ["custom-vim", "E62B"]]],
+  ["Files & status", [["fa-file", "F15B"], ["fa-folder", "F07B"], ["oct-terminal", "F489"], ["fa-check", "F00C"], ["fa-xmark", "F00D"], ["fa-warning", "F071"], ["fa-clock", "F017"], ["fa-bolt", "F0E7"]]],
+];
+
+// Ligature revision table
+const rev = document.getElementById("revtable");
+for (const l of LIGATURES) {
+  const d = document.createElement("div");
+  d.innerHTML = `<span class="b"></span><span class="a no-lig"></span>`;
+  d.querySelector(".b").textContent = l;
+  d.querySelector(".a").textContent = l.split("").join(" ");
+  d.title = `${l} — ${l.length} columns`;
+  rev.append(d);
+}
+
+// Parts list: two tables
+const parts = document.getElementById("parts");
+let item = 1;
+for (let t = 0; t < 2; t++) {
+  const table = document.createElement("table");
+  table.className = "parts";
+  let rows = "";
+  for (const [group, icons] of PARTS.slice(t * 2, t * 2 + 2)) {
+    rows += `<tr><th colspan="4">${group.toUpperCase()}</th></tr>`;
+    for (const [name, cp] of icons) {
+      rows += `<tr><td class="no">${String(item++).padStart(2, "0")}</td><td class="sym" aria-hidden="true">&#x${cp};</td><td>${name}</td><td class="cp">U+${cp}</td></tr>`;
+    }
+  }
+  table.innerHTML = `<thead><tr><th>ITEM</th><th>SYM</th><th>NAME</th><th>CODE</th></tr></thead><tbody>${rows}</tbody>`;
+  parts.append(table);
+}
+
+// Toggles
+function press(group, btn) {
+  group.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b === btn)));
+}
+document.querySelectorAll("[data-lig]").forEach(btn => btn.addEventListener("click", () => {
+  press(btn.parentElement, btn);
+  document.documentElement.classList.toggle("lig-off", btn.dataset.lig === "off");
+  readout();
+}));
+const styled = [document.getElementById("specimen"), document.getElementById("field")];
+document.querySelectorAll("[data-style]").forEach(btn => btn.addEventListener("click", () => {
+  press(btn.parentElement, btn);
+  const [weight, style] = btn.dataset.style.split(" ");
+  styled.forEach(el => { el.style.fontWeight = weight; el.style.fontStyle = style; });
+}));
+
+// Live readout
+const field = document.getElementById("field");
+const ligPattern = new RegExp(
+  LIGATURES.slice().sort((a, b) => b.length - a.length).map(l => l.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&")).join("|"), "g");
+function readout() {
+  const lines = field.value.split("\n");
+  document.getElementById("r-lines").textContent = lines.length;
+  document.getElementById("r-cols").textContent = Math.max(...lines.map(l => l.length));
+  const on = !document.documentElement.classList.contains("lig-off");
+  document.getElementById("r-ligs").textContent = on ? (field.value.match(ligPattern) || []).length : 0;
+}
+field.addEventListener("input", readout);
+readout();
+
+// Copy buttons
+document.querySelectorAll(".copy").forEach(btn => btn.addEventListener("click", async () => {
+  const text = btn.parentElement.textContent.replace(/COPY$|COPIED$/, "").trim();
+  try { await navigator.clipboard.writeText(text); btn.textContent = "COPIED"; btn.classList.add("done"); }
+  catch { btn.textContent = "SELECT"; }
+  setTimeout(() => { btn.textContent = "COPY"; btn.classList.remove("done"); }, 1600);
+}));
+</script>
+</body>
+</html>

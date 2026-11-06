@@ -1,0 +1,32 @@
+/* Meslo Code — web fonts. SIL Open Font License 1.1 (see LICENSES/).
+ *
+ * Each style has two files. The -latin file (~36 KB) covers Latin text, box
+ * drawing and all ligatures; the full file (~1.2 MB) adds every Nerd Fonts
+ * icon. Browsers download the full file only when the page uses a character
+ * the -latin file lacks (later rules win for overlapping ranges).
+ *
+ * Usage: <link rel="stylesheet" href="meslo-code.css">
+ *        code, pre { font-family: "Meslo Code", Menlo, monospace; }
+ */
+
+@font-face { font-family: "Meslo Code"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("MesloCode-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Meslo Code"; font-style: normal; font-weight: 700; font-display: swap;
+  src: url("MesloCode-Bold.woff2") format("woff2"); }
+@font-face { font-family: "Meslo Code"; font-style: italic; font-weight: 400; font-display: swap;
+  src: url("MesloCode-Italic.woff2") format("woff2"); }
+@font-face { font-family: "Meslo Code"; font-style: italic; font-weight: 700; font-display: swap;
+  src: url("MesloCode-BoldItalic.woff2") format("woff2"); }
+
+@font-face { font-family: "Meslo Code"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("MesloCode-Regular-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2190-21FF, U+2200-22FF, U+2500-259F, U+25A0-25FF, U+FEFF, U+FFFD; }
+@font-face { font-family: "Meslo Code"; font-style: normal; font-weight: 700; font-display: swap;
+  src: url("MesloCode-Bold-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2190-21FF, U+2200-22FF, U+2500-259F, U+25A0-25FF, U+FEFF, U+FFFD; }
+@font-face { font-family: "Meslo Code"; font-style: italic; font-weight: 400; font-display: swap;
+  src: url("MesloCode-Italic-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2190-21FF, U+2200-22FF, U+2500-259F, U+25A0-25FF, U+FEFF, U+FFFD; }
+@font-face { font-family: "Meslo Code"; font-style: italic; font-weight: 700; font-display: swap;
+  src: url("MesloCode-BoldItalic-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2190-21FF, U+2200-22FF, U+2500-259F, U+25A0-25FF, U+FEFF, U+FFFD; }

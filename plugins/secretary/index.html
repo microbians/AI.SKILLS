@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Secretary — local memory for Claude Code</title>
+<meta name="description" content="The Secretary keeps every Claude Code conversation verbatim, leaves a handoff for your next session and answers “do you remember…?”. Runs on a local LLM; nothing leaves your machine.">
+<link rel="preload" href="assets/fonts/Archivo-latin.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+@font-face { font-family: "Archivo"; font-weight: 100 900; font-stretch: 62% 125%; font-display: swap; src: url("assets/fonts/Archivo-latin.woff2") format("woff2"); }
+@font-face { font-family: "Meslo Code"; font-weight: 400; font-display: swap; src: url("../../fonts/assets/fonts/MesloCode-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Meslo Code"; font-weight: 700; font-display: swap; src: url("../../fonts/assets/fonts/MesloCode-Bold.woff2") format("woff2"); }
+
+:root {
+  --enamel: #0f3a33;
+  --enamel-2: #134640;
+  --hole: #082822;
+  --hole-2: #0b302a;
+  --on-enamel: #e8f0ea;
+  --on-enamel-2: #a9c4b9;
+  --brass: #caa24c;
+  --brass-hi: #e6c574;
+  --brass-ink: #2b2208;
+  --slip: #f6bfcd;
+  --slip-2: #f2adbf;
+  --print: #8a1a3d;
+  --typed: #1a2a6c;
+  --stub: #ffffff;
+  --stub-ink: #1b2422;
+  --miss: #c4352a;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --mono: "Meslo Code", Menlo, monospace;
+  --gutter: clamp(16px, 3vw, 40px);
+  --ease: cubic-bezier(.16, 1, .3, 1);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { background: var(--enamel); -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--enamel); color: var(--on-enamel); font: 400 16px/1.6 var(--display); }
+code, pre, button, input { font-family: inherit; }
+code { font-family: var(--mono); font-size: .9em; }
+::selection { background: var(--slip); color: var(--print); }
+a { color: inherit; text-decoration-color: var(--brass); text-underline-offset: .25em; }
+a:hover { color: var(--brass-hi); }
+:focus-visible { outline: 2px solid var(--brass-hi); outline-offset: 3px; }
+html { scrollbar-color: var(--brass) var(--hole); }
+
+/* ---------- Sign / nav ---------- */
+.sign {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 0 var(--gutter); height: 60px; border-bottom: 2px solid var(--brass);
+  background: var(--hole);
+}
+.sign .name {
+  font-weight: 800; font-stretch: 75%; letter-spacing: .14em; text-transform: uppercase; font-size: 17px;
+  text-decoration: none; color: var(--brass-hi); display: flex; align-items: center; gap: 12px;
+}
+.sign .name small { font-weight: 500; font-stretch: 100%; letter-spacing: .08em; color: var(--on-enamel-2); font-size: 12px; text-transform: none; }
+.sign nav { display: flex; gap: 4px; }
+.sign nav a {
+  text-decoration: none; font-size: 14px; font-weight: 600; letter-spacing: .02em;
+  padding: 8px 12px; border-radius: 4px; color: var(--on-enamel);
+}
+.sign nav a:hover { background: var(--enamel-2); color: var(--brass-hi); }
+
+/* ---------- Counter (first viewport) ---------- */
+.counter {
+  position: relative; margin: clamp(18px, 2.4vw, 32px) var(--gutter) 0;
+  border: 2px solid var(--brass); border-radius: 8px;
+  background: var(--enamel);
+  display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: clamp(24px, 4vw, 64px);
+  padding: clamp(28px, 4vw, 56px);
+}
+.counter h1 {
+  margin: 0; font-weight: 800; font-stretch: 68%; text-transform: uppercase;
+  font-size: clamp(48px, 7.4vw, 108px); line-height: .9; letter-spacing: .005em; color: var(--brass-hi);
+}
+.counter .lede { margin: 20px 0 0; font-size: clamp(18px, 1.6vw, 22px); line-height: 1.5; max-width: 34ch; }
+.counter .fact { margin: 14px 0 0; color: var(--on-enamel-2); font-size: 15px; max-width: 46ch; }
+.install-line { margin-top: 28px; display: flex; flex-wrap: wrap; align-items: stretch; gap: 12px; }
+.cmd {
+  flex: 1 1 340px; min-width: 0; display: block;
+  font-family: var(--mono); font-size: 14px; line-height: 1.45;
+  background: var(--hole); color: var(--on-enamel); border: 1px solid var(--brass);
+  border-radius: 6px; padding: 12px 14px; white-space: normal; overflow-wrap: anywhere;
+}
+.cmd::before { content: "$ "; color: var(--brass); }
+.bell {
+  display: inline-flex; align-items: center; gap: 10px; cursor: pointer;
+  border: 0; border-radius: 6px; padding: 0 18px; min-height: 48px;
+  background: var(--brass); color: var(--brass-ink); font-weight: 800; font-size: 15px; letter-spacing: .04em;
+  transition: background-color .2s var(--ease);
+}
+.bell:hover { background: var(--brass-hi); }
+.bell i { position: relative; width: 22px; height: 16px; display: inline-block; }
+.bell i::before { content: ""; position: absolute; left: 1px; right: 1px; bottom: 3px; height: 11px; border-radius: 11px 11px 2px 2px; background: currentColor; }
+.bell i::after { content: ""; position: absolute; left: -1px; right: -1px; bottom: 0; height: 3px; border-radius: 2px; background: currentColor; }
+.bell.rang i { animation: ring .6s var(--ease); }
+@keyframes ring { 20% { transform: rotate(-14deg); } 45% { transform: rotate(10deg); } 70% { transform: rotate(-5deg); } }
+.after-install { margin: 12px 0 0; font-size: 13px; color: var(--on-enamel-2); }
+
+/* the slip */
+.slip-holder { position: relative; align-self: start; }
+.slip {
+  position: relative; background: var(--slip); color: var(--print);
+  border-radius: 3px; padding: 22px 24px 20px; transform: rotate(1.4deg);
+  box-shadow: 0 18px 30px -12px rgba(0, 0, 0, .55), 0 2px 4px rgba(0, 0, 0, .25);
+  background-image: radial-gradient(circle at 8px 0, var(--enamel) 4px, transparent 4.5px);
+  background-size: 22px 8px; background-repeat: repeat-x;
+}
+.slip.enter { animation: slipOut .9s var(--ease) both; }
+@keyframes slipOut { from { transform: translateY(-46px) rotate(-3deg); opacity: 0; } }
+.slip header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-bottom: 2px solid var(--print); padding-bottom: 8px; }
+.slip header h2 { margin: 0; font-weight: 900; font-stretch: 72%; font-size: 30px; letter-spacing: .02em; text-transform: uppercase; line-height: 1; }
+.slip header small { font-size: 12px; font-weight: 600; letter-spacing: .1em; }
+.slip .row { display: grid; grid-template-columns: 74px 1fr; align-items: end; gap: 10px; margin-top: 10px; font-size: 12px; font-weight: 700; letter-spacing: .1em; }
+.slip .row .val { border-bottom: 1px solid var(--print); font-family: var(--mono); font-weight: 400; letter-spacing: 0; color: var(--typed); font-size: 14px; padding-bottom: 1px; min-width: 0; }
+.slip .row.two { grid-template-columns: 74px 1fr 50px 1fr; }
+.checks { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; margin: 14px 0 6px; font-size: 11.5px; font-weight: 700; letter-spacing: .08em; }
+.checks span { display: flex; align-items: center; gap: 8px; }
+.checks i { width: 13px; height: 13px; border: 1.5px solid var(--print); position: relative; flex: none; }
+.checks .on i::after { content: ""; position: absolute; left: 3px; top: -3px; width: 5px; height: 10px; border: solid var(--typed); border-width: 0 2.5px 2.5px 0; transform: rotate(40deg); }
+.slip .msg-h { margin: 12px 0 4px; font-size: 12px; font-weight: 800; letter-spacing: .14em; }
+.msg {
+  font-family: var(--mono); color: var(--typed); font-size: 13.5px; line-height: 24px;
+  background-image: linear-gradient(transparent 23px, rgba(138, 26, 61, .35) 23px);
+  background-size: 100% 24px; margin: 0; padding: 0;
+}
+.msg dt { font-weight: 700; }
+.msg dd { margin: 0 0 0 0; }
+.msg dd + dt { margin-top: 0; }
+.slip .sig { display: flex; justify-content: space-between; margin-top: 10px; font-size: 12px; font-weight: 700; letter-spacing: .1em; }
+.slip .sig em { font-style: normal; font-family: var(--mono); color: var(--typed); font-weight: 400; letter-spacing: 0; }
+.example-note { margin: 10px 4px 0; font-size: 12.5px; color: var(--on-enamel-2); text-align: right; }
+
+/* ---------- CRT terminal ---------- */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.crt-wrap { padding: clamp(56px, 8vw, 112px) var(--gutter) 0; }
+.crt {
+  max-width: 1080px; margin: 0 auto; padding: clamp(14px, 2.4vw, 30px) clamp(14px, 2.4vw, 30px) 12px;
+  background: linear-gradient(180deg, #3a3832, #2a2924); border-radius: 26px;
+  box-shadow: 0 30px 60px -24px rgba(0, 0, 0, .7), inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+.screen {
+  position: relative; overflow: hidden; border-radius: 18px / 22px;
+  background: #0c100f;
+  box-shadow: inset 0 0 0 2px #050706, inset 0 0 40px rgba(0, 0, 0, .9);
+}
+/* scanlines and an eased vignette over the glass */
+.screen::before, .screen::after { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.screen::after { background: repeating-linear-gradient(180deg, rgba(0, 0, 0, 0) 0 2px, rgba(0, 0, 0, .15) 2px 3px); }
+.screen::before {
+  background: radial-gradient(ellipse at center,
+    rgba(0,0,0,0) 0%, rgba(0,0,0,0) 55%, rgba(0,0,0,.02) 61%, rgba(0,0,0,.07) 67%, rgba(0,0,0,.15) 73%,
+    rgba(0,0,0,.25) 79%, rgba(0,0,0,.35) 85%, rgba(0,0,0,.43) 91%, rgba(0,0,0,.48) 100%);
+}
+.term {
+  position: relative; z-index: 1; font-family: var(--mono); color: #dcdccf;
+  font-size: clamp(9.5px, 1.25vw, 14px); line-height: 1.5; padding: 2em 1.6em 1.6em;
+  filter: brightness(1.3) saturate(1.25);
+  text-shadow: 0 0 .35em rgba(220, 220, 200, .35);
+  height: clamp(340px, 46vw, 560px); display: flex; flex-direction: column;
+  white-space: pre; overflow: hidden;
+}
+.term .c { display: inline-block; width: 1ch; text-align: center; font-style: normal; }
+.log { flex: 1; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+.log .l { min-height: 1.5em; }
+.log .dim, .status .dim { color: #85897e; text-shadow: none; }
+.log .user { background: rgba(255, 255, 255, .07); color: #f0efe6; }
+.log .user::before { content: "> "; color: #85897e; }
+.log .ok { color: #79c27e; }
+.log .orange { color: #ea8933; text-shadow: 0 0 .35em rgba(234, 137, 51, .45); }
+.log .b { font-weight: 700; }
+.input {
+  margin-top: .6em; border: 1px solid #5d6159; border-radius: .5em; padding: .35em .9em;
+  color: #f0efe6; min-height: 2.3em;
+}
+.input::before { content: "> "; color: #85897e; }
+.cursor { display: inline-block; width: .6em; height: 1.1em; vertical-align: -.2em; background: #dcdccf; animation: caret 1s steps(1) infinite; }
+@keyframes caret { 50% { opacity: 0; } }
+.status { margin-top: .5em; padding-left: .3em; min-height: 1.5em; }
+.status b { font-weight: 700; color: #f0efe6; }
+.crt-foot {
+  display: flex; align-items: center; justify-content: center; gap: 10px; padding-top: 10px;
+  font-size: 11px; font-weight: 700; letter-spacing: .2em; color: #8f8a7b;
+}
+.crt-foot .led { width: 7px; height: 7px; border-radius: 50%; background: #79c27e; box-shadow: 0 0 6px #79c27e; }
+@media (prefers-reduced-motion: no-preference) {
+  .screen { animation: flicker 6s infinite; }
+  @keyframes flicker { 0%, 100% { filter: brightness(1); } 48% { filter: brightness(1); } 50% { filter: brightness(1.06); } 52% { filter: brightness(.98); } }
+}
+
+/* ---------- Sections ---------- */
+section.part { padding: clamp(64px, 9vw, 128px) var(--gutter) 0; }
+.part > header { max-width: 1100px; margin: 0 auto clamp(28px, 4vw, 48px); display: grid; grid-template-columns: 1fr; gap: 12px; }
+.part h2 {
+  margin: 0; font-weight: 800; font-stretch: 70%; text-transform: uppercase; color: var(--brass-hi);
+  font-size: clamp(34px, 4.6vw, 64px); line-height: .95; letter-spacing: .01em; text-wrap: balance;
+}
+.part > header p { margin: 0; max-width: 62ch; font-size: 18px; color: var(--on-enamel-2); }
+.part > header p b { color: var(--on-enamel); font-weight: 600; }
+.part .inner { max-width: 1100px; margin: 0 auto; }
+
+/* recall */
+.asks { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 22px; }
+.ask {
+  border: 1px solid var(--brass); background: transparent; color: var(--on-enamel);
+  border-radius: 999px; padding: 9px 16px; font-size: 15px; cursor: pointer; text-align: left;
+  transition: background-color .2s var(--ease), color .2s var(--ease);
+}
+.ask:hover { background: var(--enamel-2); }
+.ask[aria-pressed="true"] { background: var(--brass); color: var(--brass-ink); font-weight: 600; }
+.desk { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: clamp(20px, 3vw, 40px); align-items: start; }
+.stubs { display: grid; gap: 12px; min-height: 260px; align-content: start; }
+.stub {
+  position: relative; background: var(--stub); color: var(--stub-ink); border-radius: 3px;
+  padding: 14px 18px 14px 96px; font-size: 15px; line-height: 1.5;
+  box-shadow: 0 10px 18px -10px rgba(0, 0, 0, .6);
+  border-left: 0; animation: stubIn .5s var(--ease) both;
+}
+.stub:nth-child(2) { animation-delay: .08s; } .stub:nth-child(3) { animation-delay: .16s; }
+@keyframes stubIn { from { opacity: 0; transform: translateY(8px); } }
+.stub::before {
+  content: ""; position: absolute; left: 82px; top: 8px; bottom: 8px;
+  border-left: 2px dashed rgba(27, 36, 34, .25);
+}
+.stub .tag {
+  position: absolute; left: 14px; top: 14px; font-family: var(--mono); font-size: 13px; font-weight: 700;
+  padding: 2px 6px; border-radius: 3px; background: var(--enamel); color: var(--on-enamel);
+}
+.stub .tag.near { background: transparent; color: var(--enamel); border: 1.5px dashed var(--enamel); }
+.stub .meta { display: block; font-size: 12.5px; color: #4d5b57; margin-bottom: 2px; font-family: var(--mono); }
+.stub q { quotes: "“" "”"; }
+.stub.miss { background: var(--miss); color: #fff; }
+.stub.miss .tag { background: #fff; color: var(--miss); }
+.stub.miss::before { border-color: rgba(255, 255, 255, .45); }
+.stub.miss .meta { color: #ffe3df; }
+.legend { list-style: none; margin: 0; padding: 18px; border: 1px solid var(--brass); border-radius: 6px; font-size: 14px; }
+.legend li { display: grid; grid-template-columns: 64px 1fr; gap: 10px; align-items: start; padding: 8px 0; border-bottom: 1px solid rgba(202, 162, 76, .25); }
+.legend li:last-child { border-bottom: 0; }
+.legend .sw { font-family: var(--mono); font-size: 12px; font-weight: 700; text-align: center; padding: 2px 0; border-radius: 3px; }
+.legend h3 { margin: 0 0 6px; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--brass-hi); }
+
+/* measured ledger */
+.ledger { width: 100%; border-collapse: collapse; font-size: 15.5px; }
+.ledger th {
+  text-align: left; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--brass-hi);
+  padding: 0 14px 10px; border-bottom: 2px solid var(--brass);
+}
+.ledger td { padding: 16px 14px; border-bottom: 1px solid rgba(202, 162, 76, .3); vertical-align: top; }
+.ledger td.no { font-family: var(--mono); color: var(--on-enamel-2); width: 56px; }
+.ledger td.was, .ledger td.now { font-family: var(--mono); white-space: nowrap; width: 1%; }
+.ledger td.was { color: var(--on-enamel-2); text-decoration: line-through; text-decoration-color: var(--miss); }
+.ledger td.now { color: var(--brass-hi); font-weight: 700; font-size: 18px; }
+.ledger td small { display: block; color: var(--on-enamel-2); font-size: 13.5px; margin-top: 4px; }
+.ledger tbody tr:hover td { background: rgba(255, 255, 255, .03); }
+
+/* duties */
+.duties { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 2px solid var(--brass); }
+.duty { padding: 22px 20px 24px; border-right: 1px solid rgba(202, 162, 76, .3); }
+.duty:last-child { border-right: 0; }
+.duty h3 { margin: 0 0 4px; font-weight: 800; font-stretch: 75%; text-transform: uppercase; font-size: 24px; letter-spacing: .02em; }
+.duty .hook { font-family: var(--mono); font-size: 12.5px; color: var(--brass-hi); display: block; margin-bottom: 12px; }
+.duty p { margin: 0; color: var(--on-enamel-2); font-size: 15px; }
+.statusline {
+  margin: clamp(28px, 4vw, 44px) 0 0; padding: 14px 16px; border-radius: 6px; background: var(--hole);
+  font-family: var(--mono); font-size: clamp(12px, 1.25vw, 15px); white-space: pre; overflow-x: auto; color: #b9aca0;
+}
+.statusline .face { color: #e8893a; } .statusline .bar { color: #b9aca0; } .statusline .fill { color: #e8893a; }
+.statusline .mark { color: #f1e6c8; } .statusline .yel { color: #e9c14a; }
+.caption { margin: 8px 0 0; font-size: 13.5px; color: var(--on-enamel-2); }
+
+/* travels with the folder */
+.folder { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(24px, 4vw, 56px); align-items: center; }
+.tree {
+  margin: 0; font-family: var(--mono); font-size: 15px; line-height: 1.6; white-space: pre; overflow-x: auto;
+  background: var(--hole); border-radius: 6px; padding: 20px 22px; color: var(--on-enamel-2);
+}
+.tree b { color: var(--on-enamel); font-weight: 700; }
+.tree em { font-style: normal; color: var(--brass-hi); }
+.points { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
+.points li { padding-left: 22px; position: relative; color: var(--on-enamel-2); }
+.points li::before { content: ""; position: absolute; left: 0; top: .55em; width: 10px; height: 10px; border-radius: 2px; background: var(--brass); }
+.points b { color: var(--on-enamel); font-weight: 600; }
+
+/* install */
+.install-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: clamp(24px, 4vw, 56px); }
+.steps { margin: 0; padding: 0; list-style: none; counter-reset: s; display: grid; gap: 18px; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 44px 1fr; gap: 12px; }
+.steps li::before {
+  content: counter(s); display: grid; place-items: center; width: 36px; height: 36px; border-radius: 3px;
+  background: linear-gradient(180deg, var(--brass-hi), var(--brass)); color: var(--brass-ink);
+  font-weight: 800; font-stretch: 70%; font-size: 18px;
+}
+.steps h3 { margin: 4px 0 8px; font-size: 18px; font-weight: 700; }
+.steps p { margin: 0 0 10px; color: var(--on-enamel-2); }
+.block {
+  position: relative; margin: 0; font-family: var(--mono); font-size: 13.5px; line-height: 1.55;
+  background: var(--hole); border: 1px solid rgba(202, 162, 76, .5); border-radius: 6px;
+  padding: 12px 84px 12px 14px; white-space: pre; overflow-x: auto; color: var(--on-enamel);
+}
+.copy {
+  position: absolute; top: 8px; right: 8px; font-size: 12px; font-weight: 700; letter-spacing: .06em;
+  border: 1px solid var(--brass); background: transparent; color: var(--brass-hi); border-radius: 4px;
+  padding: 5px 9px; cursor: pointer;
+}
+.copy:hover { background: var(--brass); color: var(--brass-ink); }
+.copy.done { background: var(--slip); border-color: var(--slip); color: var(--print); }
+.reqs { border: 1px solid var(--brass); border-radius: 6px; padding: 20px 22px; }
+.reqs h3 { margin: 0 0 10px; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--brass-hi); }
+.reqs ul { margin: 0 0 18px; padding-left: 18px; color: var(--on-enamel-2); }
+.reqs li { margin-bottom: 4px; }
+.reqs li b { color: var(--on-enamel); font-weight: 600; }
+
+footer.foot {
+  margin-top: clamp(72px, 10vw, 140px); padding: 28px var(--gutter) 36px; border-top: 2px solid var(--brass);
+  background: var(--hole); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px 32px;
+  font-size: 14px; color: var(--on-enamel-2);
+}
+footer.foot a { color: var(--on-enamel); }
+
+@media (prefers-reduced-motion: reduce) {
+  .slip.enter, .stub, .bell.rang i { animation: none; }
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width: 1080px) {
+  .counter { grid-template-columns: minmax(0, 1fr); }
+  .slip-holder { margin-top: 0; max-width: 560px; }
+  .desk, .install-grid, .folder { grid-template-columns: minmax(0, 1fr); }
+  .duties { grid-template-columns: 1fr 1fr; }
+  .duty:nth-child(2) { border-right: 0; }
+  .duty:nth-child(-n+2) { border-bottom: 1px solid rgba(202, 162, 76, .3); }
+}
+@media (max-width: 640px) {
+  .sign { height: auto; padding-top: 12px; padding-bottom: 12px; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .sign nav { flex-wrap: wrap; margin-left: -12px; }
+  .sign nav a { padding: 6px 12px; }
+  .counter { padding: 24px 18px; }
+  .slip { padding: 18px 16px 16px; }
+  .slip header h2 { font-size: 24px; }
+  .checks { grid-template-columns: 1fr; }
+  .slip .row.two { grid-template-columns: 54px 1fr; }
+  .slip .row { grid-template-columns: 54px 1fr; }
+  .stub { padding: 44px 16px 14px; }
+  .stub::before { display: none; }
+  .duties { grid-template-columns: 1fr; }
+  .duty { border-right: 0; border-bottom: 1px solid rgba(202, 162, 76, .3); }
+  .ledger thead { display: none; }
+  .ledger, .ledger tbody, .ledger tr, .ledger td { display: block; width: auto; }
+  .ledger tr { padding: 14px 0; border-bottom: 1px solid rgba(202, 162, 76, .3); }
+  .ledger td { border: 0; padding: 2px 0; white-space: normal; }
+  .ledger td.was::before { content: "was "; text-decoration: none; display: inline-block; margin-right: 6px; }
+  .ledger td.now::before { content: "now "; font-weight: 400; font-size: 14px; color: var(--on-enamel-2); margin-right: 6px; }
+}
+</style>
+</head>
+<body>
+
+<header class="sign">
+  <a class="name" href="#top" id="top">The Secretary <small>local memory for Claude Code</small></a>
+  <nav aria-label="Sections">
+    <a href="#recall">Recall</a>
+    <a href="#measured">Measured</a>
+    <a href="#how">How it works</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/microbians/AI.SKILLS/tree/main/plugins/secretary">GitHub</a>
+  </nav>
+</header>
+
+<main>
+  <section class="counter" aria-labelledby="h1">
+    <div>
+      <h1 id="h1">While you were out, it took notes.</h1>
+      <p class="lede">The Secretary is a local memory for Claude Code. It keeps every conversation word for word and leaves a handoff for your next session, so you never explain the same thing twice.</p>
+      <p class="fact">It runs on a local LLM on your own machine. No conversation leaves it.</p>
+      <div class="install-line">
+        <code class="cmd" id="install-cmd">git clone https://github.com/microbians/AI.SKILLS.git &amp;&amp; bash AI.SKILLS/plugins/secretary/install.sh</code>
+        <button class="bell" type="button" data-copy="install-cmd" aria-label="Copy the install command"><i aria-hidden="true"></i><span>Copy</span></button>
+      </div>
+      <p class="after-install">macOS or Linux · Node 18+ · MLX or llama.cpp · MIT license. <a href="#install">Full install steps</a></p>
+    </div>
+    <div class="slip-holder">
+      <article class="slip" id="slip" aria-live="polite" aria-label="Handoff note"></article>
+      <p class="example-note">Example handoff. Yours is written from your own session.</p>
+    </div>
+  </section>
+
+  <section class="crt-wrap" aria-labelledby="crt-h">
+    <h2 id="crt-h" class="sr-only">A simulated Claude Code session with The Secretary</h2>
+    <p class="sr-only">The animation shows a session that starts with the previous handoff restored, a recall question answered from memory, a note saved, the context filling up until the status line turns yellow and then red, and a fresh start with the memory recovered.</p>
+    <div class="crt" aria-hidden="true">
+      <div class="screen">
+        <div class="term">
+          <div class="log" id="log"></div>
+          <div class="input"><span class="caret-line" id="typed"></span><span class="cursor"></span></div>
+          <div class="status" id="status"></div>
+        </div>
+      </div>
+      <div class="crt-foot"><span class="led"></span>THE SECRETARY · SIMULATED SESSION</div>
+    </div>
+  </section>
+
+  <section class="part" id="recall" aria-labelledby="recall-h">
+    <header>
+      <h2 id="recall-h">Ask “do you remember…?”</h2>
+      <p>Ask in plain words, in English or Spanish. The Secretary searches what was <b>literally said</b> and what was <b>said with other words</b>, then hands Claude the matching turns before it answers. No command to run.</p>
+    </header>
+    <div class="inner">
+      <div class="asks" role="group" aria-label="Example questions">
+        <button class="ask" type="button" data-ask="0" aria-pressed="true">Do you remember the aspect ratio fix?</button>
+        <button class="ask" type="button" data-ask="1" aria-pressed="false">The site I said was similar to Linear?</button>
+        <button class="ask" type="button" data-ask="2" aria-pressed="false">Do you remember the Kafka migration?</button>
+      </div>
+      <div class="desk">
+        <div class="stubs" id="stubs" aria-live="polite"></div>
+        <ul class="legend" aria-label="What each tag means">
+          <li><span class="sw" style="background:var(--on-enamel);color:var(--enamel)">[said]</span><span>Your own words, found literally.</span></li>
+          <li><span class="sw" style="background:var(--on-enamel);color:var(--enamel)">[turn]</span><span>Claude’s answer, found literally.</span></li>
+          <li><span class="sw" style="border:1.5px dashed var(--on-enamel)">[said~]</span><span>Found by meaning. Similar wording exists; it is a lead, not proof.</span></li>
+          <li><span class="sw" style="background:var(--miss);color:#fff">none</span><span>No literal hit means it was never said in this project.</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="part" id="measured" aria-labelledby="measured-h">
+    <header>
+      <h2 id="measured-h">Every rule was measured on real sessions.</h2>
+      <p>A small local model asked to summarize will happily turn a search into an achievement. Each fix below started as a number, measured on stored sessions from the <a href="https://github.com/microbians/AI.SKILLS/blob/main/plugins/secretary/README.md">changelog</a>.</p>
+    </header>
+    <div class="inner">
+      <table class="ledger">
+        <thead><tr><th>No.</th><th>What went wrong</th><th>Was</th><th>Now</th></tr></thead>
+        <tbody>
+          <tr><td class="no">01</td><td>Handoffs named files nobody touched.<small>Better model, then a files-touched list read from the session itself.</small></td><td class="was">26 paths</td><td class="now">0 paths</td></tr>
+          <tr><td class="no">02</td><td>The end-of-session handoff read only the last unread lines.<small>It now reads the whole session.</small></td><td class="was">112 chars</td><td class="now">15,755 chars</td></tr>
+          <tr><td class="no">03</td><td>Recognizing “remember this” and “forget that”.<small>gemma-4-26B-A4B replaced Qwen2.5-7B on machines with 48 GB or more.</small></td><td class="was">60%</td><td class="now">90%</td></tr>
+          <tr><td class="no">04</td><td>Summaries stuck in a repetition loop.<small>304 of 29,373 stored summaries. 42 kept their clean part, 262 were discarded.</small></td><td class="was">~1% stored</td><td class="now">detected</td></tr>
+          <tr><td class="no">05</td><td>Question-and-answer turns with no tool call were never indexed.<small>One 7-minute stretch had lost 9 of 11 turns.</small></td><td class="was">9 of 11 lost</td><td class="now">all indexed</td></tr>
+          <tr><td class="no">06</td><td>Searching by meaning alone missed exact names.<small>For a bare identifier, vectors recovered 0 of 17 occurrences, so word search and meaning search now run together.</small></td><td class="was">0 of 17</td><td class="now">17 of 17</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="part" id="how" aria-labelledby="how-h">
+    <header>
+      <h2 id="how-h">Four duties, all automatic.</h2>
+      <p>The Secretary is a set of Claude Code hooks. You keep working as usual; it does its rounds.</p>
+    </header>
+    <div class="inner">
+      <div class="duties">
+        <div class="duty"><h3>Check-in</h3><span class="hook">SessionStart</span><p>The latest handoff comes first, then the newest items and the end of the session you just left, word for word.</p></div>
+        <div class="duty"><h3>During the stay</h3><span class="hook">PostToolUse</span><p>Every turn is indexed verbatim, screenshots included. Every 15 tool calls the conversation is summarized.</p></div>
+        <div class="duty"><h3>When you ask</h3><span class="hook">UserPromptSubmit</span><p>“Remember that…”, “forget…”, “do you remember…?” are caught and acted on before Claude replies.</p></div>
+        <div class="duty"><h3>Check-out</h3><span class="hook">Stop</span><p>A handoff: what was done, what is broken or untested, the next step, the rules you repeated, the files touched.</p></div>
+      </div>
+      <pre class="statusline" aria-label="Status line example"><span class="face">( ∵ᴖ ᴗ ᴖ∵ )</span> Secretary <span class="fill">█</span><span class="bar">░░░░░░░</span><span class="mark">│</span><span class="bar">░░░░░░░░</span>   56K/500K · Opus 5.5 medium · <span class="fill">█</span>░░░░ 12% <span class="yel">▒▓██</span>░ 78% · work</pre>
+      <p class="caption">The status line: a desk clerk who blinks, the context used against the trim limit, the model, and your plan usage.</p>
+    </div>
+  </section>
+
+  <section class="part" aria-labelledby="folder-h">
+    <header>
+      <h2 id="folder-h">The memory travels with the folder.</h2>
+    </header>
+    <div class="inner folder">
+<pre class="tree"><b>my-project/</b>
+├── src/
+├── package.json
+└── .claude/
+    └── <em>the-secretary/</em>
+        ├── <b>summaries.db</b>  every turn + index
+        ├── bullets.md    summaries
+        ├── images/       screenshots
+        └── .gitignore    *</pre>
+      <ul class="points">
+        <li><b>Inside the project.</b> Copy or sync the folder and the next session there picks up the same memory.</li>
+        <li><b>Never pushed by default.</b> The folder ignores itself, so no repository commits your conversations.</li>
+        <li><b>Kept past the 30 days.</b> Claude Code deletes old transcripts; the index keeps them.</li>
+        <li><b>One flat index.</b> A fact, a note and a reminder are the same thing: found by what they say, not by a category.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="part" id="install" aria-labelledby="install-h">
+    <header>
+      <h2 id="install-h">Install at the front desk.</h2>
+      <p>One script sets up the hooks, the skill, the dependencies and the model. It keeps an existing status line or config of yours.</p>
+    </header>
+    <div class="inner install-grid">
+      <ol class="steps">
+        <li><div><h3>Install a model backend</h3><p>MLX on Apple Silicon, llama.cpp anywhere else. With a Claude Max subscription you can use the <code>claude_cli</code> provider and skip this.</p>
+<pre class="block" id="b1">pip install mlx-lm        # Apple Silicon
+brew install llama.cpp    # any platform<button class="copy" type="button" data-copy="b1">COPY</button></pre></div></li>
+        <li><div><h3>Run the installer</h3><p>The model is sized to your RAM and downloaded on first run.</p>
+<pre class="block" id="b2">git clone https://github.com/microbians/AI.SKILLS.git
+cd AI.SKILLS/plugins/secretary
+bash install.sh<button class="copy" type="button" data-copy="b2">COPY</button></pre></div></li>
+        <li><div><h3>Index past sessions (optional)</h3><p>From each project root, backfill what Claude Code still has on disk. After that, every session start keeps it current.</p>
+<pre class="block" id="b3">node ~/.claude/the-secretary/summarize.mjs index-turns
+node ~/.claude/the-secretary/summarize.mjs index-vectors<button class="copy" type="button" data-copy="b3">COPY</button></pre></div></li>
+      </ol>
+      <div class="reqs">
+        <h3>Requirements</h3>
+        <ul>
+          <li><b>macOS or Linux</b></li>
+          <li><b>Node.js</b> 18 or newer</li>
+          <li><b>Claude Code</b> CLI</li>
+          <li><b>1–15 GB</b> of disk for the model, chosen by RAM (none with <code>claude_cli</code>)</li>
+        </ul>
+        <h3>Search by meaning</h3>
+        <ul>
+          <li>Optional. Needs a small Python venv with <code>mlx-embeddings</code>. Without it, search stays literal and nothing breaks.</li>
+        </ul>
+        <h3>Uninstall</h3>
+<pre class="block" id="b4">bash install.sh --uninstall<button class="copy" type="button" data-copy="b4">COPY</button></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <span>The Secretary · MIT license · part of <a href="https://github.com/microbians/AI.SKILLS">AI.SKILLS</a></span>
+  <span>Set in Archivo and <a href="../../fonts/">Meslo Code</a></span>
+</footer>
+
+<script>
+const SLIP = {
+  for: "web", date: "Fri 6 Nov", time: "09:15", checks: ["SESSION ENDED", "PLEASE CALL BACK"],
+  notes: [
+    ["Accomplished", "Totals are rounded once, in lib/money.ts. The one-cent double-rounding bug is gone from both carts."],
+    ["Current state", "Applying a coupon still flashes the old total for ~300 ms. Not fixed."],
+    ["Next step", "Read useCartTotals: it computes the totals a second time."],
+    ["Open question", "Show EU prices with tax included? Waiting on you."],
+  ],
+};
+const CHECKS = ["SESSION ENDED", "PLEASE CALL BACK", "WILL RESUME", "URGENT"];
+
+const ASKS = [
+  [
+    ["said", "2026-10-12 · web", "“The thumbnails come out squashed. Keep 16:9 even when the source is 4:3.”"],
+    ["turn", "2026-10-12 · web", "Fixed in thumb.ts: fit the image inside 16:9 and pad the sides instead of stretching it."],
+    ["said", "2026-10-14 · web", "“The aspect ratio fix works on mobile too, thanks.”"],
+  ],
+  [
+    ["near", "2026-09-30 · design", "“I want the board to feel like Linear’s, quiet and dense.”", "Found by meaning: the question said “similar to”, the turn said “feel like”."],
+    ["turn", "2026-09-30 · design", "Reduced row height to 32px and moved the filters into a single toolbar."],
+  ],
+  [
+    ["miss", "this project", "No [said] or [turn] hit for “Kafka”. It was never discussed here, so Claude is told so instead of guessing."],
+  ],
+];
+
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// Slip
+const slip = document.getElementById("slip");
+function showSlip(s) {
+  slip.innerHTML = `
+    <header><h2>While you were out</h2><small>THE SECRETARY</small></header>
+    <div class="row"><span>FOR</span><span class="val">${esc(s.for)}</span></div>
+    <div class="row two"><span>DATE</span><span class="val">${esc(s.date)}</span><span>TIME</span><span class="val">${esc(s.time)}</span></div>
+    <div class="checks">${CHECKS.map(c => `<span class="${s.checks.includes(c) ? "on" : ""}"><i></i>${c}</span>`).join("")}</div>
+    <p class="msg-h">MESSAGE</p>
+    <dl class="msg">${s.notes.map(([k, v]) => `<dt>${esc(k)}:</dt><dd>${esc(v)}</dd>`).join("")}</dl>
+    <div class="sig"><span>TAKEN BY</span><em>The Secretary · handoff</em></div>`;
+  slip.classList.add("enter");
+}
+showSlip(SLIP);
+
+// ---------- Simulated Claude Code session ----------
+// Status line ported from summarize.mjs (statusBar, secretaryFace, handoffStatus);
+// the gag/blink intervals are shortened so the face acts within the loop.
+const PALETTE = { face: "#ea8933", ok: "#a5a388", warn: "#eca344", alert: "#cf4722", track: "#4a533f", mark: "#d6d5c0" };
+const face = (e, m, e2 = e) => `( ∵${e} ${m} ${e2}∵ )`;
+const FACE = face("•", "ᴗ"), BLINK = face("-", "ᴗ"), WINK = face("•", "ᴗ", "-");
+const HAPPY = [face("◉", "◡"), face("⨀", "◡")];
+const GAGS = [
+  [face("◉", "ᴗ"), face("⨀", "ᴗ"), face("●", "◦"), face("⌾", "◦"), face("⌾", "ᴗ")],
+  [face("ᴖ", "⩌"), face("❯", "◡", "❮"), face("╾", "◡", "╼"), face("ᴖ", "⩌")],
+  [face("╾", "⌓", "╼"), face("❯", "⁔", "❮"), face("╾", "⁔", "╼"), face("⦿", "⁔")],
+  [face("⌽", "o"), face("❉", "◡"), face("◉", "◡"), face("⨀", "o")],
+  [face("U", "◡"), face("-", "ʚ"), face("◍", "ʚ"), face("U", "◡")],
+  [face("◐", "ᴗ"), face("◐", "ᴗ"), face("◑", "ᴗ"), face("◑", "ᴗ"), face("•", "◦")],
+  [face("-", "o"), face("-", "O"), face("-", "O"), face("-", "ᴗ"), face("-", "ᴗ")],
+];
+const MOODS = {
+  warn: { face: face("•", "~"), blink: face("-", "~"), gag: [face("◐", "~"), face("◑", "~"), face("◐", "~"), face("◑", "~"), face("°", "~")] },
+  alert: { face: face("╾", "⁔", "╼"), blink: face("-", "⁔"), gag: GAGS[2] },
+};
+const GAG_EVERY = 14, HAPPY_EVERY = 11, WINK_EVERY = 8, BLINK_EVERY = 5, MOOD_GAG_EVERY = 9, MOOD_BLINK_EVERY = 4;
+function secretaryFace(s, level) {
+  const mood = MOODS[level];
+  if (mood) return mood.gag[s % MOOD_GAG_EVERY] || (s % MOOD_BLINK_EVERY === 0 ? mood.blink : mood.face);
+  const gag = GAGS[Math.floor(s / GAG_EVERY) % GAGS.length];
+  if (gag[s % GAG_EVERY]) return gag[s % GAG_EVERY];
+  if (s % HAPPY_EVERY === 0) return HAPPY[Math.floor(s / HAPPY_EVERY) % 2];
+  if (s % WINK_EVERY === WINK_EVERY / 2) return WINK;
+  if (s % BLINK_EVERY === 0) return BLINK;
+  return FACE;
+}
+
+// Characters Meslo Code lacks render from a fallback font inside a 1ch cell, so columns hold.
+const NARROW_FALLBACK = /[∵⨀⩌⁔⦿⏺⎿]/g;
+const cells = s => esc(s).replace(NARROW_FALLBACK, c => `<i class="c">${c}</i>`);
+const paint = (hex, text, bg) => `<span style="color:${hex}${bg ? `;background:${bg}` : ""}">${cells(text)}</span>`;
+function statusBar(fraction, n, color, mark = null) {
+  const filled = Math.min(n, Math.round(fraction * n));
+  const FADE = ["▒", "▓"];
+  const parts = Array.from({ length: n }, (_, i) => paint(color, i >= filled ? " " : FADE[i] || "█", PALETTE.track));
+  if (mark == null) return parts.join("");
+  const half = (g, i) => paint(PALETTE.mark, g, i < filled ? color : PALETTE.track);
+  return parts.slice(0, mark).join("") + half("▕", mark - 1) + half("▏", mark) + parts.slice(mark).join("");
+}
+
+const SIM = { window: 1000000, clear: 500000, warn: 375000 };
+const sim = { tokens: 0, five: 12, seven: 78, notice: "", noticeUntil: 0, sec: 0 };
+const statusEl = document.getElementById("status");
+const logEl = document.getElementById("log");
+const typedEl = document.getElementById("typed");
+const kilo = n => `${Math.round(n / 1000)}K`;
+const dim = t => `<span class="dim">${cells(t)}</span>`;
+
+function renderStatus() {
+  const level = sim.tokens >= SIM.clear ? "alert" : sim.tokens >= SIM.warn ? "warn" : "ok";
+  const color = PALETTE[level];
+  const hint = sim.tokens >= SIM.clear ? " /resume 4f2a91c" : "";
+  const bar = statusBar(sim.tokens / SIM.window, 16, color, Math.round((SIM.clear / SIM.window) * 16));
+  const usage = [sim.five, sim.seven].map(p => {
+    const c = PALETTE[p >= 90 ? "alert" : p >= 75 ? "warn" : "ok"];
+    return `${statusBar(p / 100, 5, c)} ${p >= 75 ? paint(c, `${p}%`) : dim(`${p}%`)}`;
+  }).join(" ");
+  const parts = [`${bar}   ${paint(color, `${kilo(sim.tokens)}/${kilo(SIM.clear)}${hint}`)}`, dim("Opus 5.5 medium"), usage, dim("work")];
+  if (sim.notice && sim.sec < sim.noticeUntil) parts.push(cells(sim.notice));
+  statusEl.innerHTML = `${paint(PALETTE.face, secretaryFace(sim.sec, level))} <b>Secretary</b> ${parts.join(" · ")}`;
+}
+
+const LOG_MAX = 40;
+function line(html, cls = "") {
+  const d = document.createElement("div");
+  d.className = `l ${cls}`;
+  d.innerHTML = html;
+  logEl.append(d);
+  while (logEl.children.length > LOG_MAX) logEl.firstChild.remove();
+}
+const say = (text, cls) => line(cells(text), cls);
+
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const wait = ms => new Promise(r => setTimeout(r, reduce ? 0 : ms));
+async function type(text) {
+  for (let i = 1; i <= text.length; i++) { typedEl.textContent = text.slice(0, i); await wait(28 + Math.random() * 40); }
+  await wait(350);
+  typedEl.textContent = "";
+  say(text, "user");
+  line("");
+}
+async function grow(to, steps = 8) {
+  const from = sim.tokens;
+  for (let i = 1; i <= steps; i++) { sim.tokens = Math.round(from + (to - from) * i / steps); renderStatus(); await wait(140); }
+}
+function notice(text, seconds = 7) { sim.notice = text; sim.noticeUntil = sim.sec + seconds; renderStatus(); }
+
+async function session() {
+  logEl.innerHTML = "";
+  sim.tokens = 31000; sim.five = 12;
+  line(`${paint("#ea8933", "✻")} <b>Welcome to Claude Code</b>`);
+  say("  cwd: ~/code/web", "dim");
+  line("");
+  line(`${paint("#ea8933", "Session handoff — resume here")}`, "b");
+  say("  Accomplished: totals rounded once, in lib/money.ts.", "dim");
+  say("  Next step: read useCartTotals, it computes the totals twice.", "dim");
+  line("");
+  notice("☑ Memory recovered from Fri 6 Nov (24 items)");
+  await wait(2200);
+
+  await type("do you remember where we left the checkout bug?");
+  say("⎿ The Secretary: 3 matches [said] [turn]", "dim");
+  await grow(58000, 4);
+  say("⏺ Yes. Totals are rounded once in lib/money.ts. Still open: applying a");
+  say("  coupon flashes the old total for ~300 ms. Next step: useCartTotals.");
+  line("");
+  await wait(1800);
+
+  await type("ok, fix it");
+  line(`${paint("#79c27e", "⏺")} <b>Read</b>(src/hooks/useCartTotals.ts)`);
+  say("  ⎿  Read 214 lines", "dim");
+  await grow(96000);
+  line(`${paint("#79c27e", "⏺")} <b>Update</b>(src/hooks/useCartTotals.ts)`);
+  say("  ⎿  Updated with 4 additions and 11 removals", "dim");
+  await grow(118000, 4);
+  say("⏺ useCartTotals now reads the rounded total from lib/money.ts instead of");
+  say("  computing it again. The coupon no longer flashes.");
+  line("");
+  await wait(1600);
+
+  await type("remember that EU prices always show tax included");
+  say("⎿ The Secretary: saved", "dim");
+  say("⏺ Noted. EU prices show tax included.");
+  line("");
+  await wait(1400);
+
+  await type("run the whole e2e suite and fix whatever fails");
+  for (const [tool, arg, out, to] of [
+    ["Bash", "npm run test:e2e", "142 passed, 6 failed (1m 48s)", 236000],
+    ["Read", "e2e/checkout.spec.ts", "Read 612 lines", 288000],
+    ["Read", "e2e/fixtures/carts.json", "Read 2,408 lines", 352000],
+    ["Update", "e2e/checkout.spec.ts", "Updated with 9 additions and 9 removals", 398000],
+    ["Bash", "npm run test:e2e -- checkout", "48 passed (22s)", 446000],
+    ["Read", "playwright-report/index.html", "Read 3,920 lines", 531000],
+  ]) {
+    line(`${paint("#79c27e", "⏺")} <b>${tool}</b>(${esc(arg)})`);
+    say(`  ⎿  ${out}`, "dim");
+    sim.five = Math.min(31, sim.five + 3);
+    await grow(to, 6);
+    await wait(500);
+  }
+  say("⏺ All 148 e2e tests pass. The 6 failures expected the old double-rounded");
+  say("  totals; the fixtures now match lib/money.ts.");
+  line("");
+  await wait(3200);
+
+  await type("commit it");
+  say("⎿ The Secretary: context past the limit, trimming to the last topic…", "dim");
+  await wait(1400);
+  logEl.innerHTML = "";
+  sim.tokens = 0; renderStatus();
+  await wait(700);
+  sim.tokens = 214000;
+  line(`${paint("#ea8933", "✻")} <b>Claude Code</b> ${dim("resumed")}`);
+  line("");
+  line(`${paint("#ea8933", "Session handoff — resume here")}`, "b");
+  say("  Accomplished: useCartTotals fixed; 148/148 e2e tests pass.", "dim");
+  say("  Don't break: EU prices always show tax included.", "dim");
+  line("");
+  say("commit it", "user");
+  line("");
+  notice("☑ Memory recovered from today (31 items)");
+  line(`${paint("#79c27e", "⏺")} <b>Bash</b>(git commit -am "Round cart totals once")`);
+  say("  ⎿  [main 8c41d2e] Round cart totals once", "dim");
+  await grow(221000, 3);
+  await wait(6000);
+}
+
+let running = false;
+async function loop() {
+  if (running) return;
+  running = true;
+  if (reduce) { await session(); return; }
+  for (;;) await session();
+}
+setInterval(() => { sim.sec++; renderStatus(); }, 1000);
+renderStatus();
+const crt = document.querySelector(".crt");
+new IntersectionObserver((entries, obs) => {
+  if (entries.some(e => e.isIntersecting)) { loop(); obs.disconnect(); }
+}, { rootMargin: "200px" }).observe(crt);
+
+// Recall
+const stubs = document.getElementById("stubs");
+function showAsk(i) {
+  document.querySelectorAll("[data-ask]").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.ask === i)));
+  stubs.innerHTML = ASKS[i].map(([kind, meta, text, why]) => {
+    const tag = kind === "near" ? "said~" : kind === "miss" ? "none" : kind;
+    return `<div class="stub ${kind === "miss" ? "miss" : ""}"><span class="tag ${kind === "near" ? "near" : ""}">[${tag}]</span>`
+      + `<span class="meta">${esc(meta)}</span>${esc(text)}${why ? `<span class="meta" style="margin-top:6px">${esc(why)}</span>` : ""}</div>`;
+  }).join("");
+}
+document.querySelectorAll("[data-ask]").forEach(b => b.addEventListener("click", () => showAsk(+b.dataset.ask)));
+showAsk(0);
+
+// Copy
+document.querySelectorAll("[data-copy]").forEach(btn => btn.addEventListener("click", async () => {
+  const src = document.getElementById(btn.dataset.copy);
+  const text = [...src.childNodes].filter(n => n.nodeType === 3 || n.tagName !== "BUTTON").map(n => n.textContent).join("").trim();
+  const label = btn.querySelector("span") || btn;
+  try { await navigator.clipboard.writeText(text); label.textContent = btn.classList.contains("bell") ? "Copied" : "COPIED"; btn.classList.add("done", "rang"); }
+  catch { label.textContent = "Select it"; }
+  setTimeout(() => { label.textContent = btn.classList.contains("bell") ? "Copy" : "COPY"; btn.classList.remove("done", "rang"); }, 1600);
+}));
+</script>
+</body>
+</html>

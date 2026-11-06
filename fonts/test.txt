@@ -1,0 +1,25 @@
+Meslo Code — test sheet
+
+Arrows        ->  =>  <-  <=  >=  <->  <=>  -->  <--  ==>  <==  |>  <|  >>=  =<<
+Equality      ==  ===  !=  !==  =/=  :=  =:=  ::=
+Logic         &&  ||  !!  ??  ?.  ::  :::  ..  ...  ..<
+Comments      //  ///  /*  */  /**  #!  ##  ###  <!--  -->
+Brackets      <>  </  />  </>  {|  |}  [|  |]  ;;
+Math          ++  --  **  +=  -=  *=  /=  %=  ^=  <<  >>  <<<  >>>
+Other         www  0xFF  1_000  ~>  ~~>  #{  #[  #(  $>  <$  <$>  <*>
+
+Characters    0O 1lI| il1 rn m {[()]} ,.;: `'" ~^ @#$%&*
+Box           ┌─┬─┐ ├─┼─┤ └─┴─┘ │ ═ ║ ╔╗╚╝ ░▒▓█ ▲▼◆●
+
+Powerline                         
+Git / dev                     
+Files                         
+Status                        
+Logos                           
+
+Code sample
+
+function greet(name: string): string => {
+  if (name !== "" && name.length >= 2) return `Hello, ${name}!`;
+  return items?.map((x) => x * 2) ?? [];
+}

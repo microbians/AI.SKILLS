@@ -31,6 +31,9 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 │    - claude-launcher/        VS Code extension (Activity Bar +  │
 │                              Status Bar launcher for Claude)    │
 │                                                                 │
+│  fonts/                      Meslo Code: Menlo spacing +        │
+│                              ligatures + Nerd Fonts icons       │
+│                                                                 │
 │  claude-md/                  The global CLAUDE.md               │
 │                                                                 │
 │  boilerplate/                Project template + instructions    │
@@ -64,6 +67,8 @@ A collection of drop-in components that give AI agents persistent memory, safer 
 - [Tools](#tools)
   - [Microproxy](#microproxy)
   - [Claude Launcher](#claude-launcher)
+- [Fonts](#fonts)
+  - [Meslo Code](#meslo-code)
 - [OpenCode MLX](#opencode-mlx)
 - [Boilerplate](#boilerplate)
 - [Installation](#installation)
@@ -80,7 +85,7 @@ Change how Claude Code itself works: hooks that run on every session, an engine,
 
 ### TheSecretary
 
-> [`plugins/secretary/`](plugins/secretary/)
+> [`plugins/secretary/`](plugins/secretary/) · [landing page](https://microbians.github.io/AI.SKILLS/plugins/secretary/)
 
 Local LLM-powered conversation summarizer for Claude Code. Preserves context across `/clear` and session restarts using a small local model (Llama-3.2-3B-4bit, MLX), and auto-injects relevant past context when you ask "do you remember...?" (also "¿recuerdas...?" in Spanish).
 
@@ -488,6 +493,18 @@ VS Code extension that adds one-click launchers for Claude Code in the Activity 
 **Install:** `code --install-extension claude-terminal-launcher-0.1.0.vsix`
 
 **Requirements:** VS Code 1.85+, Claude Code CLI (`claude`) in PATH
+
+---
+
+## Fonts
+
+### Meslo Code
+
+> [`fonts/`](fonts/) · [landing page](https://microbians.github.io/AI.SKILLS/fonts/)
+
+A monospaced font for code: Meslo LG with Menlo's exact line spacing, Fira Code programming ligatures and the complete Nerd Fonts icon set (10,611 icons). Regular, Bold, Italic and Bold Italic, as desktop `.ttf` and web `.woff2` with a ready `@font-face` stylesheet. SIL Open Font License 1.1.
+
+**Install:** download [`fonts/MesloCode.zip`](fonts/MesloCode.zip) and install the four `.ttf` files. Editor, terminal and web setup in [`fonts/README.md`](fonts/README.md); `fonts/build/build.sh` rebuilds everything from pinned sources.
 
 ---
 
