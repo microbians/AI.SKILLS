@@ -75,7 +75,9 @@ html { scrollbar-color: var(--graphite-2) var(--film); }
 .titlebar {
   display: flex; align-items: stretch; justify-content: space-between;
   border-bottom: 1px solid var(--graphite);
+  position: sticky; top: 0; z-index: 10; background: var(--film);
 }
+html { scroll-padding-top: 64px; }
 .titlebar .mark {
   display: flex; align-items: center; gap: 12px;
   padding: 12px 18px; font-weight: 700; letter-spacing: .06em; text-decoration: none;
@@ -406,6 +408,7 @@ footer.foot a { color: var(--graphite); }
 }
 @media (max-width: 760px) {
   .titlebar { flex-direction: column; }
+  html { scroll-padding-top: 112px; }
   .titlebar .mark { border-right: 0; border-bottom: 1px solid var(--construct); }
   .titlebar nav { overflow-x: auto; }
   .titlebar nav a:first-child { border-left: 0; }
