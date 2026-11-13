@@ -1,0 +1,13 @@
+# AI.SKILLS
+
+> Drop-in components for AI coding agents (Claude Code) and the developer's environment: plugins, skills and a font. Source: https://github.com/microbians/AI.SKILLS
+
+## Pages
+
+- [CodeIndex](https://microbians.github.io/AI.SKILLS/plugins/code-index/index.md): Claude's index to your codebase — every class, function and method with file:line, signature and doc, so Claude finds code without searching it.
+- [The Secretary](https://microbians.github.io/AI.SKILLS/plugins/secretary/index.md): local memory for Claude Code — conversations kept verbatim, handoffs between sessions, recall by words and meaning.
+- [Meslo Code](https://microbians.github.io/AI.SKILLS/fonts/index.md): a monospaced font for code with Menlo's line spacing, Fira Code ligatures and Nerd Fonts icons.
+
+## Optional
+
+- [Repository README](https://microbians.github.io/AI.SKILLS/README.md): every plugin and skill in the collection.
