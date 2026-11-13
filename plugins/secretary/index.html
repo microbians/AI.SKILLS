@@ -87,6 +87,21 @@ html { scrollbar-color: var(--brass) var(--hole); }
   margin: 0; font-weight: 800; font-stretch: 68%; text-transform: uppercase;
   font-size: clamp(48px, 7.4vw, 108px); line-height: .9; letter-spacing: .005em; color: var(--brass-hi);
 }
+/* A golden glint across the headline (--x = its center, moved by script); eased band, parked off the text */
+.counter h1.glint {
+  --x: -40%; --g: #fff6dc;
+  color: transparent; -webkit-background-clip: text; background-clip: text;
+  background-image: linear-gradient(105deg,
+    var(--brass-hi) calc(var(--x) - 18%),
+    color-mix(in srgb, var(--g) 15.6%, var(--brass-hi)) calc(var(--x) - 13.5%),
+    color-mix(in srgb, var(--g) 50%, var(--brass-hi)) calc(var(--x) - 9%),
+    color-mix(in srgb, var(--g) 84.4%, var(--brass-hi)) calc(var(--x) - 4.5%),
+    var(--g) var(--x),
+    color-mix(in srgb, var(--g) 84.4%, var(--brass-hi)) calc(var(--x) + 4.5%),
+    color-mix(in srgb, var(--g) 50%, var(--brass-hi)) calc(var(--x) + 9%),
+    color-mix(in srgb, var(--g) 15.6%, var(--brass-hi)) calc(var(--x) + 13.5%),
+    var(--brass-hi) calc(var(--x) + 18%));
+}
 .counter .lede { margin: 20px 0 0; font-size: clamp(18px, 1.6vw, 22px); line-height: 1.5; max-width: 34ch; }
 .counter .fact { margin: 14px 0 0; color: var(--on-enamel-2); font-size: 15px; max-width: 46ch; }
 .install-line { margin-top: 28px; display: flex; flex-wrap: wrap; align-items: stretch; gap: 12px; }
@@ -98,8 +113,8 @@ html { scrollbar-color: var(--brass) var(--hole); }
 }
 .cmd::before { content: "$ "; color: var(--brass); }
 .bell {
-  display: inline-flex; align-items: center; gap: 10px; cursor: pointer;
-  border: 0; border-radius: 6px; padding: 0 18px; min-height: 48px;
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; cursor: pointer;
+  border: 0; border-radius: 6px; padding: 0; width: 100px; flex: none; min-height: 48px;
   background: var(--brass); color: var(--brass-ink); font-weight: 800; font-size: 15px; letter-spacing: .04em;
   transition: background-color .2s var(--ease);
 }
@@ -107,8 +122,20 @@ html { scrollbar-color: var(--brass) var(--hole); }
 .bell i { position: relative; width: 22px; height: 16px; display: inline-block; }
 .bell i::before { content: ""; position: absolute; left: 1px; right: 1px; bottom: 3px; height: 11px; border-radius: 11px 11px 2px 2px; background: currentColor; }
 .bell i::after { content: ""; position: absolute; left: -1px; right: -1px; bottom: 0; height: 3px; border-radius: 2px; background: currentColor; }
-.bell.rang i { animation: ring .6s var(--ease); }
+/* Desk bell: a plunger on top, sound rings that spread when it is struck */
+.bell i b { position: absolute; left: 50%; top: -4px; width: 4px; height: 6px; margin-left: -2px; border-radius: 2px 2px 0 0; background: currentColor; }
+.bell i u { position: absolute; left: 50%; top: 6px; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 50%; border: 2px solid currentColor; opacity: 0; pointer-events: none; }
+.bell i u + u { animation-delay: .26s !important; }
+.bell:active { transform: translateY(1px); }
+/* Press: the plunger goes down, the dome squashes, then the bell rings and the sound spreads */
+.bell.rang i b { animation: press .45s var(--ease); }
+.bell.rang i::before { transform-origin: 50% 100%; animation: squash .45s var(--ease); }
+.bell.rang i { animation: ring .7s .12s var(--ease); }
+.bell.rang i u { animation: ding .8s .12s cubic-bezier(.2, .7, .3, 1); }
+@keyframes press { 18% { transform: translateY(4px); } 45% { transform: none; } }
+@keyframes squash { 18% { transform: scaleY(.82); } 45% { transform: none; } }
 @keyframes ring { 20% { transform: rotate(-14deg); } 45% { transform: rotate(10deg); } 70% { transform: rotate(-5deg); } }
+@keyframes ding { 0% { opacity: .75; transform: scale(.35); } 100% { opacity: 0; transform: scale(1.7); } }
 .after-install { margin: 12px 0 0; font-size: 13px; color: var(--on-enamel-2); }
 
 /* the slip */
@@ -121,6 +148,28 @@ html { scrollbar-color: var(--brass) var(--hole); }
   background-size: 22px 8px; background-repeat: repeat-x;
 }
 .slip.enter { animation: slipOut .9s var(--ease) both; }
+/* The Secretary's face as an enamel pin stuck on the slip's corner */
+.pin {
+  position: absolute; z-index: 2; top: -28px; right: -18px; transform: rotate(7deg); overflow: hidden;
+  padding: 9px 16px 10px; border-radius: 999px; border: 3px solid transparent;
+  color: #2b1606; font: 700 18px/1 var(--mono); white-space: nowrap;
+  /* Orange enamel inside a polished brass rim: light, dark and light again around the edge */
+  background:
+    linear-gradient(180deg, #f39a45, #ea8933 45%, #d9772a) padding-box,
+    linear-gradient(135deg, #fff3cf 0%, #f0cf86 12%, #c99236 28%, #7d4c14 44%, #a8701f 54%, #f5dc98 68%, #c3882e 84%, #fff0c4 100%) border-box;
+  box-shadow: inset 0 2px 1px rgba(255, 255, 255, .45), inset 0 -2px 1px rgba(0, 0, 0, .2), 0 10px 16px -6px rgba(0, 0, 0, .55), 0 2px 3px rgba(0, 0, 0, .35);
+}
+/* A glint that sweeps across the enamel now and then */
+.pin::after {
+  content: ""; position: absolute; inset: -3px; pointer-events: none; transform: translateX(-120%);
+  background: linear-gradient(110deg,
+    rgba(255, 255, 255, 0) 30%, rgba(255, 255, 255, .04) 36%, rgba(255, 255, 255, .14) 42%, rgba(255, 255, 255, .32) 47%,
+    rgba(255, 255, 255, .5) 50%, rgba(255, 255, 255, .32) 53%, rgba(255, 255, 255, .14) 58%, rgba(255, 255, 255, .04) 64%, rgba(255, 255, 255, 0) 70%);
+  animation: glint 6s 1.2s cubic-bezier(.45, 0, .25, 1) infinite;
+}
+@keyframes glint { 0% { transform: translateX(-120%); } 22%, 100% { transform: translateX(120%); } }
+.pin .c { display: inline-block; width: 1ch; text-align: center; font-style: normal; }
+@media (max-width: 560px) { .pin { right: -4px; top: -20px; font-size: 15px; } }
 @keyframes slipOut { from { transform: translateY(-46px) rotate(-3deg); opacity: 0; } }
 .slip header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-bottom: 2px solid var(--print); padding-bottom: 8px; }
 .slip header h2 { margin: 0; font-weight: 900; font-stretch: 72%; font-size: 30px; letter-spacing: .02em; text-transform: uppercase; line-height: 1; }
@@ -333,7 +382,7 @@ footer.foot {
 footer.foot a { color: var(--on-enamel); }
 
 @media (prefers-reduced-motion: reduce) {
-  .slip.enter, .stub, .bell.rang i { animation: none; }
+  .slip.enter, .stub, .bell.rang i, .bell.rang i b, .bell.rang i::before, .bell.rang i u, .pin::after { animation: none; }
 }
 
 /* ---------- Responsive ---------- */
@@ -389,12 +438,13 @@ footer.foot a { color: var(--on-enamel); }
       <p class="fact">It runs on a local LLM on your own machine. No conversation leaves it.</p>
       <div class="install-line">
         <code class="cmd" id="install-cmd">git clone https://github.com/microbians/AI.SKILLS.git &amp;&amp; bash AI.SKILLS/plugins/secretary/install.sh</code>
-        <button class="bell" type="button" data-copy="install-cmd" aria-label="Copy the install command"><i aria-hidden="true"></i><span>Copy</span></button>
+        <button class="bell" type="button" data-copy="install-cmd" aria-label="Copy the install command"><i aria-hidden="true"><b></b><u></u><u></u></i><span>Copy</span></button>
       </div>
       <p class="after-install">macOS or Linux · Node 18+ · MLX or llama.cpp · MIT license. <a href="#install">Full install steps</a></p>
     </div>
     <div class="slip-holder">
       <article class="slip" id="slip" aria-live="polite" aria-label="Handoff note"></article>
+      <div class="pin" aria-hidden="true"><span id="pin-face">( ∵• ᴗ •∵ )</span></div>
       <p class="example-note">Example handoff. Yours is written from your own session.</p>
     </div>
   </section>
@@ -637,6 +687,41 @@ function secretaryFace(s, level) {
 const NARROW_FALLBACK = /[∵⨀⩌⁔⦿⏺⎿]/g;
 const cells = s => esc(s).replace(NARROW_FALLBACK, c => `<i class="c">${c}</i>`);
 const paint = (hex, text, bg) => `<span style="color:${hex}${bg ? `;background:${bg}` : ""}">${cells(text)}</span>`;
+
+// Headline glint: a golden band that follows the pointer softly, swishes across every few
+// seconds when the pointer is still, and parks off the text in between.
+if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  const h1 = document.getElementById("h1");
+  h1.classList.add("glint");
+  const OFF_LEFT = -40, OFF_RIGHT = 140, SWISH_EVERY = 7000, IDLE = 1800;
+  let x = OFF_LEFT, target = OFF_LEFT, ease = 0.08, raf = 0, lastMove = 0;
+  const frame = () => {
+    x += (target - x) * ease;
+    h1.style.setProperty("--x", `${x.toFixed(2)}%`);
+    raf = Math.abs(target - x) > 0.1 ? requestAnimationFrame(frame) : 0;
+  };
+  const go = (to, k) => { target = to; ease = k; if (!raf) raf = requestAnimationFrame(frame); };
+  addEventListener("pointermove", e => {
+    const r = h1.getBoundingClientRect();
+    if (e.clientY < r.top - 200 || e.clientY > r.bottom + 200) return;
+    lastMove = Date.now();
+    go(Math.max(OFF_LEFT, Math.min(OFF_RIGHT, ((e.clientX - r.left) / r.width) * 100)), 0.06);
+  }, { passive: true });
+  setInterval(() => {
+    const idle = Date.now() - lastMove;
+    if (idle > IDLE && target > OFF_LEFT && target < OFF_RIGHT) go(x < 50 ? OFF_LEFT : OFF_RIGHT, 0.05);
+  }, 500);
+  setInterval(() => {
+    if (Date.now() - lastMove < IDLE * 2) return;
+    x = OFF_LEFT; go(OFF_RIGHT, 0.045);
+  }, SWISH_EVERY);
+}
+
+// The pin on the slip wears the same face as the status line, one frame per second.
+const pinFace = document.getElementById("pin-face");
+const tickPin = () => { pinFace.innerHTML = cells(secretaryFace(Math.floor(Date.now() / 1000), "ok")); };
+tickPin();
+setInterval(tickPin, 1000);
 function statusBar(fraction, n, color, mark = null) {
   const filled = Math.min(n, Math.round(fraction * n));
   const FADE = ["▒", "▓"];
