@@ -84,6 +84,7 @@ a:hover { color: var(--cobalt); }
   margin: 0; font-weight: 800; font-stretch: 78%; letter-spacing: -.025em; line-height: .92;
   font-size: clamp(48px, 6.6vw, 96px); font-variation-settings: "opsz" 96; text-wrap: balance;
 }
+.hero .sub { margin: 18px 0 0; font-weight: 700; font-stretch: 85%; font-size: clamp(20px, 1.9vw, 28px); line-height: 1.2; color: var(--ink-2); text-wrap: balance; }
 .hero .k { align-self: end; font: 400 13px/1.4 var(--mono); color: var(--on-cobalt-2); padding-bottom: 6px; }
 .hero .r p { margin: 0; max-width: 46ch; font-size: clamp(17px, 1.35vw, 20px); line-height: 1.5; color: var(--ink-2); }
 .hero .r p strong { color: var(--ink-1); font-weight: 600; }
@@ -222,10 +223,11 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
 
   <main>
     <section class="g hero" aria-labelledby="h1">
-      <div class="l"><h1 id="h1">Ask for a name. Get&nbsp;its&nbsp;line.</h1></div>
-      <div class="k" aria-hidden="true">file:line<br>in ms</div>
+      <div class="l"><h1 id="h1">Claude’s index to your codebase.</h1><p class="sub">Claude finds your code without searching&nbsp;it.</p></div>
+      <div class="k" aria-hidden="true">a plugin for<br>Claude Code</div>
       <div class="r">
-        <p>CodeIndex keeps every class, function and method of your project with its <strong>signature</strong> and the <strong>doc you wrote above it</strong>. Claude Code looks the name up and reads only the line that matters, instead of searching the codebase again on every change.</p>
+        <p>When Claude Code needs a function in your project, it usually goes looking for it: searching files, opening them, reading until it finds the right one. Every time.</p>
+        <p style="margin-top: 12px"><strong>CodeIndex keeps a list of everything in your code</strong>: each class, function and method, the file and line where it lives, what it takes and what it does. Claude asks the list and goes straight to that line. Answers come faster and spend fewer tokens.</p>
         <div class="install-line">
           <code id="install-cmd">git clone https://github.com/microbians/AI.SKILLS.git &amp;&amp; bash AI.SKILLS/plugins/code-index/install.sh</code>
           <button class="copy" type="button" data-copy="install-cmd">Copy</button>
