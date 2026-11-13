@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeIndex — look up any symbol in your codebase</title>
+<meta name="description" content="CodeIndex keeps every class, function and method of your project with its signature and doc, so Claude Code answers “where is X?”, “who calls it?” and “what does this file need?” in milliseconds instead of searching the codebase again.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://microbians.github.io/AI.SKILLS/plugins/code-index/">
+<meta property="og:title" content="CodeIndex — look up any symbol in your codebase">
+<meta property="og:description" content="Every symbol with its signature and doc. Claude Code gets file:line in milliseconds instead of searching the codebase again.">
+<meta property="og:image" content="https://microbians.github.io/AI.SKILLS/plugins/code-index/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="CodeIndex: lines of code aligned on the name saveUser inside a cobalt band">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://microbians.github.io/AI.SKILLS/plugins/code-index/assets/og.png">
+<link rel="preload" href="assets/fonts/BricolageGrotesque-latin.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+@font-face { font-family: "Bricolage Grotesque"; font-weight: 200 800; font-stretch: 75% 100%; font-display: swap; src: url("assets/fonts/BricolageGrotesque-latin.woff2") format("woff2"); }
+@font-face { font-family: "Meslo Code"; font-weight: 400; font-display: swap; src: url("../../fonts/assets/fonts/MesloCode-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Meslo Code"; font-weight: 700; font-display: swap; src: url("../../fonts/assets/fonts/MesloCode-Bold.woff2") format("woff2"); }
+
+:root {
+  /* One cobalt band where every name lands; everything else is one five-step ink ramp. */
+  --paper: #eef0ee;
+  --ink-1: #0d1015;
+  --ink-2: #343a44;
+  --ink-3: #4e5560;
+  --ink-4: #646b75;
+  --ink-5: #c6cbd1;
+  --cobalt: #1f3fd1;
+  --cobalt-deep: #1832b0;
+  --on-cobalt: #ffffff;
+  --on-cobalt-2: #c3cdff;
+  --sans: "Bricolage Grotesque", "Helvetica Neue", Arial, sans-serif;
+  --mono: "Meslo Code", Menlo, monospace;
+  --gutter: clamp(16px, 3vw, 44px);
+  --band: clamp(168px, 17vw, 250px);
+  --gap: clamp(14px, 1.6vw, 24px);
+  --row: 34px;
+  --ease: cubic-bezier(.16, 1, .3, 1);
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html { background: var(--paper); -webkit-text-size-adjust: 100%; scrollbar-color: var(--cobalt) var(--paper); }
+body { margin: 0; background: var(--paper); color: var(--ink-1); font: 400 17px/1.55 var(--sans); font-stretch: 100%; }
+code, pre, input, button { font: inherit; }
+code { font-family: var(--mono); font-size: .86em; }
+::selection { background: var(--cobalt); color: var(--on-cobalt); }
+a { color: inherit; text-decoration: underline; text-decoration-color: var(--cobalt); text-decoration-thickness: 1.5px; text-underline-offset: .22em; }
+a:hover { color: var(--cobalt); }
+:focus-visible { outline: 2px solid var(--cobalt); outline-offset: 3px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- The page grid: context | band | context. The band runs the full page. ---------- */
+.page { position: relative; padding: 0 var(--gutter); }
+.page::before {
+  content: ""; position: absolute; top: 0; bottom: 0; z-index: 0; background: var(--cobalt);
+  width: var(--band);
+  left: calc(var(--gutter) + (100% - 2 * var(--gutter) - var(--band) - 2 * var(--gap)) * (1 / 2.35) + var(--gap));
+}
+.g {
+  position: relative; z-index: 1; display: grid; column-gap: var(--gap);
+  grid-template-columns: minmax(0, 1fr) var(--band) minmax(0, 1.35fr);
+  grid-template-areas: "l k r";
+}
+.l { grid-area: l; text-align: right; min-width: 0; }
+.k { grid-area: k; min-width: 0; color: var(--on-cobalt); padding-left: 14px; }
+.r { grid-area: r; min-width: 0; }
+
+/* ---------- Top line ---------- */
+.top { height: 64px; align-items: center; border-bottom: 1px solid var(--ink-5); }
+.top .l { font: 500 13px/1 var(--mono); color: var(--ink-3); }
+.top .l a { text-decoration: none; }
+.top .k a { font: 800 20px/1 var(--sans); font-stretch: 85%; letter-spacing: -.01em; color: var(--on-cobalt); text-decoration: none; }
+.top .r nav { display: flex; gap: 22px; font-weight: 600; font-size: 15px; }
+.top .r nav a { text-decoration: none; }
+.top .r nav a:hover { text-decoration: underline; text-decoration-color: var(--cobalt); }
+
+/* ---------- First viewport ---------- */
+.hero { padding: clamp(36px, 6vh, 72px) 0 clamp(26px, 4vh, 44px); align-items: end; }
+.hero h1 {
+  margin: 0; font-weight: 800; font-stretch: 78%; letter-spacing: -.025em; line-height: .92;
+  font-size: clamp(48px, 6.6vw, 96px); font-variation-settings: "opsz" 96; text-wrap: balance;
+}
+.hero .k { align-self: end; font: 400 13px/1.4 var(--mono); color: var(--on-cobalt-2); padding-bottom: 6px; }
+.hero .r p { margin: 0; max-width: 46ch; font-size: clamp(17px, 1.35vw, 20px); line-height: 1.5; color: var(--ink-2); }
+.hero .r p strong { color: var(--ink-1); font-weight: 600; }
+.install-line {
+  margin-top: 24px; display: flex; align-items: stretch; max-width: 620px;
+  border: 1.5px solid var(--ink-1); border-radius: 6px; background: #fff;
+}
+.install-line code { flex: 1; min-width: 0; padding: 12px 14px; font-size: 13px; line-height: 1.5; color: var(--ink-1); overflow-x: auto; white-space: nowrap; scrollbar-width: thin; }
+.install-line .copy { padding: 0 16px; border-left: 1.5px solid var(--ink-1); border-radius: 0 4px 4px 0; text-decoration: none; }
+.install-line .copy:hover { background: var(--cobalt); color: var(--on-cobalt); }
+
+.copy {
+  flex: none; border: 0; background: none; padding: 2px 0; cursor: pointer; color: var(--cobalt);
+  font: 700 14px/1.2 var(--sans); text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: .22em;
+}
+.copy:hover { color: var(--ink-1); }
+
+/* ---------- Concordance rows ---------- */
+.conc { margin: 0; padding: 0; list-style: none; }
+.row { min-height: var(--row); align-items: baseline; padding: 6px 0; border-top: 1px solid var(--ink-5); }
+.row .l { font: 400 13px/1.5 var(--mono); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
+.row .l > span { direction: ltr; unicode-bidi: plaintext; }
+.row .k { font: 700 14px/1.5 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .r { font: 400 13px/1.5 var(--mono); color: var(--ink-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .r .doc { display: block; font: 400 14px/1.45 var(--sans); color: var(--ink-3); white-space: normal; margin-top: 2px; }
+.row .kind { color: var(--ink-3); }
+.row.ref .r, .row.ref .l { color: var(--ink-3); }
+.row.ref .k { font-weight: 400; }
+.row.noise .l, .row.noise .r { color: var(--ink-4); }
+.row.noise .k { font-weight: 400; color: var(--on-cobalt-2); }
+.row.found { border-top: 2px solid var(--ink-1); }
+.row.found .k { font-weight: 700; }
+.row.group { min-height: 0; padding: 14px 0 4px; border-top: 0; }
+.row.group .r { font: 600 13px/1.4 var(--sans); color: var(--ink-2); white-space: normal; }
+
+/* Live lookup */
+.lookup { padding-bottom: clamp(24px, 4vh, 48px); overflow-x: clip; }
+.ask { align-items: center; padding: 10px 0; border-top: 2px solid var(--ink-1); }
+.ask .l { display: flex; justify-content: flex-end; gap: 4px; flex-wrap: wrap; }
+.cmd {
+  border: 0; background: none; cursor: pointer; padding: 4px 8px; border-radius: 3px;
+  font: 500 14px/1.2 var(--mono); color: var(--ink-3);
+}
+.cmd:hover { color: var(--ink-1); background: rgba(13, 16, 21, .06); }
+.cmd[aria-pressed="true"] { color: var(--on-cobalt); background: var(--cobalt); }
+.ask .k { padding-left: 4px; }
+.ask input {
+  width: 100%; border: 0; border-bottom: 1.5px solid var(--on-cobalt-2); background: var(--cobalt-deep);
+  color: var(--on-cobalt); caret-color: var(--on-cobalt); padding: 7px 10px; border-radius: 3px 3px 0 0;
+  font: 700 15px/1.2 var(--mono);
+}
+.ask input::placeholder { color: var(--on-cobalt-2); }
+.ask input:focus { outline: none; border-bottom-color: var(--on-cobalt); }
+.ask .r { font-size: 14px; color: var(--ink-3); }
+.ask .r button { border: 0; background: none; padding: 0; cursor: pointer; font: 500 13px/1.6 var(--mono); color: var(--ink-1); text-decoration: underline; text-decoration-color: var(--ink-5); text-underline-offset: .2em; }
+.ask .r button:hover { text-decoration-color: var(--cobalt); color: var(--cobalt); }
+.cmd { font: 600 14px/1.2 var(--sans); }
+.caption-row { padding: 8px 0 6px; font: 600 12px/1.2 var(--sans); letter-spacing: .02em; color: var(--ink-3); }
+.caption-row .k { color: var(--on-cobalt-2); }
+.row.plain .r { font: 500 15px/1.45 var(--sans); white-space: normal; }
+.row .r code.line { display: block; margin-top: 3px; font: 400 12.5px/1.5 var(--mono); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.answer .row { cursor: pointer; transition: opacity .2s var(--ease); }
+.answer.isolated .row:not(.on) { opacity: .28; }
+.answer .row.on .k { text-decoration: underline; text-underline-offset: .25em; }
+.answer .row.enter .l { animation: from-band-l .42s var(--ease) both; animation-delay: var(--d); }
+.answer .row.enter .r { animation: from-band-r .42s var(--ease) both; animation-delay: var(--d); }
+@keyframes from-band-l { from { transform: translateX(22px); opacity: 0; } }
+@keyframes from-band-r { from { transform: translateX(-22px); opacity: 0; } }
+.foot-note { padding: 8px 0 0; }
+.foot-note .r { font-size: 13px; color: var(--ink-4); }
+@media (prefers-reduced-motion: reduce) { .answer .row.enter .l, .answer .row.enter .r { animation: none; } }
+
+/* ---------- Sections: the heading sits left of the band, the band names the command ---------- */
+.part { padding-top: clamp(64px, 10vh, 120px); }
+.head { padding-bottom: 22px; align-items: start; }
+.head h2 {
+  margin: 0; font-weight: 800; font-stretch: 80%; letter-spacing: -.02em; line-height: .98;
+  font-size: clamp(32px, 3.6vw, 54px); font-variation-settings: "opsz" 72; text-wrap: balance;
+}
+.head .k { font: 700 15px/1.6 var(--mono); padding-top: 8px; }
+/* The nav's section names, as tags on the section headings */
+.tag {
+  display: inline-block; margin-bottom: 14px; padding: 4px 12px 5px; border-radius: 999px;
+  border: 1.5px solid var(--cobalt); color: var(--cobalt); font: 650 14px/1.1 var(--sans);
+}
+.head .r p { margin: 0 0 12px; max-width: 58ch; color: var(--ink-2); }
+.tally { padding: 12px 0 0; }
+.tally .r { font: 600 15px/1.4 var(--sans); }
+.tally .r em { font-style: normal; color: var(--ink-4); font-weight: 400; }
+
+.points { margin: 18px 0 0; padding: 0; list-style: none; display: grid; gap: 12px; max-width: 58ch; }
+.points li { color: var(--ink-2); padding-top: 12px; border-top: 1px solid var(--ink-5); }
+.points b { color: var(--ink-1); font-weight: 650; }
+
+.statusline {
+  margin: 4px 0 0; padding: 12px 14px; border-radius: 4px; background: #14171c; color: #a9aeb6;
+  font: 400 13px/1.5 var(--mono); white-space: pre; overflow-x: auto; max-width: 620px;
+}
+.statusline .face { color: #e8893a; } .statusline b { color: #f2f3f0; } .statusline .ix { color: #7fa9c9; } .statusline .ixt { color: #34424e; }
+
+.block { position: relative; margin: 10px 0 0; max-width: 620px; padding: 12px 14px; border-top: 2px solid var(--ink-1); background: rgba(13, 16, 21, .04); font: 400 13px/1.7 var(--mono); white-space: pre; overflow-x: auto; }
+.block-bar { display: flex; justify-content: space-between; align-items: baseline; max-width: 620px; margin-top: 18px; font-size: 14px; color: var(--ink-3); }
+
+footer.g { margin-top: clamp(72px, 12vh, 140px); padding: 18px 0 26px; border-top: 2px solid var(--ink-1); font-size: 14px; color: var(--ink-3); align-items: baseline; }
+footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
+
+/* ---------- Narrow: the band moves to the left edge; context drops under the line ---------- */
+@media (max-width: 760px) {
+  :root { --band: 30vw; --gap: 12px; }
+  .page::before { left: var(--gutter); }
+  .g { grid-template-columns: var(--band) minmax(0, 1fr); grid-template-areas: "k r" "k l"; }
+  .head, .hero, footer.g, .top { grid-template-areas: "k l" "k r"; }
+  .l { text-align: left; }
+  .k { padding-left: 10px; }
+  .top { height: auto; padding: 14px 0; row-gap: 6px; }
+  .top .r nav { gap: 14px; font-size: 14px; flex-wrap: wrap; }
+  .hero { align-items: start; row-gap: 18px; }
+  .hero .k { display: none; }
+  .hero h1 { font-size: clamp(40px, 12vw, 56px); }
+  .row .l { direction: ltr; font-size: 12px; }
+  .ask { grid-template-areas: "k r" "k l"; row-gap: 8px; }
+  .ask .l { justify-content: flex-start; }
+  .head { row-gap: 12px; }
+  .head h2 { font-size: clamp(28px, 8vw, 38px); }
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="g top">
+    <div class="l"><a href="https://github.com/microbians/AI.SKILLS">AI.SKILLS</a></div>
+    <div class="k"><a href="#top" id="top">CodeIndex</a></div>
+    <div class="r"><nav aria-label="Sections"><a href="#why">Why</a><a href="#members">Mixins</a><a href="#index">How</a><a href="#install">Install</a><a href="https://github.com/microbians/AI.SKILLS/tree/main/plugins/code-index">GitHub</a></nav></div>
+  </header>
+
+  <main>
+    <section class="g hero" aria-labelledby="h1">
+      <div class="l"><h1 id="h1">Ask for a name. Get&nbsp;its&nbsp;line.</h1></div>
+      <div class="k" aria-hidden="true">file:line<br>in ms</div>
+      <div class="r">
+        <p>CodeIndex keeps every class, function and method of your project with its <strong>signature</strong> and the <strong>doc you wrote above it</strong>. Claude Code looks the name up and reads only the line that matters, instead of searching the codebase again on every change.</p>
+        <div class="install-line">
+          <code id="install-cmd">git clone https://github.com/microbians/AI.SKILLS.git &amp;&amp; bash AI.SKILLS/plugins/code-index/install.sh</code>
+          <button class="copy" type="button" data-copy="install-cmd">Copy</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="lookup" aria-label="Try a lookup">
+      <div class="g ask">
+        <div class="l" role="group" aria-label="Question">
+          <button class="cmd" type="button" data-cmd="where" aria-pressed="false">Where is it defined?</button>
+          <button class="cmd" type="button" data-cmd="refs" aria-pressed="true">Where is it used?</button>
+          <button class="cmd" type="button" data-cmd="callers" aria-pressed="false">Who calls it?</button>
+        </div>
+        <div class="k"><label class="sr-only" for="q">Name to look up</label><input id="q" value="saveUser" autocomplete="off" spellcheck="false" placeholder="a name…"></div>
+        <div class="r">Ask about a name in a small sample app: <button type="button" data-q="saveUser">saveUser</button> · <button type="button" data-q="openDb">openDb</button> · <button type="button" data-q="UserStore">UserStore</button> · <button type="button" data-q="validateEmail">validateEmail</button>, or a typo: <button type="button" data-q="sevaUsr">sevaUsr</button></div>
+      </div>
+      <div class="g caption-row" aria-hidden="true"><div class="l">the file and line</div><div class="k">the name</div><div class="r">what that line does</div></div>
+      <ol class="conc answer" id="answer" aria-live="polite"></ol>
+      <div class="g foot-note"><div class="r">The app is made up for this page. Click a line to isolate it.</div></div>
+    </section>
+
+    <section class="part" id="why" aria-labelledby="why-h">
+      <div class="g head">
+        <div class="l"><span class="tag">Why</span><h2 id="why-h">Search once. Read one line.</h2></div>
+        <div class="k">grep</div>
+        <div class="r"><p>Claude doesn’t keep a large project in its head. On every change it goes looking for the same names again: a grep over the tree, then files opened just to tell the definition from the calls.</p></div>
+      </div>
+      <ol class="conc" id="noise"></ol>
+      <div class="g tally"><div class="r">grep: <em>every line that mentions the word, to sort by hand.</em><br>where: <em>the one that defines it, with what it takes and what it does.</em></div></div>
+    </section>
+
+    <section class="part" id="members" aria-labelledby="members-h">
+      <div class="g head">
+        <div class="l"><span class="tag">Mixins</span><h2 id="members-h">Methods are filed under the class they land in.</h2></div>
+        <div class="k">members</div>
+        <div class="r">
+          <p>Big classes get split: their methods live in other files and are laid onto the class when it loads. A text search can’t see that wiring. CodeIndex reads it.</p>
+          <ul class="points">
+            <li><b>Recognized wiring:</b> <code>Object.assign(T.prototype, S.prototype)</code>, <code>mixInto(T, S)</code>, <code>applyMixins(T, [A, B])</code>.</li>
+            <li><b>Found by where it lands:</b> <code>where UserStore.saveUser</code> answers with the method in <code>user-methods.js</code>.</li>
+            <li><b>Stale copies stay out:</b> a leftover <code>old/</code> copy of the class doesn’t pass for the real one.</li>
+          </ul>
+        </div>
+      </div>
+      <ol class="conc" id="mixins"></ol>
+    </section>
+
+    <section class="part" id="index" aria-labelledby="index-h">
+      <div class="g head">
+        <div class="l"><span class="tag">How</span><h2 id="index-h">Two plain tools, one index.</h2></div>
+        <div class="k">index</div>
+        <div class="r"><p><b>universal-ctags</b> reads the definitions in about 150 languages, <b>SQLite</b> keeps them. A hook refreshes the index at the start of every session, and only files whose content changed are read again. No AI anywhere in it: the doc is the comment already in your source.</p></div>
+      </div>
+      <ol class="conc" id="steps"></ol>
+    </section>
+
+    <section class="part" id="secretary" aria-labelledby="secretary-h">
+      <div class="g head">
+        <div class="l"><span class="tag">Secretary</span><h2 id="secretary-h">Hand in hand with The&nbsp;Secretary.</h2></div>
+        <div class="k">secretary</div>
+        <div class="r">
+          <p>CodeIndex knows where every name lives; <a href="../secretary/">The Secretary</a> remembers what was said about it. Install both and each one reads the other, with nothing to configure. Each still works alone.</p>
+          <pre class="statusline" aria-label="Status line while CodeIndex indexes"><span class="face">( ∵◐ ᴗ ◐∵ )</span> <b>CodeIndex</b> <span class="ix">██████</span><span class="ixt">██████████</span> <span class="ix">42%</span> · Opus 5.5 medium</pre>
+          <ul class="points">
+            <li><b>The status line:</b> while a long index runs, CodeIndex takes over The Secretary’s bar, with its own face.</li>
+            <li><b>Handoffs name functions:</b> <code>store/user-methods.js (changed: _loadUser, saveUser)</code> tells the next session what each edit touched.</li>
+            <li><b>Recall by symbol:</b> ask The Secretary about <code>saveUser</code> and it also finds the conversations about the file that defines it.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="part" id="install" aria-labelledby="install-h">
+      <div class="g head">
+        <div class="l"><span class="tag">Install</span><h2 id="install-h">Install.</h2></div>
+        <div class="k">install</div>
+        <div class="r">
+          <p>Needs <b>Node.js 22</b> or newer and <b>universal-ctags</b> (the BSD <code>ctags</code> that ships with macOS won’t do). macOS or Linux.</p>
+          <div class="block-bar"><span>1 · ctags</span><button class="copy" type="button" data-copy="b1">Copy</button></div>
+<pre class="block" id="b1">brew install universal-ctags            # macOS
+sudo apt-get install universal-ctags    # Debian / Ubuntu</pre>
+          <div class="block-bar"><span>2 · CodeIndex: engine, skill, hook and a CLAUDE.md note</span><button class="copy" type="button" data-copy="b2">Copy</button></div>
+<pre class="block" id="b2">git clone https://github.com/microbians/AI.SKILLS.git
+bash AI.SKILLS/plugins/code-index/install.sh</pre>
+          <p style="margin-top: 16px">Then start a session: the first one builds the index, the next ones refresh what changed. The database adds itself to the project’s <code>.gitignore</code>. Re-run the installer to upgrade; <code>install.sh --uninstall</code> removes it.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="part" id="limits" aria-labelledby="limits-h">
+      <div class="g head">
+        <div class="l"><span class="tag">Limits</span><h2 id="limits-h">What it doesn’t do.</h2></div>
+        <div class="k">limits</div>
+        <div class="r"><p>It indexes definitions; it doesn’t run or understand the program.</p></div>
+      </div>
+      <ol class="conc" id="limits-rows"></ol>
+    </section>
+  </main>
+
+  <footer class="g">
+    <div class="l">MIT license · part of <a href="https://github.com/microbians/AI.SKILLS">AI.SKILLS</a></div>
+    <div class="k">CodeIndex</div>
+    <div class="r">Set in Bricolage Grotesque and <a href="../../fonts/">Meslo Code</a></div>
+  </footer>
+</div>
+
+<script>
+// A made-up project for the page. Output follows the real commands' format and fields.
+const SYMBOLS = [
+  { name: 'saveUser', file: 'store/user-methods.js', line: 42, kind: 'method', sig: '(user, opts)', scope: 'UserMethods → UserStore (mixin)', doc: 'Writes the user to disk, merged with the stored copy.' },
+  { name: '_loadUser', file: 'store/user-methods.js', line: 12, kind: 'method', sig: '(id)', scope: 'UserMethods → UserStore (mixin)', doc: 'Reads one user from the cache, or from disk on a miss.' },
+  { name: 'deleteUser', file: 'store/user-methods.js', line: 61, kind: 'method', sig: '(id)', scope: 'UserMethods → UserStore (mixin)', doc: 'Removes the user and every session that belongs to them.' },
+  { name: 'UserStore', file: 'store/user-store.js', line: 5, kind: 'class', sig: '', doc: 'Users on disk, with an in-memory cache in front.' },
+  { name: 'openDb', file: 'store/db.js', line: 9, kind: 'function', sig: '(path)', doc: 'Opens the SQLite file, creating the tables on first use.' },
+  { name: 'onSubmit', file: 'ui/profile-form.js', line: 84, kind: 'function', sig: '(event)', doc: 'Validates the form and saves the user.' },
+  { name: 'validateEmail', file: 'ui/validate.js', line: 20, kind: 'function', sig: '(value)', doc: 'True when the address has one @ and a dotted domain.' },
+  { name: 'renderProfile', file: 'ui/profile.js', line: 31, kind: 'function', sig: '(user)', doc: 'Draws the profile card for one user.' },
+];
+// Every line that mentions a name: where it is, what that line does in plain words, the code itself.
+const REFS = {
+  saveUser: [
+    ['store/user-methods.js:42', 'Defined here.', 'async saveUser(user, { merge = true } = {}) {'],
+    ['ui/profile-form.js:88', 'The profile form saves the user when you press Save.', 'await store.saveUser(user, { merge: true });'],
+    ['api/users.js:31', 'The API saves a user the app sent.', 'const saved = await users.saveUser(body);'],
+    ['store/import.js:54', 'A bulk import saves users one by one.', 'for (const u of batch) await this.saveUser(u);'],
+    ['test/user.test.js:17', 'A test saves a sample user.', "await store.saveUser({ id: 7, name: 'Ada' });"],
+    ['docs/store.md:12', 'The docs say to call it after every edit.', 'Call `saveUser` after every edit; it merges by default.'],
+  ],
+  openDb: [
+    ['store/db.js:9', 'Defined here.', 'export function openDb(path) {'],
+    ['store/user-store.js:8', 'The user store opens the database when it starts.', 'this.db = openDb(path);'],
+    ['scripts/migrate.js:4', 'The migration script opens the same file.', "const db = openDb('data/app.sqlite');"],
+  ],
+  UserStore: [
+    ['store/user-store.js:5', 'Defined here.', 'export class UserStore {'],
+    ['store/user-store.js:24', 'Its user methods are added from another file.', 'mixInto(UserStore, UserMethods);'],
+    ['app.js:11', 'The app creates one store at startup.', 'const store = new UserStore(config.dbPath);'],
+    ['test/user.test.js:6', 'Tests create a store in memory.', "const store = new UserStore(':memory:');"],
+  ],
+  validateEmail: [
+    ['ui/validate.js:20', 'Defined here.', 'export function validateEmail(value) {'],
+    ['ui/profile-form.js:86', 'The profile form checks the address before saving.', 'if (!validateEmail(form.email.value)) return showError();'],
+  ],
+};
+// Who calls a name: where, which function, and when that happens.
+const CALLERS = {
+  saveUser: [
+    ['ui/profile-form.js:88', 'onSubmit()', 'when someone presses Save on their profile.'],
+    ['api/users.js:31', 'updateUser()', 'when the app sends a changed user.'],
+    ['store/import.js:54', 'importAll()', 'for every user in a bulk import.'],
+  ],
+  openDb: [['store/user-store.js:8', 'constructor()', 'when the user store is created.'], ['scripts/migrate.js:4', 'the migration script', 'when the database schema changes.']],
+  validateEmail: [['ui/profile-form.js:86', 'onSubmit()', 'before the profile is saved.']],
+  UserStore: [['app.js:11', 'the app', 'once, at startup.'], ['test/user.test.js:6', 'the tests', 'for each test, in memory.']],
+};
+
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+// One concordance line: context left of the band, the name in it, context right of it.
+function row({ l = '', k = '', r = '', doc = '', code = '', cls = '' }) {
+  const li = el('li', `g row ${cls}`);
+  const left = el('div', 'l'); left.append(el('span', null, l));
+  const right = el('div', 'r');
+  if (typeof r === 'string') right.textContent = r; else right.append(...r);
+  if (doc) right.append(el('span', 'doc', doc));
+  if (code) right.append(el('code', 'line', code));
+  li.append(left, el('div', 'k', k), right);
+  return li;
+}
+// What follows the name: its signature, kind and, for a mixed-in member, where it lands.
+const sigCells = s => [document.createTextNode(s.sig), el('span', 'kind', `   (${s.kind})${s.scope ? `  in ${s.scope}` : ''}`)];
+
+// Closest names by edit distance, like the real "Closest names:" line.
+function distance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1].toLowerCase() === b[j - 1].toLowerCase() ? 0 : 1));
+  return d[a.length][b.length];
+}
+const closest = q => SYMBOLS.map(s => [s.name, distance(q, s.name)]).sort((x, y) => x[1] - y[1]).slice(0, 2).map(x => x[0]);
+
+const answer = document.getElementById('answer');
+let cmd = 'refs';
+function lookup() {
+  const q = document.getElementById('q').value.trim();
+  const rows = [];
+  if (!q) rows.push(row({ k: '…', r: 'Type a name.', cls: 'plain' }));
+  else if (cmd === 'where') {
+    const hits = SYMBOLS.filter(s => s.name === q || s.name.toLowerCase() === q.toLowerCase());
+    hits.forEach(s => rows.push(row({ l: `${s.file}:${s.line}`, k: s.name, r: s.doc, code: `${s.name}${s.sig}   (${s.kind})`, cls: 'plain' })));
+  } else if (cmd === 'refs') {
+    (REFS[q] || []).forEach(([loc, what, code]) => rows.push(row({ l: loc, k: q, r: what, code, cls: 'plain' })));
+  } else if (cmd === 'callers') {
+    (CALLERS[q] || []).forEach(([loc, who, when]) => rows.push(row({ l: loc, k: q, r: `Called by ${who}, ${when}`, cls: 'plain' })));
+  }
+  if (q && !rows.length) {
+    const known = SYMBOLS.some(s => s.name.toLowerCase() === q.toLowerCase());
+    rows.push(row({ k: q, r: known ? `Nothing for this question about “${q}” in the sample app.` : `There is no “${q}”. Did you mean ${closest(q).join(' or ')}?`, cls: 'plain' }));
+  }
+  answer.classList.remove('isolated');
+  answer.replaceChildren(...rows);
+  rows.forEach((r, i) => { r.style.setProperty('--d', `${i * 35}ms`); r.classList.add('enter'); });
+}
+document.getElementById('q').addEventListener('input', lookup);
+document.querySelectorAll('[data-cmd]').forEach(b => b.addEventListener('click', () => {
+  cmd = b.dataset.cmd;
+  document.querySelectorAll('[data-cmd]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  lookup();
+}));
+document.querySelectorAll('[data-q]').forEach(b => b.addEventListener('click', () => { document.getElementById('q').value = b.dataset.q; lookup(); }));
+// Click a line to isolate it; click it again to bring the rest back.
+answer.addEventListener('click', e => {
+  const li = e.target.closest('.row');
+  if (!li) return;
+  const was = li.classList.contains('on');
+  answer.querySelectorAll('.row.on').forEach(r => r.classList.remove('on'));
+  answer.classList.toggle('isolated', !was);
+  if (!was) li.classList.add('on');
+});
+lookup();
+
+// grep noise: every mention, then the one line CodeIndex returns.
+const NOISE = [
+  ['old/user-store.js:88', '  ', '(user) {'],
+  ['test/user.test.js:17', '  await store.', "({ id: 7, name: 'Ada' });"],
+  ['test/user.test.js:23', "  it('", " merges by default', async () => {"],
+  ['docs/store.md:12', 'Call `', '` after every edit; it merges by default.'],
+  ['CHANGELOG.md:40', '- ', ' no longer drops unknown fields'],
+  ['ui/profile-form.js:88', '    await store.', '(user, { merge: true });'],
+  ['ui/profile-form.js:79', '  // ', ' throws when the disk is full'],
+  ['api/users.js:31', '  const saved = await users.', '(body);'],
+  ['store/import.js:54', '  for (const u of batch) await this.', '(u);'],
+  ['store/user-methods.js:40', '  /** Writes the user to disk, merged with the stored copy. */', ''],
+  ['store/user-methods.js:42', '  async ', '(user, { merge = true } = {}) {'],
+  ['store/user-methods.js:44', '    const prev = await this._loadUser(user.id); // before ', ''],
+];
+document.getElementById('noise').append(
+  ...NOISE.map(([loc, before, after]) => row({ l: `${loc}  ${before.trim()}`, k: 'saveUser', r: after, cls: 'noise' })),
+  row({ l: 'store/user-methods.js:42', k: 'saveUser', r: [document.createTextNode('(user, opts)'), el('span', 'kind', '   (method)')], doc: 'Writes the user to disk, merged with the stored copy.', cls: 'found' }),
+);
+
+// members UserStore, its own and the mixed-in ones.
+document.getElementById('mixins').append(
+  row({ k: 'UserStore', r: 'its own (2)', cls: 'group' }),
+  row({ l: 'store/user-store.js:8', k: 'constructor', r: '(db)   (method)' }),
+  row({ l: 'store/user-store.js:15', k: 'close', r: '()   (method)' }),
+  row({ k: 'UserMethods', r: 'mixed in at store/user-store.js:24 (3)', cls: 'group' }),
+  ...SYMBOLS.filter(s => s.file === 'store/user-methods.js').sort((a, b) => a.line - b.line)
+    .map(s => row({ l: `${s.file}:${s.line}`, k: s.name, r: `${s.sig}   (${s.kind})` })),
+);
+
+// How it works, one line per step: the tool, the step, what it does.
+document.getElementById('steps').append(...[
+  ['git ls-files', 'list', 'Files the repository tracks, so .gitignore is honored. Files over 2 MB are skipped.'],
+  ['mtime, then sha1', 'compare', 'Unchanged files are not read again: a reindex with no changes touches none.'],
+  ['universal-ctags', 'extract', 'Each symbol with its signature and the comment above it, verbatim. JavaScript inside HTML and PHP too.'],
+  ['import + call sites', 'link', 'Edges read from the source: who calls what, which file needs which.'],
+  ['SQLite', 'answer', 'file:line, signature and doc, or the thread of callers and dependencies.'],
+].map(([tool, step, what]) => row({ l: tool, k: step, r: '', doc: what })));
+
+document.getElementById('limits-rows').append(...[
+  ['ground truth', 'where', 'Definitions and the callers of uniquely named functions are exact.'],
+  ['strong hint', 'arch', 'Module maps come from names, so two subprojects sharing a name like init can add a stray edge.'],
+  ['word scan', 'refs', 'Every line mentioning the word, not semantic usage.'],
+  ['both returned', 'same name', 'Two symbols with one name both come back; the path tells them apart.'],
+].map(([what, k, why]) => row({ l: what, k, r: '', doc: why })));
+
+// Copy buttons copy the text of the element they name.
+document.querySelectorAll('[data-copy]').forEach(btn => btn.addEventListener('click', async () => {
+  const text = document.getElementById(btn.dataset.copy).textContent.trim();
+  try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied'; }
+  catch { btn.textContent = 'Select it'; }
+  setTimeout(() => { btn.textContent = 'Copy'; }, 1400);
+}));
+</script>
+</body>
+</html>

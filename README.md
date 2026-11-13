@@ -160,7 +160,7 @@ Safer replacement for `sed -i`, `perl -i`, and `awk -i inplace` in Claude Code s
 
 ### CodeIndex
 
-> [`plugins/code-index/`](plugins/code-index/)
+> [`plugins/code-index/`](plugins/code-index/) · [landing page](https://microbians.github.io/AI.SKILLS/plugins/code-index/)
 
 A fast, incremental **symbol index** so the agent can answer *"where is `X` defined?"*, *"what references it?"*, and *"how does this project wire together?"* in milliseconds instead of reading thousands of files or spawning search agents on every change. Thin layer over **universal-ctags** (symbol extraction, ~150 languages) + **SQLite** (`node:sqlite`, symbols + a relational edge graph, queried in ms).
 

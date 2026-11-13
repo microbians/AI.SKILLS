@@ -1,0 +1,39 @@
+<!doctype html>
+<!-- Source of og.png (1200x630). Regenerate:
+     chrome --headless=new --hide-scrollbars --window-size=1200,630 --screenshot=og.png og.html -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+@font-face { font-family: "Bricolage Grotesque"; font-weight: 200 800; font-stretch: 75% 100%; src: url("fonts/BricolageGrotesque-latin.woff2") format("woff2"); }
+@font-face { font-family: "Meslo Code"; font-weight: 400; src: url("../../../fonts/assets/fonts/MesloCode-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Meslo Code"; font-weight: 700; src: url("../../../fonts/assets/fonts/MesloCode-Bold.woff2") format("woff2"); }
+:root { --paper: #eef0ee; --ink-1: #0d1015; --ink-3: #5c636e; --ink-5: #c6cbd1; --cobalt: #1f3fd1; --on-2: #c3cdff; }
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; background: var(--paper); color: var(--ink-1); font-family: "Bricolage Grotesque", sans-serif; }
+.band { position: absolute; top: 0; bottom: 0; left: 560px; width: 220px; background: var(--cobalt); }
+.name { position: absolute; left: 578px; top: 44px; font-weight: 800; font-stretch: 85%; font-size: 30px; color: #fff; }
+h1 { position: absolute; right: 664px; top: 110px; margin: 0; text-align: right; font-weight: 800; font-stretch: 78%; letter-spacing: -.025em; line-height: .92; font-size: 92px; }
+.lede { position: absolute; left: 802px; top: 120px; width: 340px; margin: 0; font-size: 23px; line-height: 1.4; color: #343a44; }
+.rows { position: absolute; left: 60px; right: 0; top: 390px; }
+.row { display: grid; grid-template-columns: 480px 220px 1fr; column-gap: 20px; height: 40px; align-items: center; border-top: 1px solid var(--ink-5); font: 400 16px/1 "Meslo Code", monospace; }
+.row span:first-child { text-align: right; color: var(--ink-3); white-space: nowrap; overflow: hidden; }
+.row span:nth-child(2) { color: #fff; font-weight: 700; padding-left: 18px; }
+.row span:last-child { color: var(--ink-3); white-space: nowrap; }
+.row.hit span:first-child, .row.hit span:last-child { color: var(--ink-1); }
+</style>
+</head>
+<body>
+<div class="band"></div>
+<div class="name">CodeIndex</div>
+<h1>Ask for<br>a name. Get<br>its line.</h1>
+<p class="lede">Every symbol with its signature and doc. Claude Code gets <span style="font-family:'Meslo Code',monospace;font-size:.85em">file:line</span> in milliseconds.</p>
+<div class="rows">
+  <div class="row hit"><span>store/user-methods.js:42  async</span><span>saveUser</span><span>(user, opts)   (method)</span></div>
+  <div class="row"><span>ui/profile-form.js:88  await store.</span><span>saveUser</span><span>(user, { merge: true });</span></div>
+  <div class="row"><span>api/users.js:31  const saved = await users.</span><span>saveUser</span><span>(body);</span></div>
+  <div class="row"><span>store/import.js:54  await this.</span><span>saveUser</span><span>(u);</span></div>
+  <div class="row"><span>test/user.test.js:17  await store.</span><span>saveUser</span><span>({ id: 7 });</span></div>
+</div>
+</body>
+</html>
