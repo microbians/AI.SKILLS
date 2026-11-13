@@ -167,7 +167,9 @@ A fast, incremental **symbol index** so the agent can answer *"where is `X` defi
 - **Per-project**, stored at `<project-root>/.claude/codeindex.db` (git root, else cwd)
 - **Incremental** — only files whose content hash changed are re-parsed; a no-op reindex touches zero files
 - **Auto-fresh** — a `SessionStart` hook reindexes each session; manual `index` / `index --full` available
-- **Symbol commands:** `where`, `refs`, `file`, `grep`, `stats`, `index`
+- **Symbol commands:** `where` (also `where Class.member`), `refs`, `file`, `members`, `grep`, `stats`, `index`
+- **Loose search** — `grep` takes plain words and finds a symbol by the words of its name (`_loadUser` → load, user), its doc or its signature, ranked by bm25 (FTS5, accents ignored); a misspelt name gets the closest names
+- **Mixins** — a class whose methods are kept in other classes laid onto its prototype (`Object.assign(T.prototype, S.prototype)`, `mixInto(T, S)`, `applyMixins`) is indexed as one: members show `in Source → Target (mixin)`
 - **Relational thread** (deterministic edge graph, no LLM): `callers` (who uses a symbol), `deps` (what a file imports + calls into), `arch` (module dependency map), `flow` (up/downstream of a module)
 - **Also indexes** JS embedded in PHP/HTML templates; non-git projects fall back to a scoped file scan
 - **Shortcut, not a replacement** — ctags indexes definitions; `refs` augments with a ripgrep textual scan
@@ -621,6 +623,8 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-11-13 | TheSecretary v2.23.0: uses CodeIndex when installed — indexing progress bar in the status line, handoff names the functions each changed file's edits touched, a symbol search also finds turns about its file. CodeIndex v1.3.0: `read.mjs` read side for other tools, `.claude/codeindex.progress` while indexing. Search helpers shared in `lib/search.mjs` |
+| 2026-11-13 | CodeIndex v1.2.0: loose `grep` (several plain words, matched as prefixes of a name's words, its doc or signature; FTS5 + bm25, accents ignored; typos → closest names, also on a `where` miss). v1.1.0: mixins — `where Class.member`, `members <Class>`, mixed-in members shown as `in Source → Target (mixin)`. CLAUDE.Global v1.4.8 |
 | 2026-10-30 | TheSecretary v2.18.0: softer status line palette; context bar on a gray background with the solid end at the head and a centered limit mark |
 | 2026-10-30 | TheSecretary v2.17.0: no more macOS notifications; "memory recovered" and "handoff included" show for 15 s in the status line after the face and `Secretary` |
 | 2026-10-30 | TheSecretary v2.16.0: status line face `( ∵ᴖ ᴗ ᴖ∵ )` with blinks and gestures, always the same width; shorter context bar; launcher documented in the install steps |

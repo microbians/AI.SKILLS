@@ -1,8 +1,8 @@
 ---
 name: code-index
 description: Fast symbol lookup for large codebases. Use BEFORE reading files or spawning search agents to locate where a class/function/method is defined and what references it. Backed by an incremental SQLite + universal-ctags index, scoped per project. Answers "where is X?" in milliseconds instead of reading thousands of files.
-version: 1.0.1
-updated: 2026-11-01
+version: 1.3.0
+updated: 2026-11-13
 license: MIT
 metadata:
   type: code-intelligence
@@ -30,7 +30,8 @@ locate a symbol you can name:
 - "Where is `UserService` defined?" → `where UserService`
 - "What references `validateToken`?" → `refs validateToken`
 - "What's in this file?" → `file src/auth/login.ts`
-- "There's a function about parsing… what's it called?" → `grep pars`
+- "Where is `Renderer.draw`, and every method `Renderer` has?" → `where Renderer.draw`, `members Renderer` (mixins included)
+- "There's a function about parsing… what's it called?" → `grep pars` (or `grep parse config`, `grep "reads the picked id"` — words of its name, doc or signature)
 - "How big is this project / what languages?" → `stats`
 
 And *before* a change, to understand how the project wires together (the relational thread):
@@ -52,7 +53,9 @@ This is a shortcut, not a replacement for reading. Once CodeIndex points you at
 node ~/.claude/codeindex/codeindex.mjs where <Name>     # definitions: file:line (kind) + doc
 node ~/.claude/codeindex/codeindex.mjs refs <Name>      # definitions + every textual reference
 node ~/.claude/codeindex/codeindex.mjs file <path>      # all symbols defined in one file
-node ~/.claude/codeindex/codeindex.mjs grep <pattern>   # fuzzy symbol search (substring)
+node ~/.claude/codeindex/codeindex.mjs where <Class.name> # a class's member: its own, or from a class mixed into it
+node ~/.claude/codeindex/codeindex.mjs members <Class>   # every member of a class, its mixins' included
+node ~/.claude/codeindex/codeindex.mjs grep <words…>   # loose search, ranked: words of names, doc, signature; typos → closest names
 
 # Relational thread — how the project connects (deterministic edge graph)
 node ~/.claude/codeindex/codeindex.mjs callers <Name>   # who calls/uses a symbol (blast radius)
@@ -86,6 +89,41 @@ node ~/.claude/codeindex/codeindex.mjs refs parseConfig
 
 ---
 
+## Loose search (grep)
+
+`grep` does not need the exact name. Same method as The Secretary (SQLite FTS5):
+
+- Each name is indexed as the words it is made of: `_loadUser` → `load`, `user`;
+  `HTTPServer2` → `HTTP`, `Server`, `2`; `parse_config_file` → `parse`, `config`, `file`.
+- Each word you give matches as a **prefix** of any of those words, of the symbol's doc
+  comment or of its signature; several words are OR-ed and **bm25** ranks the symbols
+  matching most of them (a hit in the name weighs more) first. Case and accents ignored.
+- Then plain substring matches on the name (`ser` finds `_loadUser`).
+- Nothing found → the closest names by edit distance (`lodUser` → `_loadUser`);
+  `where` does the same when an exact name misses.
+- A name defined in several files shows once, the shortest path first, with `(+N more)`.
+
+---
+
+## Mixins (a class's methods kept in other files)
+
+A large JS/TS class split into groups of methods — each group a class of its own whose
+members are laid onto the main class's prototype — is indexed as such. The index records
+the wiring wherever the project writes it:
+
+- `Object.assign(Target.prototype, Source.prototype, …)`
+- a helper whose name contains "mix": `mixInto(Target, Source)`, `applyMixins(Target, [A, B])`,
+  or one called over a list: `for (const m of [A, B]) mixInto(Target, m)`
+
+Then a mixed-in member shows its real home and the class it lands in:
+`where _loadUser` → `store/user-methods.js:172  _loadUser(id)  (method)  in UserMethods → Store (mixin)`;
+`where Store._loadUser` finds it by the class it belongs to; `members Store` lists the
+class's own members and each mixin's, with where it is wired. With mixins, members are read
+only from the wiring file and each source class's file, so stale copies of the class
+elsewhere in the tree (old versions kept for A/B) stay out.
+
+---
+
 ## Freshness / self-healing
 
 - The SessionStart hook reindexes incrementally each session, so the DB is usually fresh.
@@ -93,6 +131,7 @@ node ~/.claude/codeindex/codeindex.mjs refs parseConfig
   misses a symbol you know exists, force a refresh: `node ~/.claude/codeindex/codeindex.mjs index`.
 - If results look stale or wrong after a big refactor: `index --full`.
 - If `where`/`refs` say "no index yet", run `index` once.
+- After an upgrade that adds a table (schema version), the first `index` rebuilds the whole index once — on a large tree (30k files) that takes minutes.
 
 ## Limitations (be honest about these)
 

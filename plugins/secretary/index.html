@@ -278,6 +278,7 @@ section.part { padding: clamp(64px, 9vw, 128px) var(--gutter) 0; }
 }
 .statusline .face { color: #e8893a; } .statusline .bar { color: #b9aca0; } .statusline .fill { color: #e8893a; }
 .statusline .mark { color: #f1e6c8; } .statusline .yel { color: #e9c14a; }
+.statusline .index { color: #7fa9c9; } .statusline .index-track { color: #34424e; }
 .caption { margin: 8px 0 0; font-size: 13.5px; color: var(--on-enamel-2); }
 
 /* travels with the folder */
@@ -468,6 +469,24 @@ footer.foot a { color: var(--on-enamel); }
       </div>
       <pre class="statusline" aria-label="Status line example"><span class="face">( ∵ᴖ ᴗ ᴖ∵ )</span> Secretary <span class="fill">█</span><span class="bar">░░░░░░░</span><span class="mark">│</span><span class="bar">░░░░░░░░</span>   56K/500K · Opus 5.5 medium · <span class="fill">█</span>░░░░ 12% <span class="yel">▒▓██</span>░ 78% · work</pre>
       <p class="caption">The status line: a desk clerk who blinks, the context used against the trim limit, the model, and your plan usage.</p>
+    </div>
+  </section>
+
+  <section class="part" id="codeindex" aria-labelledby="codeindex-h">
+    <header>
+      <h2 id="codeindex-h">Hand in hand with CodeIndex.</h2>
+      <p>The Secretary remembers what was said; <a href="https://github.com/microbians/AI.SKILLS/tree/main/plugins/code-index">CodeIndex</a> knows where every symbol lives. Install both and each one reads the other: nothing to configure, and without CodeIndex everything works as before.</p>
+    </header>
+    <div class="inner folder">
+      <div>
+        <pre class="statusline" aria-label="Status line while CodeIndex indexes"><span class="face">( ∵◐ ᴗ ◐∵ )</span> CodeIndex <span class="index">██████</span><span class="index-track">██████████</span> <span class="index">42%</span> · Opus 5.5 medium</pre>
+        <p class="caption">While CodeIndex indexes the project, it takes over the status line: its own face, its own bar.</p>
+      </div>
+      <ul class="points">
+        <li><b>Handoffs name functions, not just files.</b> <code>store/user-methods.js (changed: _loadUser, saveUser)</code> tells the next session what each edit touched.</li>
+        <li><b>Recall by symbol.</b> Ask about <code>saveUser</code> and the search also finds the turns about the file that defines it.</li>
+        <li><b>One search engine.</b> Both share the same full-text query helpers, so a lookup reads the same way in either tool.</li>
+      </ul>
     </div>
   </section>
 

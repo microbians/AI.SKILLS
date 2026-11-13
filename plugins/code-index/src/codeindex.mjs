@@ -14,7 +14,9 @@
 //   where <name>     Print definitions of a symbol  ->  file:line  signature  (kind) + doc.
 //   refs <name>      Print every line that mentions a symbol (definitions + plain references).
 //   file <path>      List all symbols defined in one file.
-//   grep <pattern>   Fuzzy symbol search (LIKE) — useful when you don't know the exact name.
+//   members <Class>  Every member of a class: its own and those mixed into it from other classes.
+//   grep <words…>    Loose search, ranked: words as prefixes of a name's words, its doc or
+//                    signature, then substrings; misspelt → the closest names.
 //   stats            Index summary: files, symbols, edges, languages, freshness.
 //   callers <name>   Relational thread: who calls/uses a symbol (symbol→symbol edges).
 //   deps <file>      Relational thread: what a file imports + the local files it calls into.
@@ -27,8 +29,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import { execFileSync, execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, statSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, relative, resolve, dirname } from 'node:path';
+import { foldAccents, ftsPrefixQuery, editDistance } from './search.mjs';
 
 // ─── Project root resolution ─────────────────────────────────────
 // Climb to the git root so the index is stable regardless of cwd inside the repo.
@@ -140,6 +143,25 @@ function openDb() {
     CREATE INDEX IF NOT EXISTS idx_refs_dst  ON refs(dst_name);
     CREATE INDEX IF NOT EXISTS idx_refs_src  ON refs(src_path);
     CREATE INDEX IF NOT EXISTS idx_refs_kind ON refs(kind);
+    -- Mixins: class source's members laid onto class target (JS/TS), found where
+    -- the project wires them (Object.assign(T.prototype, S.prototype), a *mix*(T, S)
+    -- helper, TypeScript's applyMixins(T, [S…])). A member of the source is then a
+    -- member of the target too: where/file/members show it so.
+    CREATE TABLE IF NOT EXISTS mixins (
+      target TEXT NOT NULL,       -- the class that receives the members
+      source TEXT NOT NULL,       -- the class whose members are copied
+      path   TEXT NOT NULL,       -- file where the wiring is
+      line   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mixins_source ON mixins(source);
+    CREATE INDEX IF NOT EXISTS idx_mixins_target ON mixins(target);
+    -- Loose search (grep): each symbol's name split into words (_loadUser → "load user"),
+    -- its doc and signature, one row per symbols row (same rowid). unicode61 with
+    -- remove_diacritics so "funcion" finds "función". Same method as The Secretary.
+    CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+      words, doc, sig,
+      tokenize = 'unicode61 remove_diacritics 2'
+    );
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
   `);
   return db;
@@ -428,14 +450,116 @@ function extractCalls(relPath, lines, localDefs, defByName) {
   return edges;
 }
 
+// ─── Mixin extraction (class → class) ─────────────────────────────
+// Where a file lays one class's members onto another's prototype. Recognised:
+//   Object.assign(T.prototype, S.prototype, …) / Object.assign(T.prototype, S)
+//   <name containing "mix">(T, S)            — a project's own mixin helper
+//   <name containing "mix">(T, [S1, S2, …])  — TypeScript handbook's applyMixins
+//   for (const m of [S1, S2, …]) <mix…>(T, m) — the helper called over a list
+// The helper's own definition (function mixInto(target, source) { …) is skipped.
+// Returns [{ target, source, line }]. Text patterns, JS/TS shaped.
+const IDENT_RE = /^[A-Za-z_$][\w$]*$/;
+const MIX_ASSIGN = /Object\.assign\(\s*([A-Za-z_$][\w$]*)\.prototype\s*,([^)]*)\)/;
+const MIX_LIST = /\b\w*[mM]ix\w*\s*\(\s*([A-Za-z_$][\w$]*)\s*,\s*\[([^\]]*)\]/;
+const MIX_ONE = /\b\w*[mM]ix\w*\s*\(\s*([A-Za-z_$][\w$]*)\s*,\s*([A-Za-z_$][\w$]*)\s*\)/;
+const MIX_LOOP = /for\s*\(\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s+of\s+\[([^\]]*)\]/;
+const MIX_DEFINITION = /\bfunction\s+\w*mix\w*\s*\(|\b\w*mix\w*\s*\([^)]*\)\s*\{/i;
+function extractMixins(lines) {
+  const out = [];
+  const names = (list) => list.split(',').map((x) => x.trim().replace(/\.prototype$/, '')).filter((x) => IDENT_RE.test(x));
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\/\/.*$/, '');
+    if (MIX_DEFINITION.test(line) && !/\bfor\s*\(/.test(line)) continue;
+    let m = line.match(MIX_ASSIGN);
+    if (m) { for (const src of names(m[2])) out.push({ target: m[1], source: src, line: i + 1 }); continue; }
+    m = line.match(MIX_LIST);
+    if (m) { for (const src of names(m[2])) out.push({ target: m[1], source: src, line: i + 1 }); continue; }
+    m = line.match(MIX_ONE);
+    if (m) {
+      // (the helper called over a list: the loop variable stands for each class in it)
+      const loop = line.match(MIX_LOOP);
+      const sources = loop && loop[1] === m[2] ? names(loop[2]) : [m[2]];
+      for (const src of sources) out.push({ target: m[1], source: src, line: i + 1 });
+    }
+  }
+  return out;
+}
+
+// (source class → the classes it is mixed into; target → its mixin sources)
+function mixinMaps(db) {
+  const into = new Map(), from = new Map();
+  for (const r of db.prepare('SELECT DISTINCT target, source FROM mixins').all()) {
+    if (!into.has(r.source)) into.set(r.source, []);
+    into.get(r.source).push(r.target);
+    if (!from.has(r.target)) from.set(r.target, []);
+    from.get(r.target).push(r.source);
+  }
+  return { into, from };
+}
+// (the files a class's members are read from when it has mixins: the target's, where
+// it is wired; a source's, where that class is defined — copies of a class elsewhere in
+// the tree, an old version kept for comparison, are left out. null: no restriction)
+function mixinPaths(db, cls) {
+  const wired = db.prepare('SELECT DISTINCT path FROM mixins WHERE target = ?').all(cls).map((r) => r.path);
+  if (!wired.length) return null;
+  const paths = new Map([[cls, new Set(wired)]]);
+  for (const r of db.prepare('SELECT DISTINCT source FROM mixins WHERE target = ?').all(cls)) {
+    paths.set(r.source, new Set(db.prepare("SELECT DISTINCT path FROM symbols WHERE name = ? AND kind = 'class'").all(r.source).map((x) => x.path)));
+  }
+  return paths;
+}
+// (a symbol's scope as shown: "Source → Target (mixin)" when Source is mixed into Target)
+function scopeLabel(scope, into) {
+  if (!scope) return '';
+  const t = into.get(scope);
+  return t ? `  in ${scope} → ${t.join(', ')} (mixin)` : `  in ${scope}`;
+}
+
+// (a name as the words it is made of, plus itself: _loadUser → "_loadUser load User",
+// HTTPServer2 → "HTTPServer2 HTTP Server 2", so a search finds it by any of them)
+function nameWords(name) {
+  const split = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([A-Za-z])([0-9])/g, '$1 $2')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+  return split === name ? name : `${name} ${split}`;
+}
+
+// Bump when the schema gains a table a full rebuild must fill.
+const SCHEMA_VERSION = '3';
+
+// Progress of a running index, for a status line to draw: <project>/.claude/codeindex.progress
+// = { pid, phase: 'files' | 'links' | 'saving', done, total }. Written only once a run has
+// lasted a second (a quick incremental run never shows), at most twice a second, and
+// removed when the run ends — finished or failed. A reader drops it if pid is gone.
+const PROGRESS_PATH = join(DB_DIR, 'codeindex.progress');
+function progressWriter() {
+  const start = Date.now();
+  let last = 0;
+  return {
+    step(phase, done, total, force = false) {
+      const now = Date.now();
+      if (now - start < 1000 || (!force && now - last < 500)) return;
+      last = now;
+      try { writeFileSync(PROGRESS_PATH, JSON.stringify({ pid: process.pid, phase, done, total })); } catch { /* read-only tree */ }
+    },
+    end() { try { unlinkSync(PROGRESS_PATH); } catch { /* never written */ } },
+  };
+}
+
 // ─── Incremental index ───────────────────────────────────────────
 function doIndex({ full = false, verbose = false } = {}) {
   requireCtags();
   ensureGitignored();
   const db = openDb();
 
+  // (an index made before a table existed has nothing in it: rebuilt whole once)
+  const schema = db.prepare("SELECT value FROM meta WHERE key='schema'").get();
+  if (!schema || schema.value !== SCHEMA_VERSION) full = true;
   if (full) {
-    db.exec('DELETE FROM files; DELETE FROM symbols;');
+    db.exec('DELETE FROM files; DELETE FROM symbols; DELETE FROM mixins; DELETE FROM symbols_fts;');
   }
 
   const known = new Map(); // path -> {hash, mtime}
@@ -447,17 +571,23 @@ function doIndex({ full = false, verbose = false } = {}) {
   const currentSet = new Set(current);
 
   const insSym = db.prepare('INSERT INTO symbols (name, kind, path, line, scope, lang, sig, doc) VALUES (?,?,?,?,?,?,?,?)');
-  const delSym = db.prepare('DELETE FROM symbols WHERE path = ?');
+  const delSymOnly = db.prepare('DELETE FROM symbols WHERE path = ?');
+  const delFts = db.prepare('DELETE FROM symbols_fts WHERE rowid IN (SELECT rowid FROM symbols WHERE path = ?)');
+  const delSym = { run: (path) => { delFts.run(path); delSymOnly.run(path); } };
+  const insFts = db.prepare('INSERT INTO symbols_fts (rowid, words, doc, sig) VALUES (?,?,?,?)');
   const insRef = db.prepare('INSERT INTO refs (kind, src_name, src_path, src_line, dst_name, dst_path) VALUES (?,?,?,?,?,?)');
   const delRef = db.prepare('DELETE FROM refs WHERE src_path = ?');
   const upFile = db.prepare('INSERT OR REPLACE INTO files (path, hash, mtime) VALUES (?,?,?)');
   const delFile = db.prepare('DELETE FROM files WHERE path = ?');
+  const insMix = db.prepare('INSERT INTO mixins (target, source, path, line) VALUES (?,?,?,?)');
+  const delMix = db.prepare('DELETE FROM mixins WHERE path = ?');
 
   let changed = 0, added = 0, removed = 0, skipped = 0;
   // Files whose symbols changed this run — their refs must be re-extracted in a
   // second pass, once the full symbol table is up to date (call resolution needs it).
   const touched = new Map(); // relPath -> lines[]
 
+  const progress = progressWriter();
   db.exec('BEGIN');
   try {
     // Removed files: in DB but no longer on disk.
@@ -465,13 +595,16 @@ function doIndex({ full = false, verbose = false } = {}) {
       if (!currentSet.has(path)) {
         delSym.run(path);
         delRef.run(path);
+        delMix.run(path);
         delFile.run(path);
         removed++;
         if (verbose) console.log(`  - ${path}`);
       }
     }
 
+    let fileIndex = 0;
     for (const path of current) {
+      progress.step('files', fileIndex++, current.length);
       const abs = join(ROOT, path);
       let st;
       try { st = statSync(abs); } catch { continue; }
@@ -501,7 +634,12 @@ function doIndex({ full = false, verbose = false } = {}) {
       if (lines.some((l) => l.length > 50000)) { skipped++; continue; }
       const syms = extractSymbols(path, lines);
       delSym.run(path);
-      for (const s of syms) insSym.run(s.name, s.kind, path, s.line, s.scope, s.lang, s.sig, s.doc);
+      for (const s of syms) {
+        const { lastInsertRowid } = insSym.run(s.name, s.kind, path, s.line, s.scope, s.lang, s.sig, s.doc);
+        insFts.run(lastInsertRowid, nameWords(s.name), s.doc, s.sig);
+      }
+      delMix.run(path);
+      if (isCodeFile(path)) for (const x of extractMixins(lines)) insMix.run(x.target, x.source, path, x.line);
       upFile.run(path, hash, Math.floor(st.mtimeMs));
       touched.set(path, lines);
       if (prev) changed++; else added++;
@@ -532,7 +670,9 @@ function doIndex({ full = false, verbose = false } = {}) {
         if (!defByName.has(r.name)) defByName.set(r.name, { path: r.path, line: r.line, kind: r.kind });
       }
       for (const [n, c] of defCount) if (c > 1) defByName.delete(n); // ambiguous → not resolvable
+      let linkIndex = 0;
       for (const [path, lines] of touched) {
+        progress.step('links', linkIndex++, touched.size);
         delRef.run(path);
         // Imports — file-level edges.
         for (const imp of extractImports(lines)) {
@@ -552,10 +692,14 @@ function doIndex({ full = false, verbose = false } = {}) {
 
     db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)')
       .run('last_indexed', String(Math.floor(Date.now() / 1000)));
+    db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)').run('schema', SCHEMA_VERSION);
+    progress.step('saving', 1, 1, true);
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
+  } finally {
+    progress.end();
   }
 
   db.close();
@@ -571,16 +715,32 @@ function openDbReadonly() {
   return new DatabaseSync(DB_PATH, { readOnly: true });
 }
 
+// where <name> or where <Class.member>: the member as the class has it — its own, or
+// from a class mixed into it (mixins)
 function where(name) {
   const db = openDbReadonly();
-  const rows = db.prepare(
-    'SELECT path, line, kind, scope, lang, sig, doc FROM symbols WHERE name = ? ORDER BY path, line'
-  ).all(name);
+  const { into, from } = mixinMaps(db);
+  let rows;
+  const dot = name.lastIndexOf('.');
+  if (dot > 0) {
+    const cls = name.slice(0, dot), member = name.slice(dot + 1), scopes = [cls, ...(from.get(cls) || [])];
+    rows = db.prepare(
+      `SELECT path, line, kind, scope, lang, sig, doc FROM symbols WHERE name = ? AND scope IN (${scopes.map(() => '?').join(',')}) ORDER BY path, line`
+    ).all(member, ...scopes);
+    const paths = mixinPaths(db, cls);
+    if (paths) rows = rows.filter((r) => paths.get(r.scope)?.has(r.path));
+    name = member;
+  } else {
+    rows = db.prepare(
+      'SELECT path, line, kind, scope, lang, sig, doc FROM symbols WHERE name = ? ORDER BY path, line'
+    ).all(name);
+  }
   if (!rows.length) {
-    console.log(`No symbol named "${name}". Try:  grep ${name}`);
+    const near = nearNames(db, name);
+    console.log(`No symbol named "${name}".` + (near.length ? `  Closest names: ${near.join(', ')}` : '') + `  Loose search:  grep ${name}`);
   } else {
     for (const r of rows) {
-      const scope = r.scope ? `  in ${r.scope}` : '';
+      const scope = scopeLabel(r.scope, into);
       console.log(`${r.path}:${r.line}\t${name}${r.sig || ''}\t(${r.kind || '?'})${scope}`);
       if (r.doc) console.log(`    ${r.doc}`);
     }
@@ -588,15 +748,61 @@ function where(name) {
   db.close();
 }
 
-function grep(pattern) {
+// The indexed names closest to a misspelt one (case, accents and leading _/$ ignored)
+function nearNames(db, word, count = 8) {
+  const fold = (s) => foldAccents(s).replace(/^[_$]+/, '');
+  const w = fold(word), limit = Math.max(1, Math.floor(w.length / 4));
+  const near = [];
+  for (const { name } of db.prepare('SELECT DISTINCT name FROM symbols').all()) {
+    const d = editDistance(w, fold(name), limit);
+    if (d <= limit) near.push({ name, d });
+  }
+  return near.sort((a, b) => a.d - b.d || a.name.length - b.name.length).slice(0, count).map((x) => x.name);
+}
+
+// grep <words…>: loose search, ranked. Each word matches as a prefix of any word of a
+// name (_loadUser is "load" + "user"), of its doc or of its signature; the words are
+// OR-ed and bm25 puts the symbols matching most of them, in the name first, on top.
+// Then plain substring matches on the name (mid-word: "ser" in _loadUser). Nothing
+// found → the nearest names, for a misspelling. A name copied in several files is
+// shown once, with how many more places hold it.
+function grep(...words) {
   const db = openDbReadonly();
-  const rows = db.prepare(
-    'SELECT DISTINCT name, kind, path, line, sig, doc FROM symbols WHERE name LIKE ? ORDER BY name LIMIT 100'
-  ).all(`%${pattern}%`);
-  if (!rows.length) console.log(`No symbol matching "*${pattern}*".`);
-  else for (const r of rows) {
-    console.log(`${r.name}${r.sig || ''}\t${r.path}:${r.line}\t(${r.kind || '?'})`);
-    if (r.doc) console.log(`    ${r.doc}`);
+  const terms = words.join(' ').split(/\s+/).map((t) => t.replace(/["*()^:+\-]/g, '')).filter(Boolean);
+  const shown = new Map(); // name|kind|scope → { row, copies }
+  const seen = new Set();  // path:line — one definition found by both searches counts once
+  const add = (r) => {
+    const at = `${r.path}:${r.line}:${r.name}`;
+    if (seen.has(at)) return;
+    seen.add(at);
+    const k = `${r.name}|${r.kind}|${r.scope}`;
+    if (shown.has(k)) shown.get(k).copies++;
+    else shown.set(k, { row: r, copies: 0 });
+  };
+  const match = ftsPrefixQuery(terms);
+  if (match) {
+    for (const r of db.prepare(
+      `SELECT s.name, s.kind, s.path, s.line, s.scope, s.sig, s.doc FROM symbols_fts f JOIN symbols s ON s.rowid = f.rowid
+       WHERE symbols_fts MATCH ? ORDER BY bm25(symbols_fts, 10.0, 1.0, 2.0), length(s.path) LIMIT 2000`
+    ).all(match)) add(r);
+  }
+  for (const t of terms) {
+    for (const r of db.prepare(
+      'SELECT name, kind, path, line, scope, sig, doc FROM symbols WHERE name LIKE ? ORDER BY length(name), length(path) LIMIT 500'
+    ).all(`%${t}%`)) add(r);
+  }
+  if (!shown.size) {
+    const near = terms.flatMap((t) => nearNames(db, t));
+    console.log(`No symbol matching "${terms.join(' ')}".` + (near.length ? `  Closest names: ${[...new Set(near)].join(', ')}` : ''));
+  } else {
+    const list = [...shown.values()];
+    const { into } = mixinMaps(db);
+    for (const { row: r, copies } of list.slice(0, 40)) {
+      const more = copies ? `  (+${copies} more)` : '';
+      console.log(`${r.name}${r.sig || ''}\t${r.path}:${r.line}\t(${r.kind || '?'})${scopeLabel(r.scope, into)}${more}`);
+      if (r.doc) console.log(`    ${r.doc}`);
+    }
+    if (list.length > 40) console.log(`… ${list.length - 40} more — add a word to narrow it`);
   }
   db.close();
 }
@@ -608,12 +814,38 @@ function fileSymbols(path) {
   const rows = db.prepare(
     'SELECT name, kind, line, scope, sig, doc FROM symbols WHERE path = ? ORDER BY line'
   ).all(key);
+  const { into } = mixinMaps(db);
   if (!rows.length) console.log(`No symbols indexed for "${key}".`);
   else for (const r of rows) {
-    const scope = r.scope ? `  in ${r.scope}` : '';
+    const scope = scopeLabel(r.scope, into);
     console.log(`${r.line}\t${r.name}${r.sig || ''}\t(${r.kind || '?'})${scope}`);
     if (r.doc) console.log(`    \t${r.doc}`);
   }
+  db.close();
+}
+
+// members <Class>: every member of a class — its own, then each class mixed into it
+// (mixins), with where the mixin is wired. Without mixins, a class defined in several
+// files lists each file's
+function members(cls) {
+  const db = openDbReadonly();
+  const { from } = mixinMaps(db);
+  const paths = mixinPaths(db, cls);
+  const show = (scope, title) => {
+    let rows = db.prepare(
+      "SELECT name, kind, path, line, sig FROM symbols WHERE scope = ? AND kind != 'class' ORDER BY path, line"
+    ).all(scope);
+    if (paths) rows = rows.filter((r) => paths.get(scope)?.has(r.path));
+    console.log(`— ${title} (${rows.length}) —`);
+    for (const r of rows) console.log(`  ${r.path}:${r.line}\t${r.name}${r.sig || ''}\t(${r.kind || '?'})`);
+    return rows.length;
+  };
+  let n = show(cls, `${cls}, its own`);
+  for (const src of from.get(cls) || []) {
+    const at = db.prepare('SELECT path, line FROM mixins WHERE target = ? AND source = ? LIMIT 1').get(cls, src);
+    n += show(src, `from ${src} (mixed in at ${at.path}:${at.line})`);
+  }
+  if (!n) console.log(`No members indexed for "${cls}". Try:  where ${cls}`);
   db.close();
 }
 
@@ -779,9 +1011,11 @@ Usage: node codeindex.mjs <command> [arg]
   index --full       Full rebuild from scratch
   index -v           Verbose: print each added/changed/removed file
   where <name>       Definitions of a symbol  ->  file:line (kind)
+  where <Class.name> A class's member, its own or from a class mixed into it
   refs <name>        Definitions + every textual reference
   file <path>        All symbols defined in one file
-  grep <pattern>     Fuzzy symbol search (substring match)
+  members <Class>    Every member of a class, its own and those mixed into it
+  grep <words…>      Loose search, ranked (name words, doc, signature; typos → closest names)
   stats              Index summary and freshness
 
  Relational thread (how the project wires together):
@@ -806,7 +1040,8 @@ switch (cmd) {
   case 'where':   if (!rest[0]) { help(); process.exit(1); } where(rest[0]); break;
   case 'refs':    if (!rest[0]) { help(); process.exit(1); } refs(rest[0]); break;
   case 'file':    if (!rest[0]) { help(); process.exit(1); } fileSymbols(rest[0]); break;
-  case 'grep':    if (!rest[0]) { help(); process.exit(1); } grep(rest[0]); break;
+  case 'members': if (!rest[0]) { help(); process.exit(1); } members(rest[0]); break;
+  case 'grep':    if (!rest[0]) { help(); process.exit(1); } grep(...rest); break;
   case 'callers': if (!rest[0]) { help(); process.exit(1); } callers(rest[0]); break;
   case 'deps':    if (!rest[0]) { help(); process.exit(1); } deps(rest[0]); break;
   case 'arch':    arch(); break;

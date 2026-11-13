@@ -103,6 +103,8 @@ info "Creating $DEST"
 mkdir -p "$DEST"
 cp "$SCRIPT_DIR/src/codeindex.mjs" "$DEST/"
 cp "$SCRIPT_DIR/src/reindex-hook.mjs" "$DEST/"
+cp "$SCRIPT_DIR/src/read.mjs" "$DEST/"     # read side, for other tools (The Secretary)
+cp "$SCRIPT_DIR/src/search.mjs" "$DEST/"   # shared with The Secretary (AI.SKILLS/lib/search.mjs)
 chmod +x "$DEST/codeindex.mjs" "$DEST/reindex-hook.mjs"
 
 info "Installing code-index skill..."

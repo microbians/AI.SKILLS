@@ -367,6 +367,26 @@ The semantic layer is **optional**. Without `sqlite-vec` and the embedding venv,
 silently stays on FTS5 — nothing breaks. Both indexes live inside the project's own
 `summaries.db`, so they travel with the folder like the rest of the memory.
 
+## With CodeIndex (optional)
+
+When the [CodeIndex](../code-index/) plugin is installed (`~/.claude/codeindex/read.mjs`
+exists) and the project has an index, The Secretary uses it; otherwise nothing changes.
+
+- **Status line:** while CodeIndex indexes the project, its bar takes the context bar's
+  place, `CodeIndex` replaces the `Secretary` label and the face spins its eyes (◐ ◓ ◑ ◒)
+  (`( ∵◐ ᴗ ◐∵ ) CodeIndex ████ 42%`, in blue; reading
+  files fills it to 75%, linking the rest). It shows only
+  for runs longer than a second and disappears when the run ends or its process is gone.
+- **Handoff:** a changed file names the functions its edits touched —
+  `- src/store/user-methods.js (changed: _loadUser, saveUser)` — so the summary
+  can say what changed, not only where.
+- **Search:** a term naming a symbol also matches the turns that talked about the file
+  defining it (`_loadUser` → `store/user-methods.js`). Those rows rank below every row that
+  holds a term of the question.
+
+The FTS query helpers (accent folding, word-prefix query, edit distance) are shared with
+CodeIndex: one copy in `AI.SKILLS/lib/search.mjs`, linked from `src/search.mjs`.
+
 ## Requirements
 
 - **macOS or Linux**
@@ -622,6 +642,7 @@ TheSecretary/
 ├── backups/            ← Previous versions (gitignored)
 └── src/
     ├── summarize.mjs   ← Main secretary script
+    ├── search.mjs      ← FTS query helpers, shared with CodeIndex (link to AI.SKILLS/lib/search.mjs)
     ├── secretary.mjs   ← `secretary` launcher (runs claude, reopens trimmed sessions)
     ├── embed.py        ← Embedding helper (Qwen3-Embedding-0.6B via MLX)
     ├── start-llm.sh    ← LLM server manager
@@ -639,6 +660,9 @@ TheSecretary/
 
 | Version | Date | Change |
 |---|---|---|
+| 2.23.2 | 2026-11-13 | Status line: the bar's head cell shows the fraction of a cell as intensity (0.4 of a cell = 40% color), a solid cell in a mixed color instead of ▒ ▓ glyphs, so it renders the same in every terminal. While CodeIndex indexes, its bar (same width) replaces the context bar and `CodeIndex` replaces the `Secretary` label, with its own face (eyes spinning ◐ ◓ ◑ ◒); one space between the bar and `96K/500K` |
+| 2.23.1 | 2026-11-13 | Status line: bars are solid cells (terminals drew the ▒ ▓ fade as flat tones or nothing); the CodeIndex bar is blue on a dark blue track and reads `CodeIndex 42%`, one bar across its phases |
+| 2.23.0 | 2026-11-13 | Uses CodeIndex when installed: indexing progress bar in the status line, changed files in the handoff name the functions their edits touched, a search for a symbol also finds turns about its file. FTS query helpers shared with CodeIndex (`lib/search.mjs`) |
 | 2.22.1 | 2026-11-05 | Status line: the trim preview (`✂ conserva N prompts desde «…»`) is gone, together with the temp file the Stop hook wrote for it |
 | 2.22.0 | 2026-11-02 | Status line: the session cost shows only on API-key sessions (no `rate_limits` from Claude Code); the prompt-cache segment is gone; 5 h / 7 d usage is a 5-cell bar plus percentage each, drawn by the same `statusBar` as the context bar; warm palette (orange face, warm gray / yellow / red levels, olive track, cream mark) |
 | 2.21.1 | 2026-11-02 | Background vector indexing no longer saturates the GPU: `embed.py` takes a `pace` and idles that many times each batch's duration (index-vectors sends batches of 16 at pace 3, so the GPU is busy at most ~25% of the time). Slices grow from 128 to 512 turns, so the model reloads 4× less. Re-entering the GPU lock refreshes its mtime, so a run longer than 5 min is never taken for stale. Query embedding for search stays unpaced |

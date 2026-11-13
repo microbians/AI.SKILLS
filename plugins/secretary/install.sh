@@ -179,6 +179,7 @@ cp "$SCRIPT_DIR/src/start-llm.sh" "$DEST/"
 cp "$SCRIPT_DIR/src/package.json" "$DEST/"
 cp "$SCRIPT_DIR/src/inject-claude-md.mjs" "$DEST/"
 cp "$SCRIPT_DIR/src/secretary.mjs" "$DEST/"
+cp "$SCRIPT_DIR/src/search.mjs" "$DEST/"   # shared with CodeIndex (AI.SKILLS/lib/search.mjs)
 chmod +x "$DEST/secretary.mjs"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$DEST/secretary.mjs" "$HOME/.local/bin/secretary"

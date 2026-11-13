@@ -28,6 +28,7 @@ import { createHash } from 'crypto';
 import { createRequire } from 'module';
 import { execSync, execFile, execFileSync } from 'child_process';
 import http from 'http';
+import { foldAccents, ftsPrefixQuery, ftsPhrase } from './search.mjs';
 
 // ═══════════════════ CONFIG ═══════════════════
 
@@ -970,6 +971,18 @@ if (existsSync(LOCAL_HOOKS)) {
   catch (err) { process.stderr.write(`[secretary] local hooks failed to load: ${err.message}\n`); }
 }
 
+// CodeIndex (optional plugin, a per-project symbol index): when installed, its read
+// module gives the status line the progress of a running index, the handoff the
+// functions each edit touched, and recall the files defining a symbol asked about.
+// Not installed, or a project without an index → codeIndex is null / its calls
+// return nothing, and everything works as without it.
+const CODEINDEX_READ = join(homedir(), '.claude', 'codeindex', 'read.mjs');
+let codeIndex = null;
+if (existsSync(CODEINDEX_READ)) {
+  try { codeIndex = await import(CODEINDEX_READ); }
+  catch (err) { process.stderr.write(`[secretary] CodeIndex read module failed to load: ${err.message}\n`); }
+}
+
 function gpuHeldExternally() {
   try { return !!localHooks.gpuHeldExternally?.(); }
   catch { return false; }
@@ -1197,6 +1210,7 @@ const FILLER_RE = /^(?:ok(?:ay)?|vale|dale|sigue|continua|continúa|gracias|than
  */
 const FILE_WRITERS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
 const FILE_READERS = new Set(['Read', 'Grep', 'Glob']);
+const EDITED_TEXT_CAP = 20000; // per file: enough to name what the edits touched
 
 function parseTranscript(transcriptPath, fromOffset = 0) {
   if (!transcriptPath || !existsSync(transcriptPath)) {
@@ -1251,7 +1265,8 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
             images.push(block.source);
           } else if (block.type === 'tool_use') {
             toolText += `[Tool: ${block.name}] ${JSON.stringify(block.input || {}).slice(0, 200)}\n`;
-            let fp = block.input?.file_path || block.input?.notebook_path;
+            const abs = block.input?.file_path || block.input?.notebook_path;
+            let fp = abs;
             // Relative to the session's root: absolute paths under a deep project
             // root cost ~150 chars each, so the manifest cap cut the list after
             // 8 files and the session's most edited files never reached the model.
@@ -1261,7 +1276,15 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
                 : FILE_READERS.has(block.name) ? 'read' : 'used';
               // A write outranks an earlier read of the same file.
               const prev = filesTouched.get(fp);
-              if (!prev || (prev !== 'changed' && verb === 'changed')) filesTouched.set(fp, verb);
+              const entry = prev && (prev.verb === 'changed' || verb !== 'changed') ? prev : { verb, abs, edited: prev?.edited || '' };
+              // The text each write put in or took out: which functions it touched
+              // is read from it (symbolsIn, when CodeIndex is installed).
+              if (verb === 'changed' && entry.edited.length < EDITED_TEXT_CAP) {
+                const i = block.input || {};
+                const pieces = [i.old_string, i.new_string, i.content, i.new_source, ...(i.edits || []).flatMap((e) => [e.old_string, e.new_string])];
+                entry.edited = (entry.edited + '\n' + pieces.filter((p) => typeof p === 'string').join('\n')).slice(0, EDITED_TEXT_CAP);
+              }
+              filesTouched.set(fp, entry);
             }
           } else if (block.type === 'tool_result') {
             const resultText = typeof block.content === 'string' ? block.content : JSON.stringify(block.content || '');
@@ -1309,15 +1332,25 @@ function parseTranscript(transcriptPath, fromOffset = 0) {
  * Writes come first: a handoff cares about what changed, and a long read-only
  * list would otherwise push the changes out of view.
  */
+// With CodeIndex installed, a changed file's line also names the functions its edits
+// touched — `- store/user-methods.js (changed: _loadUser, saveUser)` — so the handoff
+// can say what changed, not just where.
 function filesTouchedBlock(filesTouched, maxChars = 1200) {
   if (!filesTouched?.size) return '';
   const rank = { changed: 0, used: 1, read: 2 };
-  const rows = [...filesTouched].sort((a, b) => (rank[a[1]] ?? 3) - (rank[b[1]] ?? 3));
+  const rows = [...filesTouched].sort((a, b) => (rank[a[1].verb] ?? 3) - (rank[b[1].verb] ?? 3));
+  const first = rows.find(([, e]) => e.abs?.startsWith('/'));
+  const index = first ? codeIndex?.openIndex(dirname(first[1].abs)) : null;
   let out = '';
-  for (const [path, verb] of rows) {
-    const line = `- ${path} (${verb})\n`;
-    if (out.length + line.length > maxChars) break;
-    out += line;
+  try {
+    for (const [path, { verb, abs, edited }] of rows) {
+      const symbols = verb === 'changed' && index && abs?.startsWith(index.root + '/') ? codeIndex.symbolsIn(index, abs, edited) : [];
+      const line = `- ${path} (${verb}${symbols.length ? ': ' + symbols.join(', ') : ''})\n`;
+      if (out.length + line.length > maxChars) break;
+      out += line;
+    }
+  } finally {
+    index?.db.close();
   }
   if (!out) return '';
   return `FILES TOUCHED (from this session's tool calls — authoritative; do NOT list any file absent from here). Relative paths are under the session's working directory:\n${out}\n`;
@@ -1500,18 +1533,23 @@ function indexTranscript(db, transcriptPath, { session_id, cwd }) {
 }
 
 /**
- * Build an FTS5 MATCH expression that degrades gracefully.
- *
- * Terms are OR-ed with a prefix wildcard, so a query still returns its best partial
- * matches instead of nothing when one word is absent — bm25 ranks whatever matched
- * most. Quotes/operators are stripped: user text must never be read as FTS syntax.
+ * The FTS5 MATCH expression for a search: the terms as word prefixes, OR-ed
+ * (ftsPrefixQuery, shared with CodeIndex), so a query still returns its best partial
+ * matches when one word is absent. With CodeIndex, a term naming a symbol also
+ * brings the files defining it, as phrases: a turn that talked about
+ * store/user-methods.js answers a question about _loadUser. Those extra matches cover
+ * no query term, so they rank under every row that holds one (see `cover`).
  */
-function buildMatchQuery(terms) {
-  const safe = terms
-    .map(t => t.replace(/["*()^:-]/g, '').trim())
-    .filter(t => t.length >= 2);
-  if (!safe.length) return null;
-  return safe.map(t => `"${t}"*`).join(' OR ');
+function buildMatchQuery(terms, cwd) {
+  const match = ftsPrefixQuery(terms);
+  const index = match && codeIndex?.openIndex(cwd);
+  if (!index) return match;
+  try {
+    const phrases = terms.flatMap((t) => codeIndex.filesDefining(index, t)).map(ftsPhrase).filter(Boolean);
+    return [match, ...new Set(phrases)].join(' OR ');
+  } finally {
+    index.db.close();
+  }
 }
 
 // ═══════════════════ SEMANTIC FALLBACK (sqlite-vec + local embeddings) ═══════════════════
@@ -3479,14 +3517,14 @@ async function searchContext(query, { maxHits = 5, snippetChars = 400, cwd = pro
         // 10k-turn index always fills every slot, so "the site similar to X" returned
         // rows that merely shared a word and never the one that said "a site like X".
         // Reciprocal rank fusion puts a row that ranks well in both first.
-        const match = buildMatchQuery(terms);
+        const match = buildMatchQuery(terms, cwd);
         const fused = new Map(); // rowid -> { row, score, literal }
         const RRF_K = 60;
         if (match) {
           // bm25 alone rewards a short row holding ONE rare word, so a filler term
           // ("mencioné") outranked rows matching the real subjects. Rank by how many
           // distinct query terms a row covers first; bm25 only breaks ties.
-          const fold = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+          const fold = foldAccents;
           const folded = terms.map(fold);
           db.prepare(`
             SELECT rowid AS rid, body, role, project_dir, created_at, bm25(turns) AS rank
@@ -3972,29 +4010,38 @@ const STATUS_PALETTE = {
   alert: '#cf4722', // red
   track: '#4a533f', // bar background: olive
   mark: '#d6d5c0',  // clear-limit mark: cream
+  index: '#7fa9c9',      // CodeIndex progress: soft blue, not a warning color
+  indexTrack: '#34424e', // its bar background: the same blue, dark
 };
 
 const rgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(';');
+
+// `a` → `b` at `t` (0..1), as hex.
+function mixHex(a, b, t) {
+  const ch = (hex, i) => parseInt(hex.slice(i, i + 2), 16);
+  return '#' + [1, 3, 5].map(i => Math.round(ch(a, i) + (ch(b, i) - ch(a, i)) * t).toString(16).padStart(2, '0')).join('');
+}
 
 // Text in `hex`, on a `bg` background when given.
 function paint(hex, text, bg) {
   return `${bg ? `\x1b[48;2;${rgb(bg)}m` : ''}\x1b[38;2;${rgb(hex)}m${text}\x1b[0m`;
 }
 
-// Bar of `cells` cells filled to `fraction` in `color`, with an optional mark
-// before cell `mark`.
-function statusBar(fraction, cells, color, mark = null) {
-  const filled = Math.min(cells, Math.round(fraction * cells));
-  // Filled part fades in from its start (▒ → ▓ → █): the head is the solid end.
-  const FADE = ['▒', '▓'];
+// Bar of `cells` cells filled to `fraction` in `color` on `track`, with an optional
+// mark before cell `mark`.
+function statusBar(fraction, cells, color, mark = null, track = STATUS_PALETTE.track) {
+  const filled = Math.min(cells, fraction * cells);
   // The whole bar sits on the track background; filled cells draw the color over it.
-  const { track } = STATUS_PALETTE;
-  const parts = Array.from({ length: cells }, (_, i) => paint(color, i >= filled ? ' ' : FADE[i] || '█', track));
+  // The head cell shows the fractional part as intensity (0.4 of a cell = 40% color):
+  // a solid cell in a mixed color, not shade glyphs (▒ ▓), which some terminals
+  // (xterm.js: VS Code, Antigravity) draw themselves as flat tones.
+  const cellColor = i => mixHex(track, color, Math.max(0, Math.min(1, filled - i)));
+  const parts = Array.from({ length: cells }, (_, i) => paint(cellColor(i), '█', track));
   if (mark == null) return parts.join('');
   // Mark = right eighth of one cell + left eighth of the next (▕▏): the line sits
   // on the boundary between two cells, so it is centered in any font. `│` is not.
   // Each half takes the background of the side it belongs to.
-  const markHalf = (glyph, i) => paint(STATUS_PALETTE.mark, glyph, i < filled ? color : track);
+  const markHalf = (glyph, i) => paint(STATUS_PALETTE.mark, glyph, cellColor(i));
   return `${parts.slice(0, mark).join('')}${markHalf('▕', mark - 1)}${markHalf('▏', mark)}${parts.slice(mark).join('')}`;
 }
 
@@ -4055,9 +4102,17 @@ const HAPPY_EVERY_SECONDS = 60;
 const WINK_EVERY_SECONDS = 20;
 const BLINK_EVERY_SECONDS = 9;
 
-// Context level moods: nervous near the clear limit (warn), angry past it
-// (alert). Each has its own resting face and a short gag every few seconds.
+// Moods: nervous near the clear limit (warn), angry past it (alert), busy while
+// CodeIndex indexes (indexing). Each has its own resting face and a short gag every
+// `every` seconds (MOOD_GAG_EVERY_SECONDS by default); indexing loops its gag nonstop.
+const INDEXING_GAG = [face('◐', 'ᴗ'), face('◓', 'ᴗ'), face('◑', 'ᴗ'), face('◒', 'ᴗ')];
 const LEVEL_MOODS = {
+  indexing: {
+    face: INDEXING_GAG[0],
+    blink: INDEXING_GAG[0],
+    gag: INDEXING_GAG,
+    every: INDEXING_GAG.length,
+  },
   warn: {
     face: face('•', '~'),
     blink: face('-', '~'),
@@ -4075,7 +4130,7 @@ const MOOD_BLINK_EVERY_SECONDS = 4;
 function secretaryFace(seconds, level) {
   const mood = LEVEL_MOODS[level];
   if (mood) {
-    const frame = mood.gag[seconds % MOOD_GAG_EVERY_SECONDS];
+    const frame = mood.gag[seconds % (mood.every || MOOD_GAG_EVERY_SECONDS)];
     if (frame) return frame;
     return seconds % MOOD_BLINK_EVERY_SECONDS === 0 ? mood.blink : mood.face;
   }
@@ -4087,8 +4142,25 @@ function secretaryFace(seconds, level) {
   return SECRETARY_FACE;
 }
 
-function secretaryLabel(level) {
-  return `${paint(STATUS_PALETTE.face, secretaryFace(Math.floor(Date.now() / 1000), level))} \x1b[1mSecretary\x1b[0m`;
+// The face and who is speaking: Secretary, or CodeIndex while it indexes.
+function secretaryLabel(level, name = 'Secretary') {
+  return `${paint(STATUS_PALETTE.face, secretaryFace(Math.floor(Date.now() / 1000), level))} \x1b[1m${name}\x1b[0m`;
+}
+
+// While CodeIndex indexes this project: a bar and how far it is. Its phases are one
+// run: reading files fills the bar to 75%, linking the rest, saving shows it full.
+const CODEINDEX_PHASE_SPAN = { files: [0, 0.75], links: [0.75, 1], saving: [1, 1] };
+
+// Width of the status line's main bar: the context bar, or CodeIndex's while it indexes.
+const STATUS_BAR_CELLS = 16;
+
+function codeIndexStatus(cwd) {
+  const p = codeIndex?.indexProgress(cwd);
+  if (!p) return null;
+  const [from, to] = CODEINDEX_PHASE_SPAN[p.phase] || [0, 1];
+  const fraction = from + (to - from) * (p.total ? Math.min(1, p.done / p.total) : 0);
+  const { index, indexTrack } = STATUS_PALETTE;
+  return `${statusBar(fraction, STATUS_BAR_CELLS, index, null, indexTrack)} ${paint(index, `${Math.round(fraction * 100)}%`)}`;
 }
 
 function handoffStatus(statusInput) {
@@ -4108,21 +4180,25 @@ function handoffStatus(statusInput) {
   const off = !limits;
   const { warn, clear } = limits || { warn: Infinity, clear: Infinity };
   const level = !tokens ? 'ok' : tokens >= clear ? 'alert' : tokens >= warn ? 'warn' : 'ok';
-  if (tokens) {
+  // While CodeIndex indexes, its bar takes the context bar's place.
+  const indexing = codeIndexStatus(cwd);
+  if (indexing) parts.push(indexing);
+  else if (tokens) {
     const color = STATUS_PALETTE[level];
     const hint = tokens < clear ? '' : process.env.SECRETARY_LAUNCHER_PID ? ' ↻ al enviar' : ` /resume ${session_id}`;
     // Bar spans the model's whole context window; a mark sits at the clear threshold.
     const windowSize = statusInput.context_window?.context_window_size || 200000;
-    const CELLS = 16;
+    const CELLS = STATUS_BAR_CELLS;
     const mark = off ? null : Math.min(CELLS - 1, Math.round((clear / windowSize) * CELLS));
     const bar = statusBar(tokens / windowSize, CELLS, color, mark);
     const kilo = n => `${Math.round(n / 1000)}K`;
-    parts.push(`${bar}   ${paint(color, `${kilo(tokens)}/${off ? 'off' : kilo(clear)}${hint}`)}`);
+    parts.push(`${bar} ${paint(color, `${kilo(tokens)}/${off ? 'off' : kilo(clear)}${hint}`)}`);
   }
   parts.push(...statusDetails(statusInput));
   const event = readStatusEvent(session_id);
   if (event) parts.push(event);
-  if (parts.length) process.stdout.write(`${secretaryLabel(level)} ${parts.join(' · ')}\n`);
+  const label = indexing ? secretaryLabel('indexing', 'CodeIndex') : secretaryLabel(level);
+  if (parts.length) process.stdout.write(`${label} ${parts.join(' · ')}\n`);
 }
 
 /**

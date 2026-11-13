@@ -83,7 +83,9 @@ Run from anywhere inside a project (it resolves the git root automatically):
 node ~/.claude/codeindex/codeindex.mjs where <Name>     # definitions: file:line (kind)
 node ~/.claude/codeindex/codeindex.mjs refs <Name>      # definitions + every textual reference
 node ~/.claude/codeindex/codeindex.mjs file <path>      # all symbols defined in one file
-node ~/.claude/codeindex/codeindex.mjs grep <pattern>   # fuzzy symbol search (substring)
+node ~/.claude/codeindex/codeindex.mjs where <Class.name> # a class's member: its own, or from a class mixed into it
+node ~/.claude/codeindex/codeindex.mjs members <Class>   # every member of a class, its mixins' included
+node ~/.claude/codeindex/codeindex.mjs grep <words…>   # loose search, ranked: words of names, doc, signature; typos → closest names
 
 # Relational thread — how the project wires together (deterministic edge graph, no LLM)
 node ~/.claude/codeindex/codeindex.mjs callers <Name>   # who calls / uses a symbol (symbol→symbol edges)
@@ -97,6 +99,17 @@ node ~/.claude/codeindex/codeindex.mjs index            # incremental reindex (c
 node ~/.claude/codeindex/codeindex.mjs index --full     # full rebuild
 node ~/.claude/codeindex/codeindex.mjs index -v         # verbose: list each added/changed/removed file
 ```
+
+**For other tools:** `~/.claude/codeindex/read.mjs` is the read side — `openIndex(dir)`,
+`indexProgress(dir)`, `symbolsIn(index, file, text)`, `filesDefining(index, name)` —
+each returning null / [] when a project has no index. The Secretary uses it when present.
+While an index run lasts more than a second it writes `.claude/codeindex.progress`
+(`{ pid, phase, done, total }`) and removes it at the end.
+
+A class whose methods live in other classes laid onto its prototype (mixins:
+`Object.assign(T.prototype, S.prototype)`, `mixInto(T, S)`, `applyMixins(T, [A, B])`) is
+indexed with that wiring: a mixed-in member shows `in Source → Target (mixin)`, and
+`where Target.member` / `members Target` find it by the class it lands in.
 
 `where`, `grep`, and `file` print the **signature** next to the name and the **one-line
 doc** indented below it (when the symbol has a leading comment / docstring).
