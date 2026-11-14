@@ -623,6 +623,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-11-14 | TheSecretary v2.24.0: its background sync (the turn and vector indexes refreshed at session start) shows its own progress bar in the status line, next to CodeIndex's instead of hidden by it |
 | 2026-11-13 | TheSecretary v2.23.0: uses CodeIndex when installed — indexing progress bar in the status line, handoff names the functions each changed file's edits touched, a symbol search also finds turns about its file. CodeIndex v1.3.0: `read.mjs` read side for other tools, `.claude/codeindex.progress` while indexing. Search helpers shared in `lib/search.mjs` |
 | 2026-11-13 | CodeIndex v1.2.0: loose `grep` (several plain words, matched as prefixes of a name's words, its doc or signature; FTS5 + bm25, accents ignored; typos → closest names, also on a `where` miss). v1.1.0: mixins — `where Class.member`, `members <Class>`, mixed-in members shown as `in Source → Target (mixin)`. CLAUDE.Global v1.4.8 |
 | 2026-10-30 | TheSecretary v2.18.0: softer status line palette; context bar on a gray background with the solid end at the head and a centered limit mark |

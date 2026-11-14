@@ -3674,7 +3674,44 @@ async function cmdSync({ vectors = true } = {}) {
   registerBgWorkerForProject(cwd, child.pid);
 }
 
-async function cmdIndexVectors() {
+// Progress of a background sync, for the status line: <project>/.claude/the-secretary/sync.progress
+// = { pid, fraction }. Same contract as CodeIndex's codeindex.progress: written only once
+// the run has lasted a second, at most twice a second, removed when it ends; a reader drops
+// it if pid is gone. `phases` share the bar equally, in order.
+function syncProgressPath(cwd) {
+  const dir = projectDataDir(resolveProjectRoot(cwd));
+  return dir ? join(dir, 'sync.progress') : null;
+}
+
+function syncProgressWriter(cwd, phases) {
+  const path = syncProgressPath(cwd);
+  const start = Date.now();
+  let last = 0;
+  return {
+    step(phase, done, total) {
+      const now = Date.now();
+      if (!path || now - start < 1000 || now - last < 500) return;
+      last = now;
+      const i = Math.max(0, phases.indexOf(phase));
+      const fraction = (i + (total ? Math.min(1, done / total) : 0)) / phases.length;
+      try { writeFileSync(path, JSON.stringify({ pid: process.pid, fraction })); } catch { /* read-only tree */ }
+    },
+    end() { try { if (path) unlinkSync(path); } catch { /* never written */ } },
+  };
+}
+
+// The running sync's { fraction }, or null: none running, or its process is gone.
+function syncProgress(cwd) {
+  const path = syncProgressPath(cwd);
+  if (!path) return null;
+  try {
+    const p = JSON.parse(readFileSync(path, 'utf-8'));
+    process.kill(p.pid, 0);
+    return p;
+  } catch { return null; }
+}
+
+async function cmdIndexVectors(progress) {
   const cwd = process.cwd();
   if (!semanticAvailable()) {
     process.stdout.write('Semantic index unavailable: needs sqlite-vec (npm) and the embedding venv.\n');
@@ -3730,6 +3767,7 @@ async function cmdIndexVectors() {
       });
       tx(slice);
       done += slice.length;
+      progress?.step('vectors', done, pending.length);
       process.stdout.write(`  ${done}/${pending.length}\n`);
     }
     } finally { releaseGpuLock(); }
@@ -3758,7 +3796,7 @@ function mergeTrimmedTranscript(path) {
   return { path: out, liveLines: live.length };
 }
 
-async function cmdIndexTurns() {
+async function cmdIndexTurns(progress) {
   const cwd = process.cwd();
   // Claude Code slugifies the project path by replacing every non-alphanumeric run
   // (separators, dots, spaces) with a single dash: /Users/x/Code/LAB.Foo -> -Users-x-Code-LAB-Foo
@@ -3795,8 +3833,9 @@ async function cmdIndexTurns() {
   let files = 0, indexed = 0;
   try {
     const only = process.argv.includes('--session') ? process.argv[process.argv.indexOf('--session') + 1] : null;
-    for (const f of readdirSync(projectsDir)) {
-      if (!f.endsWith('.jsonl')) continue;
+    const transcripts = readdirSync(projectsDir).filter((f) => f.endsWith('.jsonl'));
+    for (const [i, f] of transcripts.entries()) {
+      progress?.step('turns', i, transcripts.length);
       const sessionId = f.replace(/\.jsonl$/, '');
       if (only && sessionId !== only) continue;
       const path = join(projectsDir, f);
@@ -4012,6 +4051,8 @@ const STATUS_PALETTE = {
   mark: '#d6d5c0',  // clear-limit mark: cream
   index: '#7fa9c9',      // CodeIndex progress: soft blue, not a warning color
   indexTrack: '#34424e', // its bar background: the same blue, dark
+  sync: '#d9a06b',       // Secretary's sync progress: soft orange, the face's tone
+  syncTrack: '#4a3a2a',  // its bar background: the same orange, dark
 };
 
 const rgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(';');
@@ -4154,13 +4195,25 @@ const CODEINDEX_PHASE_SPAN = { files: [0, 0.75], links: [0.75, 1], saving: [1, 1
 // Width of the status line's main bar: the context bar, or CodeIndex's while it indexes.
 const STATUS_BAR_CELLS = 16;
 
-function codeIndexStatus(cwd) {
+function codeIndexFraction(cwd) {
   const p = codeIndex?.indexProgress(cwd);
   if (!p) return null;
   const [from, to] = CODEINDEX_PHASE_SPAN[p.phase] || [0, 1];
-  const fraction = from + (to - from) * (p.total ? Math.min(1, p.done / p.total) : 0);
-  const { index, indexTrack } = STATUS_PALETTE;
-  return `${statusBar(fraction, STATUS_BAR_CELLS, index, null, indexTrack)} ${paint(index, `${Math.round(fraction * 100)}%`)}`;
+  return from + (to - from) * (p.total ? Math.min(1, p.done / p.total) : 0);
+}
+
+// Background jobs running on this project, each with its own bar: CodeIndex indexing,
+// Secretary syncing its turn and vector indexes (the context recovery at session start).
+function runningJobs(cwd) {
+  const { index, indexTrack, sync, syncTrack } = STATUS_PALETTE;
+  return [
+    { name: 'CodeIndex', fraction: codeIndexFraction(cwd), color: index, track: indexTrack },
+    { name: 'Secretary', fraction: syncProgress(cwd)?.fraction ?? null, color: sync, track: syncTrack },
+  ].filter((job) => job.fraction != null);
+}
+
+function jobBar({ fraction, color, track }) {
+  return `${statusBar(fraction, STATUS_BAR_CELLS, color, null, track)} ${paint(color, `${Math.round(fraction * 100)}%`)}`;
 }
 
 function handoffStatus(statusInput) {
@@ -4180,9 +4233,10 @@ function handoffStatus(statusInput) {
   const off = !limits;
   const { warn, clear } = limits || { warn: Infinity, clear: Infinity };
   const level = !tokens ? 'ok' : tokens >= clear ? 'alert' : tokens >= warn ? 'warn' : 'ok';
-  // While CodeIndex indexes, its bar takes the context bar's place.
-  const indexing = codeIndexStatus(cwd);
-  if (indexing) parts.push(indexing);
+  // While background jobs run, their bars take the context bar's place: the first
+  // job's name is the label, every other one names its own bar.
+  const jobs = runningJobs(cwd);
+  if (jobs.length) parts.push(jobs.map((job, i) => `${i ? `\x1b[1m${job.name}\x1b[0m ` : ''}${jobBar(job)}`).join(' · '));
   else if (tokens) {
     const color = STATUS_PALETTE[level];
     const hint = tokens < clear ? '' : process.env.SECRETARY_LAUNCHER_PID ? ' ↻ al enviar' : ` /resume ${session_id}`;
@@ -4197,7 +4251,7 @@ function handoffStatus(statusInput) {
   parts.push(...statusDetails(statusInput));
   const event = readStatusEvent(session_id);
   if (event) parts.push(event);
-  const label = indexing ? secretaryLabel('indexing', 'CodeIndex') : secretaryLabel(level);
+  const label = jobs.length ? secretaryLabel('indexing', jobs[0].name) : secretaryLabel(level);
   if (parts.length) process.stdout.write(`${label} ${parts.join(' · ')}\n`);
 }
 
@@ -4694,14 +4748,17 @@ async function main() {
   // Background index sync (spawned by `sync` at SessionStart).
   if (command === '_bg_sync') {
     const [, , , cwd, withVectors] = process.argv;
+    // Vectors are optional and slow; skip silently when the stack is absent.
+    const vectors = withVectors === '1' && semanticAvailable();
+    const progress = syncProgressWriter(cwd, vectors ? ['turns', 'vectors'] : ['turns']);
     try {
       process.chdir(cwd);
-      await cmdIndexTurns();
-      // Vectors are optional and slow; skip silently when the stack is absent.
-      if (withVectors === '1' && semanticAvailable()) await cmdIndexVectors();
+      await cmdIndexTurns(progress);
+      if (vectors) await cmdIndexVectors(progress);
     } catch (err) {
       process.stderr.write(`[secretary-bg-sync] ${err.message}\n`);
     }
+    progress.end();
     clearBgWorkerForProject(cwd);
     process.exit(0);
   }
