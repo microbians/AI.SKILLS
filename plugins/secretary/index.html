@@ -415,6 +415,10 @@ footer.foot a { color: var(--on-enamel); }
   .ledger td.was::before { content: "was "; text-decoration: none; display: inline-block; margin-right: 6px; }
   .ledger td.now::before { content: "now "; font-weight: 400; font-size: 14px; color: var(--on-enamel-2); margin-right: 6px; }
 }
+/* Powered by microbians: the logo (lib/microbians.png) as a mask, in the text color */
+.powered { display: inline-flex; align-items: center; gap: 8px; margin-top: 20px; font-size: 13px; color: var(--on-enamel-2); text-decoration: none; }
+.powered i { width: 22px; height: 18px; background: currentColor; -webkit-mask: url(../../lib/microbians.png) center / contain no-repeat; mask: url(../../lib/microbians.png) center / contain no-repeat; }
+.powered:hover { color: var(--on-enamel); }
 </style>
 </head>
 <body>
@@ -441,6 +445,7 @@ footer.foot a { color: var(--on-enamel); }
         <button class="bell" type="button" data-copy="install-cmd" aria-label="Copy the install command"><i aria-hidden="true"><b></b><u></u><u></u></i><span>Copy</span></button>
       </div>
       <p class="after-install">macOS or Linux · Node 18+ · MLX or llama.cpp · MIT license. <a href="#install">Full install steps</a></p>
+      <a class="powered" href="https://microbians.com">Powered by <i aria-hidden="true"></i> microbians.com</a>
     </div>
     <div class="slip-holder">
       <article class="slip" id="slip" aria-live="polite" aria-label="Handoff note"></article>

@@ -442,6 +442,10 @@ footer.foot a { color: var(--graphite); }
   .seg { flex-wrap: wrap; }
   .controls > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 }
+/* Powered by microbians: the logo (lib/microbians.png) as a mask, in the text color */
+.powered { display: inline-flex; align-items: center; gap: 8px; margin-top: 20px; font-size: 13px; color: var(--graphite); text-decoration: none; }
+.powered i { width: 22px; height: 18px; background: currentColor; -webkit-mask: url(../lib/microbians.png) center / contain no-repeat; mask: url(../lib/microbians.png) center / contain no-repeat; }
+.powered:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -498,6 +502,7 @@ footer.foot a { color: var(--graphite); }
 if (user?.name != null) greet(user.name) // -> "Hello"</textarea>
         <div class="readout" aria-live="polite"><span>LINES <b id="r-lines">0</b></span><span>COLS <b id="r-cols">0</b></span><span>LIGATURES <b id="r-ligs">0</b></span></div>
       </div>
+      <a class="powered" href="https://microbians.com">Powered by <i aria-hidden="true"></i> microbians.com</a>
     </div>
 
     <aside class="notes-aside" aria-labelledby="notes-h">

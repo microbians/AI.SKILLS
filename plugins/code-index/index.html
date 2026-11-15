@@ -212,6 +212,10 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
   .head { row-gap: 12px; }
   .head h2 { font-size: clamp(28px, 8vw, 38px); }
 }
+/* Powered by microbians: the logo (lib/microbians.png) as a mask, in the text color */
+.powered { display: inline-flex; align-items: center; gap: 8px; margin-top: 20px; font-size: 14px; color: var(--ink-2); text-decoration: none; }
+.powered i { width: 22px; height: 18px; background: currentColor; -webkit-mask: url(../../lib/microbians.png) center / contain no-repeat; mask: url(../../lib/microbians.png) center / contain no-repeat; }
+.powered:hover { color: var(--ink-1); }
 </style>
 </head>
 <body>
@@ -234,6 +238,7 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
           <code id="install-cmd">git clone https://github.com/microbians/AI.SKILLS.git &amp;&amp; bash AI.SKILLS/plugins/code-index/install.sh</code>
           <button class="copy" type="button" data-copy="install-cmd">Copy</button>
         </div>
+        <a class="powered" href="https://microbians.com">Powered by <i aria-hidden="true"></i> microbians.com</a>
       </div>
     </section>
 
