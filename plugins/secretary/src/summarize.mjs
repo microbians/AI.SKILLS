@@ -104,13 +104,12 @@ function writeSessionLimit(sessionId, value) {
   writeFileSync(sessionLimitPath(sessionId), String(value));
 }
 
-// { clear, warn, keep } in tokens, or null when the limit is off. The warning
-// (amber bar, /clear advice) is at 75% and a trim keeps the last half.
+// { clear, keep } in tokens, or null when the limit is off. A trim keeps the last half.
 function limitsFor(sessionId) {
   const own = readSessionLimit(sessionId);
   if (own === 'off') return null;
   const clear = own || Number(process.env.SECRETARY_LIMIT) || config.context_clear_tokens;
-  return { clear, warn: Math.round(clear * 0.75), keep: Math.round(clear / 2) };
+  return { clear, keep: Math.round(clear / 2) };
 }
 
 // ═══════════════════ PROJECT-ROOT RESOLUTION ═══════════════════
@@ -4231,7 +4230,13 @@ function handoffStatus(statusInput) {
     : contextTokens(transcript_path);
   const limits = limitsFor(session_id);
   const off = !limits;
-  const { warn, clear } = limits || { warn: Infinity, clear: Infinity };
+  const clear = limits?.clear ?? Infinity;
+  // Bar spans the model's whole context window; a mark sits at the clear threshold.
+  // The warning starts when only one cell is left before the mark.
+  const windowSize = statusInput.context_window?.context_window_size || 200000;
+  const CELLS = STATUS_BAR_CELLS;
+  const mark = off ? null : Math.min(CELLS - 1, Math.round((clear / windowSize) * CELLS));
+  const warn = off ? Infinity : ((mark - 1) / CELLS) * windowSize;
   const level = !tokens ? 'ok' : tokens >= clear ? 'alert' : tokens >= warn ? 'warn' : 'ok';
   // While background jobs run, their bars take the context bar's place: the first
   // job's name is the label, every other one names its own bar.
@@ -4240,10 +4245,6 @@ function handoffStatus(statusInput) {
   else if (tokens) {
     const color = STATUS_PALETTE[level];
     const hint = tokens < clear ? '' : process.env.SECRETARY_LAUNCHER_PID ? ' ↻ al enviar' : ` /resume ${session_id}`;
-    // Bar spans the model's whole context window; a mark sits at the clear threshold.
-    const windowSize = statusInput.context_window?.context_window_size || 200000;
-    const CELLS = STATUS_BAR_CELLS;
-    const mark = off ? null : Math.min(CELLS - 1, Math.round((clear / windowSize) * CELLS));
     const bar = statusBar(tokens / windowSize, CELLS, color, mark);
     const kilo = n => `${Math.round(n / 1000)}K`;
     parts.push(`${bar} ${paint(color, `${kilo(tokens)}/${off ? 'off' : kilo(clear)}${hint}`)}`);
