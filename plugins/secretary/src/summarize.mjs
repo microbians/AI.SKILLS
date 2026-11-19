@@ -3896,21 +3896,25 @@ async function cmdSearch() {
  */
 async function userPromptHook(hookInput) {
   const prompt = hookInput.prompt || hookInput.user_prompt || '';
+  const launcher = Number(process.env.SECRETARY_LAUNCHER_PID);
+
+  // ── `/secretary account <name>`: reopen this session under another account ──
+  const switchTo = prompt.trim().match(/^\/secretary\s+(?:account|cuenta)\b\s*(.*)$/i);
+  if (switchTo) {
+    process.stdout.write(JSON.stringify({ decision: 'block', reason: switchAccount(hookInput, launcher, switchTo[1].trim()) }));
+    return;
+  }
 
   // ── Context past the clear threshold, run under the `secretary` launcher ──
   // Trim, hold the prompt and have the launcher reopen the session with it.
   // Only a cut made now reopens: the reopened session's file is already short.
-  const launcher = Number(process.env.SECRETARY_LAUNCHER_PID);
   const limits = limitsFor(hookInput.session_id);
   const tokens = limits ? contextTokens(hookInput.transcript_path) : 0;
   const over = Boolean(limits) && tokens >= limits.clear;
   const trim = over && trimSession(hookInput, limits.keep);
   if (launcher && trim === 'trimmed') {
-    const dir = join(homedir(), '.claude', 'the-secretary', 'relaunch');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `${launcher}.json`), JSON.stringify({ session_id: hookInput.session_id, prompt }));
+    requestRelaunch(launcher, { session_id: hookInput.session_id, prompt });
     process.stdout.write(JSON.stringify({ decision: 'block', reason: 'The Secretary: reabriendo la sesión recortada…' }));
-    process.kill(launcher, 'SIGUSR2');
     return;
   }
 
@@ -4527,6 +4531,34 @@ function resolveClaudeAccount(query) {
     if (hits.length) return { account: hits.length === 1 ? hits[0] : null, accounts };
   }
   return { account: null, accounts };
+}
+
+// Hand the `secretary` launcher what to reopen and signal it; it stops claude
+// and starts it again with `--resume`.
+function requestRelaunch(launcher, request) {
+  const dir = join(SECRETARY_DIR, 'relaunch');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${launcher}.json`), JSON.stringify(request));
+  process.kill(launcher, 'SIGUSR2');
+}
+
+// `/secretary account <name>`: the launcher copies this session's transcript
+// into the other account's config folder and resumes it there. Returns the
+// line shown to the user.
+function switchAccount(hookInput, launcher, query) {
+  const list = () => listClaudeAccounts().map(a => `${a.folder} <${a.email || '?'}>`).join(', ');
+  if (!query) return `The Secretary: cuenta actual ${sessionAccountName()}. Cuentas: ${list()}`;
+  const { account } = resolveClaudeAccount(query);
+  if (!account) return `The Secretary: "${query}" no identifica una sola cuenta. Cuentas: ${list()}`;
+  const current = process.env.CLAUDE_CONFIG_DIR ? process.env.CLAUDE_CONFIG_DIR.replace(/\/$/, '') : 'default';
+  if (account.value === current) return `The Secretary: ya estás en ${account.email || account.folder}`;
+  if (!launcher) return `The Secretary: cambiar de cuenta necesita arrancar con \`secretary\` en vez de \`claude\``;
+  requestRelaunch(launcher, {
+    session_id: hookInput.session_id,
+    transcript_path: hookInput.transcript_path,
+    account: { config_dir: account.value, name: account.email.split('@')[0] || account.folder },
+  });
+  return `The Secretary: reabriendo esta sesión en ${account.email || account.folder}…`;
 }
 
 function accountLabel(value) {

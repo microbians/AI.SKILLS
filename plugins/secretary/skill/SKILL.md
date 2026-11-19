@@ -1,9 +1,9 @@
 ---
 name: secretary
 description: AI-powered context persistence for Claude Code — keeps ONE flat index per project (no memory types) plus conversation summaries, via local LLM hooks and SQLite. Use whenever the user mentions remembering/forgetting something, taking notes, or asks recall questions ("recuerda que...", "olvida que...", "anota...", "borra la nota...", "avísame...", "recuérdame...", "cancela el recordatorio...", "qué recuerdas?", "muestra mis notas", "show my reminders", "remember that...", "forget...", "take note...", "remind me...", "do you remember...?"). Runs entirely in background via hooks; this skill defines the behavior rules and recall commands Claude must follow when interacting with it.
-argument-hint: "[ai [local | apple | claude [model] [--account <name | email | folder>]]]"
-version: 2.24.1
-updated: 2026-11-14
+argument-hint: "[ai [local | apple | claude [model] [--account <name | email | folder>]] | account <name | email | folder>]"
+version: 2.25.0
+updated: 2026-11-20
 license: MIT
 ---
 
@@ -23,6 +23,7 @@ A local-LLM secretary that auto-summarizes the conversation, captures anything t
 - **When the user asks "qué recuerdas?", "muestra mis notas", "what do you remember"**: run the recall command below and show its output as the response.
 - **`/secretary ai [args]`** (or "qué IA usa el secretary", "cambia el secretary a apple/claude/local"): run `node ~/.claude/the-secretary/summarize.mjs backend [args]` and reply with its output line only. Args: none (show current) | `local` | `apple` | `claude [model] [--account <name | email | folder>]`.
 - **`/secretary limit [off|on|<K>]`** (or "salta el límite", "quita el límite del secretary", "vuelve a poner el límite", "pon el límite a 300"): run `node ~/.claude/the-secretary/summarize.mjs limit [off|on|<K>]` and reply with its output line only. For the current session only: `off` skips the context clear limit (no trim, no relaunch, no `/clear` advice), `on` goes back to the default, a number sets it in thousands of tokens (`300` = 300K); no arg shows it.
+- **`/secretary account <name>`** (alias `cuenta`): handled by the UserPromptSubmit hook, which reopens the session under that account (only under the `secretary` launcher) and shows its own line. Never reaches you; if it does, tell the user to start Claude with `secretary`.
 - **`/secretary status`** (or "estado del secretary"): run `node ~/.claude/the-secretary/summarize.mjs status` and show its output as is.
 - **`/secretary summary|resumen|diario [fecha]`** (or "qué hice esta semana", "diario del mes pasado"): run `node ~/.claude/the-secretary/summarize.mjs summary [fecha]` (the date words as given: `ayer`, `la semana pasada`, `en octubre`…; none = last 7 days) and show its output as is. No AI call: it reads the handoffs.
 - **`/secretary recall decisiones|reglas|pendiente|hecho`** (or "qué decidimos", "qué reglas hay", "qué queda pendiente"): run `echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/the-secretary/summarize.mjs recall <filter>` and show its output as is. English works too: `decisions`, `rules`, `pending`, `done`.

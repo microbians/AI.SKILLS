@@ -221,6 +221,12 @@ Past `context_clear_tokens` the session transcript is trimmed in place to its la
 
 Start Claude with `secretary` instead of `claude` and that step is automatic. `secretary` takes every argument `claude` takes (account flags of your own `claude` wrapper included) and runs `claude` with them. When the context is past the threshold, the prompt you send trims the transcript, is held, and `secretary` stops `claude` and starts it again with the same arguments plus `--resume <id> "<prompt>"`: the session comes back short and your prompt is sent. The status line shows `↻ al enviar` instead of `/resume`. Pasted images in that one prompt are not carried over.
 
+To move a running session to another Claude account without losing its context, send `/secretary account <name | email | folder>` (alias `cuenta`; no name lists the accounts, found as in `/secretary ai --account`). `secretary` copies the session's transcript (and its subagent and tool-result folder) into that account's `<config>/projects/` folder, stops `claude` and starts it again with `CLAUDE_CONFIG_DIR` set to that account (removed for `default`), `CLAUDE_PROFILE` set to the email's user, and `--resume <id>`. Options `claude --help` does not list are dropped from then on: they are your wrapper's account flags (`claude -work`), which would pick the old account again. A wrapper that picks the account itself must keep an inherited `CLAUDE_PROFILE` when no account flag is given:
+
+```sh
+if [ -z "$profile" ] && [ -n "$CLAUDE_PROFILE" ]; then exec "$REAL" "$@"; fi
+```
+
 To try it without filling a large context, `secretary -limit 30k` (or `-limit 30`, always in thousands) sets that session's limit in place of `context_clear_tokens`. Either way the warning (amber bar, nervous face) starts when the status line bar is one cell short of the limit's mark, and the kept tail is half of the limit. `-limit` is not passed to `claude`.
 
 To change the limit of one running session, `/secretary limit 300` (thousands of tokens) sets it, `/secretary limit off` skips it (no trim, no relaunch, no `/clear` advice; the status line shows `600K/off`) and `/secretary limit on` goes back to the default. It is stored per session id under `~/.claude/the-secretary/limit/`, so the launcher's relaunch keeps it, and other sessions are unaffected. It wins over `-limit` and `context_clear_tokens`.
@@ -660,6 +666,7 @@ TheSecretary/
 
 | Version | Date | Change |
 |---|---|---|
+| 2.25.0 | 2026-11-20 | `/secretary account <name>` (alias `cuenta`): under the `secretary` launcher, reopens the running session under another Claude account — the transcript is copied to that account's config folder and resumed there with `CLAUDE_CONFIG_DIR` and `CLAUDE_PROFILE` set; a wrapper's own account flags are dropped |
 | 2.24.1 | 2026-11-16 | Status line: the warning (amber bar, nervous face) starts when only one bar cell is left before the clear mark, not at 75% of the limit, which on a 1M window turned the face nervous several cells early |
 | 2.23.2 | 2026-11-13 | Status line: the bar's head cell shows the fraction of a cell as intensity (0.4 of a cell = 40% color), a solid cell in a mixed color instead of ▒ ▓ glyphs, so it renders the same in every terminal. While CodeIndex indexes, its bar (same width) replaces the context bar and `CodeIndex` replaces the `Secretary` label, with its own face (eyes spinning ◐ ◓ ◑ ◒); one space between the bar and `96K/500K` |
 | 2.23.1 | 2026-11-13 | Status line: bars are solid cells (terminals drew the ▒ ▓ fade as flat tones or nothing); the CodeIndex bar is blue on a dark blue track and reads `CodeIndex 42%`, one bar across its phases |

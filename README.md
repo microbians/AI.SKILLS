@@ -623,6 +623,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-11-20 | TheSecretary v2.25.0: `/secretary account <name>` moves the running session to another Claude account without losing its context (the `secretary` launcher copies the transcript and resumes it there) |
 | 2026-11-16 | TheSecretary v2.24.1: the status line face turns nervous (amber bar) only when one bar cell is left before the clear mark, not at 75% of the limit |
 | 2026-11-14 | TheSecretary v2.24.0: its background sync (the turn and vector indexes refreshed at session start) shows its own progress bar in the status line, next to CodeIndex's instead of hidden by it |
 | 2026-11-13 | TheSecretary v2.23.0: uses CodeIndex when installed — indexing progress bar in the status line, handoff names the functions each changed file's edits touched, a symbol search also finds turns about its file. CodeIndex v1.3.0: `read.mjs` read side for other tools, `.claude/codeindex.progress` while indexing. Search helpers shared in `lib/search.mjs` |
