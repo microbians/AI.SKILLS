@@ -3911,7 +3911,11 @@ async function userPromptHook(hookInput) {
   const limits = limitsFor(hookInput.session_id);
   const tokens = limits ? contextTokens(hookInput.transcript_path) : 0;
   const over = Boolean(limits) && tokens >= limits.clear;
-  const trim = over && trimSession(hookInput, limits.keep);
+  // Reopening stops claude and everything it runs: with work in flight, leave
+  // the session whole and try again on the next prompt the user types. Agent
+  // reports and task notifications also arrive here, and never reopen.
+  const working = over && Boolean(launcher) && (!isTypedPrompt(prompt) || sessionIsWorking(hookInput));
+  const trim = over && !working && trimSession(hookInput, limits.keep);
   if (launcher && trim === 'trimmed') {
     requestRelaunch(launcher, { session_id: hookInput.session_id, prompt });
     process.stdout.write(JSON.stringify({ decision: 'block', reason: 'The Secretary: reabriendo la sesión recortada…' }));
@@ -3935,7 +3939,7 @@ async function userPromptHook(hookInput) {
   // turn the longer it runs. The handoff makes /clear cheap; say when to do it.
   // Under the launcher the reopen above does it, and a file already short was
   // just reopened (its last usage predates the cut); an uncuttable one still asks.
-  if (over && !(launcher && trim)) {
+  if (over && !working && !(launcher && trim)) {
     const howTo = trim
       ?`dale en un bloque de código el comando que retoma esta misma sesión, ya recortada a los últimos mensajes: ` +
         `\`/resume ${hookInput.session_id}\``
@@ -4316,10 +4320,8 @@ function trimSession({ transcript_path: transcriptPath, session_id, cwd }, keepT
 // A prompt with pasted images arrives as blocks (text + image), not a string.
 const promptText = (c) => (typeof c === 'string' ? c
   : Array.isArray(c) && !c.some((b) => b.type === 'tool_result') ? c.find((b) => b.type === 'text')?.text || '' : '');
-const isUserPrompt = (l) => {
-  const text = l.type === 'user' && !l.isMeta ? promptText(l.message?.content) : '';
-  return text !== '' && !text.startsWith('<');
-};
+const isTypedPrompt = (text) => text !== '' && !text.startsWith('<');
+const isUserPrompt = (l) => isTypedPrompt(l.type === 'user' && !l.isMeta ? promptText(l.message?.content) : '');
 
 /**
  * Where a trim of the transcript would cut, without touching it: the earliest
@@ -4470,6 +4472,50 @@ function contextTokens(transcriptPath) {
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+// A prompt sent to a free session flips its status to busy just before the
+// hook runs (measured: ~30 ms). A status older than this was already there.
+const PROMPT_STATUS_GRACE_MS = 1000;
+
+// Claude Code's live record of this session (<config>/sessions/<pid>.json). A
+// crashed process can leave an old record with the same id: the newest wins.
+function liveSessionRecord(sessionId) {
+  const dir = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'sessions');
+  let newest = null;
+  try {
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        const record = JSON.parse(readFileSync(join(dir, file), 'utf-8'));
+        if (record.sessionId === sessionId && (!newest || record.statusUpdatedAt > newest.statusUpdatedAt)) newest = record;
+      } catch {} // a record being rewritten by its session
+    }
+  } catch {}
+  return newest;
+}
+
+// A background agent reports its end with a task notification carrying its id.
+// One that only yields to its own background work also notifies, and lives on.
+function hasRunningAgent(transcriptPath) {
+  const raw = readFileSync(transcriptPath, 'utf-8');
+  const ended = (agentId) => raw.split(`<task-id>${agentId}</task-id>`).slice(1)
+    .some((after) => !after.slice(0, after.indexOf('</summary>')).includes('is waiting on its own background work'));
+  return raw.split('\n').some((line) => {
+    if (!line.includes('"status":"async_launched"')) return false;
+    const agentId = JSON.parse(line).toolUseResult?.agentId;
+    return Boolean(agentId) && !ended(agentId);
+  });
+}
+
+// Is Claude in a turn, or an agent of this session still running? Not knowing
+// counts as working: a wrong yes only delays the reopen to the next prompt.
+function sessionIsWorking({ session_id, transcript_path }) {
+  const record = liveSessionRecord(session_id);
+  if (!record) return true;
+  const inTurn = ['busy', 'waiting'].includes(record.status) && Date.now() - record.statusUpdatedAt > PROMPT_STATUS_GRACE_MS;
+  if (inTurn) return true;
+  try { return hasRunningAgent(transcript_path); } catch { return true; }
 }
 
 // ═══════════════════ BACKEND SWITCH ═══════════════════
