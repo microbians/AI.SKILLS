@@ -473,8 +473,8 @@ The other chat commands:
 matched against every project Claude Code has worked in (open sessions plus the newest transcript of
 each project folder). A session opened there later starts with it under `⏰ Avisos pendientes`; a
 session already open gets it on its next prompt (`📥`), and `send` names those open sessions so
-Claude can wake them at once with `SendMessage`. The message stays until it is dropped like any
-reminder.
+Claude can wake them at once with `SendMessage`. It is delivered once: whichever shows it first
+deletes it, so a later session start or `/clear` does not repeat it.
 
 `summary` reads the "What was accomplished" of each handoff, grouped by day; `recall <filter>`
 gathers one handoff section (Decisions made, Don't break, Open questions + Next step, What was
@@ -675,6 +675,7 @@ TheSecretary/
 
 | Version | Date | Change |
 |---|---|---|
+| 2.26.1 | 2026-11-23 | A `/secretary send` message is delivered once: the session start or `📥` notice that shows it deletes it, so a later start or `/clear` no longer repeats it |
 | 2.26.0 | 2026-11-23 | `/secretary send <project> <message>`: a message for another project, saved as a reminder due today in its DB — its next session opens with it, an open one gets it on its next prompt and can be woken with `SendMessage`. Live sessions are read from `~/.claude/sessions` as well as the account's folder: under `CLAUDE_CONFIG_DIR` the record was never found, so the launcher always took the session for busy. The `📥` notice no longer guesses that a late handoff caused it |
 | 2.25.1 | 2026-11-22 | Context trim: the `secretary` launcher no longer restarts while Claude is in a turn or a background agent is running. The session stays whole and the next prompt you type tries again. Agent reports and task notifications never trigger a restart |
 | 2.25.0 | 2026-11-20 | `/secretary account <name>` (alias `cuenta`): under the `secretary` launcher, reopens the running session under another Claude account — the transcript is copied to that account's config folder and resumed there with `CLAUDE_CONFIG_DIR` and `CLAUDE_PROFILE` set; a wrapper's own account flags are dropped |

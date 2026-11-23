@@ -2721,6 +2721,7 @@ async function restore(hookInput) {
       output += `## ⏰ Avisos pendientes\n\n_Díselos al usuario en tu primera respuesta, una línea cada uno._\n\n`;
       for (const e of dueItems) output += `- ${e.summary} _(${itemDateLabel(e.remind_at)})_\n`;
       output += '\n';
+      deleteDeliveredMessages(db, tree);
     }
 
     // 1. Conversation context from bullets.md (strictly per-project).
@@ -4035,6 +4036,7 @@ async function checkFreshContextWatermark(hookInput) {
       out += `### ${r.created_at}\n\n${snippet}\n\n---\n\n`;
     }
     process.stdout.write(out);
+    deleteDeliveredMessages(db, projectTreeClause(resolveProjectRoot(cwd)));
     return true;
   } finally {
     db.close();
@@ -4516,9 +4518,17 @@ function liveSessionRecord(sessionId) {
 // ═══════════════════ MESSAGES BETWEEN PROJECTS ═══════════════════
 //
 // A message to another project is a reminder due today saved in THAT project's
-// DB: its next session opens with it under ⏰ Avisos pendientes, and a session
-// already open there gets it on its next prompt (📥, checkFreshContextWatermark).
+// DB under MESSAGE_SESSION: its next session opens with it under ⏰ Avisos
+// pendientes, or a session already open there gets it on its next prompt (📥,
+// checkFreshContextWatermark). Whichever shows it first deletes it
+// (deleteDeliveredMessages), so it is delivered once.
 // `send` also names the target's open sessions so Claude can wake them now.
+
+const MESSAGE_SESSION = 'message';
+
+function deleteDeliveredMessages(db, tree) {
+  db.prepare(`DELETE FROM summaries WHERE session_id = ? AND ${tree.clause}`).run(MESSAGE_SESSION, ...tree.params);
+}
 
 // The cwd a transcript was recorded in, from its first lines.
 function transcriptCwd(file) {
@@ -4563,7 +4573,7 @@ function findProjectRoot(name) {
   return matches.length === 1 ? { root: matches[0] } : { candidates: matches.length ? matches : roots };
 }
 
-function cmdSend([project, ...words], cwd, sessionId) {
+function cmdSend([project, ...words], cwd) {
   const text = words.join(' ').trim();
   if (!project || !text) { process.stderr.write('Usage: summarize.mjs send <project> <message>\n'); process.exit(1); }
   const found = findProjectRoot(project);
@@ -4576,7 +4586,7 @@ function cmdSend([project, ...words], cwd, sessionId) {
   const db = openDb(found.root);
   if (!db) { process.stderr.write('better-sqlite3 unavailable\n'); process.exit(1); }
   try {
-    insertItem(db, { content: `📨 De ${basename(from || cwd)}: ${text}`, cwd: found.root, sessionId: sessionId || 'send', remindAt: localDay(new Date()) });
+    insertItem(db, { content: `📨 De ${basename(from || cwd)}: ${text}`, cwd: found.root, sessionId: MESSAGE_SESSION, remindAt: localDay(new Date()) });
   } finally { db.close(); }
   const open = liveSessionRecords().filter((r) => r.cwd && resolveProjectRoot(r.cwd) === found.root);
   process.stdout.write(`📨 Saved for ${basename(found.root)} (${found.root}): its next session opens with it under ⏰ Avisos pendientes.\n`);
@@ -4993,7 +5003,7 @@ async function main() {
   if (['summary', 'resumen', 'diario'].includes(command)) { cmdSummary(process.argv.slice(3), process.cwd()); return; }
   if (command === 'export') { cmdExport(process.argv[3], process.cwd()); return; }
   if (command === 'import') { cmdImport(process.argv[3], process.cwd(), sessionId); return; }
-  if (command === 'send') { cmdSend(process.argv.slice(3), process.cwd(), sessionId); return; }
+  if (command === 'send') { cmdSend(process.argv.slice(3), process.cwd()); return; }
 
   if (command === 'limit') {
     const at = process.argv.indexOf('--session');

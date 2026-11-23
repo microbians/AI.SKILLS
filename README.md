@@ -623,6 +623,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-11-23 | TheSecretary v2.26.1: a `/secretary send` message is shown once — a later session start or `/clear` no longer repeats it |
 | 2026-11-23 | TheSecretary v2.26.0: `/secretary send <project> <message>` leaves a message for another project — shown at its next session start, or delivered to its open sessions |
 | 2026-11-22 | TheSecretary v2.25.1: the `secretary` launcher waits for the next typed prompt instead of restarting while Claude or a background agent is working |
 | 2026-11-20 | TheSecretary v2.25.0: `/secretary account <name>` moves the running session to another Claude account without losing its context (the `secretary` launcher copies the transcript and resumes it there) |
