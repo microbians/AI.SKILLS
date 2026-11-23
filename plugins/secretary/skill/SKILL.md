@@ -2,8 +2,8 @@
 name: secretary
 description: AI-powered context persistence for Claude Code — keeps ONE flat index per project (no memory types) plus conversation summaries, via local LLM hooks and SQLite. Use whenever the user mentions remembering/forgetting something, taking notes, or asks recall questions ("recuerda que...", "olvida que...", "anota...", "borra la nota...", "avísame...", "recuérdame...", "cancela el recordatorio...", "qué recuerdas?", "muestra mis notas", "show my reminders", "remember that...", "forget...", "take note...", "remind me...", "do you remember...?"). Runs entirely in background via hooks; this skill defines the behavior rules and recall commands Claude must follow when interacting with it.
 argument-hint: "[ai [local | apple | claude [model] [--account <name | email | folder>]] | account <name | email | folder>]"
-version: 2.25.1
-updated: 2026-11-22
+version: 2.26.0
+updated: 2026-11-23
 license: MIT
 ---
 
@@ -28,6 +28,8 @@ A local-LLM secretary that auto-summarizes the conversation, captures anything t
 - **`/secretary summary|resumen|diario [fecha]`** (or "qué hice esta semana", "diario del mes pasado"): run `node ~/.claude/the-secretary/summarize.mjs summary [fecha]` (the date words as given: `ayer`, `la semana pasada`, `en octubre`…; none = last 7 days) and show its output as is. No AI call: it reads the handoffs.
 - **`/secretary recall decisiones|reglas|pendiente|hecho`** (or "qué decidimos", "qué reglas hay", "qué queda pendiente"): run `echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/the-secretary/summarize.mjs recall <filter>` and show its output as is. English works too: `decisions`, `rules`, `pending`, `done`.
 - **`/secretary export [file]`** / **`/secretary import <file>`**: run `node ~/.claude/the-secretary/summarize.mjs export [file]` (default `./secretary-notes.md`) or `node ~/.claude/the-secretary/summarize.mjs import <file>` and reply with its output line only.
+- **`/secretary send <project> <message>`** (or "avisa a <proyecto> de que…", "dile a <proyecto> que…", "tell <project> that…"): run `node ~/.claude/the-secretary/summarize.mjs send <project> "<message>"` with the message written self-contained (what was solved, where, what the other project must change). `<project>` is a folder name or path; no match lists the known projects — ask which. The message becomes a ⏰ reminder in that project. If the output lists open sessions there, also `SendMessage` each one the same message so it acts now. Reply with one line.
+- **`📨 De <project>:`** items are messages from another project: treat them like any ⏰ reminder, and drop them once handled.
 - **`## ⏰ Avisos pendientes`** at session start: tell the user each one in one line in your first reply. They stay until the user drops them ("ya hice…", "cancela el recordatorio…").
 
 ## Recall commands (run on user request)

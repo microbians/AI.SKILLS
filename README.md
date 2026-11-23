@@ -623,6 +623,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-11-23 | TheSecretary v2.26.0: `/secretary send <project> <message>` leaves a message for another project — shown at its next session start, or delivered to its open sessions |
 | 2026-11-22 | TheSecretary v2.25.1: the `secretary` launcher waits for the next typed prompt instead of restarting while Claude or a background agent is working |
 | 2026-11-20 | TheSecretary v2.25.0: `/secretary account <name>` moves the running session to another Claude account without losing its context (the `secretary` launcher copies the transcript and resumes it there) |
 | 2026-11-16 | TheSecretary v2.24.1: the status line face turns nervous (amber bar) only when one bar cell is left before the clear mark, not at 75% of the limit |

@@ -1913,7 +1913,8 @@ Examples:
 - "avísame el viernes que hay deploy" → SAVE|hay deploy el viernes
 - "olvida lo del mono" → FORGET|lo del mono
 - "borra la nota del servidor" → FORGET|del servidor
-- "cambia el color del botón a rojo" → NONE|`;
+- "cambia el color del botón a rojo" → NONE|
+- "avisa a web-app de que el bug del token está resuelto" → NONE|  (a message for another project, sent by the assistant)`;
 
   try {
     const response = await callLLM(prompt, 50);
@@ -4027,7 +4028,7 @@ async function checkFreshContextWatermark(hookInput) {
     const shown = rows.slice(-MAX_SHOW);
 
     let out = `\n## 📥 The Secretary: contexto nuevo disponible\n\n`;
-    out += `_${rows.length} resumen${rows.length > 1 ? 'es' : ''} añadido${rows.length > 1 ? 's' : ''} desde el inicio de esta sesión (probablemente el summarizer de la sesión previa terminó después del \`/clear\`)._\n\n`;
+    out += `_${rows.length} resumen${rows.length > 1 ? 'es' : ''} añadido${rows.length > 1 ? 's' : ''} desde el inicio de esta sesión._\n\n`;
     for (const r of shown) {
       const clean = (r.summary || '').replace(/^\[RAW-TAIL\]\s*/i, '').trim();
       const snippet = clean.length > SNIP ? clean.slice(0, SNIP) + '…' : clean;
@@ -4478,21 +4479,110 @@ function contextTokens(transcriptPath) {
 // hook runs (measured: ~30 ms). A status older than this was already there.
 const PROMPT_STATUS_GRACE_MS = 1000;
 
-// Claude Code's live record of this session (<config>/sessions/<pid>.json). A
-// crashed process can leave an old record with the same id: the newest wins.
-function liveSessionRecord(sessionId) {
-  const dir = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'sessions');
-  let newest = null;
-  try {
-    for (const file of readdirSync(dir)) {
+// Claude Code's folders: the account's (CLAUDE_CONFIG_DIR) and ~/.claude, where
+// every account's sessions register (<pid>.json) whatever CLAUDE_CONFIG_DIR says.
+const claudeDirs = () => [...new Set([process.env.CLAUDE_CONFIG_DIR, join(homedir(), '.claude')].filter(Boolean))];
+
+const processAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } };
+
+// Every live Claude Code session on this machine, one record per process.
+function liveSessionRecords() {
+  const byPid = new Map();
+  for (const base of claudeDirs()) {
+    const dir = join(base, 'sessions');
+    let files = [];
+    try { files = readdirSync(dir); } catch { continue; }
+    for (const file of files) {
       if (!file.endsWith('.json')) continue;
       try {
         const record = JSON.parse(readFileSync(join(dir, file), 'utf-8'));
-        if (record.sessionId === sessionId && (!newest || record.statusUpdatedAt > newest.statusUpdatedAt)) newest = record;
+        if (processAlive(record.pid)) byPid.set(record.pid, record);
       } catch {} // a record being rewritten by its session
     }
-  } catch {}
+  }
+  return [...byPid.values()];
+}
+
+// Claude Code's live record of this session. A crashed process can leave an
+// old record with the same id: the newest wins.
+function liveSessionRecord(sessionId) {
+  let newest = null;
+  for (const record of liveSessionRecords()) {
+    if (record.sessionId === sessionId && (!newest || record.statusUpdatedAt > newest.statusUpdatedAt)) newest = record;
+  }
   return newest;
+}
+
+// ═══════════════════ MESSAGES BETWEEN PROJECTS ═══════════════════
+//
+// A message to another project is a reminder due today saved in THAT project's
+// DB: its next session opens with it under ⏰ Avisos pendientes, and a session
+// already open there gets it on its next prompt (📥, checkFreshContextWatermark).
+// `send` also names the target's open sessions so Claude can wake them now.
+
+// The cwd a transcript was recorded in, from its first lines.
+function transcriptCwd(file) {
+  let fd;
+  try {
+    fd = openSync(file, 'r');
+    const buf = Buffer.alloc(65536);
+    const text = buf.toString('utf-8', 0, readSync(fd, buf, 0, buf.length, 0));
+    const m = text.match(/"cwd":"((?:[^"\\]|\\.)*)"/);
+    return m ? JSON.parse(`"${m[1]}"`) : null;
+  } catch { return null; } finally { if (fd !== undefined) closeSync(fd); }
+}
+
+// Every project root Claude Code has worked in: open sessions plus the newest
+// transcript of each project folder.
+function knownProjectRoots() {
+  const cwds = liveSessionRecords().map((r) => r.cwd);
+  for (const base of claudeDirs()) {
+    const dir = join(base, 'projects');
+    let slugs = [];
+    try { slugs = readdirSync(dir); } catch { continue; }
+    for (const slug of slugs) {
+      try {
+        const newest = readdirSync(join(dir, slug)).filter((f) => f.endsWith('.jsonl'))
+          .map((f) => ({ f, t: statSync(join(dir, slug, f)).mtimeMs })).sort((a, b) => b.t - a.t)[0];
+        if (newest) cwds.push(transcriptCwd(join(dir, slug, newest.f)));
+      } catch {}
+    }
+  }
+  return [...new Set(cwds.filter((c) => c && existsSync(c)).map(resolveProjectRoot).filter(Boolean))];
+}
+
+// A project given as a path or by its folder name (exact, else the one root
+// whose name contains it). Returns { root } or { candidates }.
+function findProjectRoot(name) {
+  if (existsSync(name)) return { root: resolveProjectRoot(name) };
+  const roots = knownProjectRoots();
+  const key = foldAccents(name).toLowerCase();
+  const nameOf = (r) => foldAccents(basename(r)).toLowerCase();
+  const exact = roots.filter((r) => nameOf(r) === key);
+  const matches = exact.length ? exact : roots.filter((r) => nameOf(r).includes(key));
+  return matches.length === 1 ? { root: matches[0] } : { candidates: matches.length ? matches : roots };
+}
+
+function cmdSend([project, ...words], cwd, sessionId) {
+  const text = words.join(' ').trim();
+  if (!project || !text) { process.stderr.write('Usage: summarize.mjs send <project> <message>\n'); process.exit(1); }
+  const found = findProjectRoot(project);
+  if (!found.root) {
+    process.stdout.write(`No project matches "${project}". Known projects:\n${found.candidates.map((r) => `- ${basename(r)}  (${r})`).join('\n')}\n`);
+    process.exit(1);
+  }
+  const from = resolveProjectRoot(cwd);
+  if (found.root === from) { process.stdout.write('That is this project: save it as a note instead.\n'); process.exit(1); }
+  const db = openDb(found.root);
+  if (!db) { process.stderr.write('better-sqlite3 unavailable\n'); process.exit(1); }
+  try {
+    insertItem(db, { content: `📨 De ${basename(from || cwd)}: ${text}`, cwd: found.root, sessionId: sessionId || 'send', remindAt: localDay(new Date()) });
+  } finally { db.close(); }
+  const open = liveSessionRecords().filter((r) => r.cwd && resolveProjectRoot(r.cwd) === found.root);
+  process.stdout.write(`📨 Saved for ${basename(found.root)} (${found.root}): its next session opens with it under ⏰ Avisos pendientes.\n`);
+  process.stdout.write(open.length
+    ? `Open sessions there (they get it on their next prompt; wake them now with SendMessage): ${open.map((r) => `${r.name} [${r.status}]`).join(', ')}\n`
+    : 'No session open there.\n');
 }
 
 // A background agent reports its end with a task notification carrying its id.
@@ -4903,6 +4993,7 @@ async function main() {
   if (['summary', 'resumen', 'diario'].includes(command)) { cmdSummary(process.argv.slice(3), process.cwd()); return; }
   if (command === 'export') { cmdExport(process.argv[3], process.cwd()); return; }
   if (command === 'import') { cmdImport(process.argv[3], process.cwd(), sessionId); return; }
+  if (command === 'send') { cmdSend(process.argv.slice(3), process.cwd(), sessionId); return; }
 
   if (command === 'limit') {
     const at = process.argv.indexOf('--session');
@@ -4948,6 +5039,7 @@ async function main() {
     process.stderr.write('  recall [filter]   Filters: decisiones | reglas | pendiente | hecho (from the handoffs)\n');
     process.stderr.write('  export [file]     Saved items to Markdown (default ./secretary-notes.md)\n');
     process.stderr.write('  import <file>     Saved items from such a Markdown file\n');
+    process.stderr.write('  send <project> <message>  Leave a message for another project (reminder due today in its DB)\n');
     process.stderr.write('  index-turns       Backfill the verbatim FTS index from transcripts on disk\n');
     process.stderr.write('  index-vectors     Build the semantic index (optional; needs embedding venv)\n');
     process.stderr.write('  sync              Refresh both indexes in the background (SessionStart hook)\n');
