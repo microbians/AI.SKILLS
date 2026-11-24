@@ -1,6 +1,6 @@
 # CodeIndex — Claude's index to your codebase
 
-> A plugin for Claude Code: an index of every class, function and method in your project, so Claude finds your code without searching it.
+> A plugin for Claude Code: an index of every class, function and method in your project, so Claude finds your code without searching it — and an opinionated linter against sloppy code, following *A Philosophy of Software Design*: deep modules, narrow interfaces.
 
 Page: https://microbians.github.io/AI.SKILLS/plugins/code-index/ · Source: https://github.com/microbians/AI.SKILLS/tree/main/plugins/code-index · License: MIT
 
@@ -23,7 +23,7 @@ node ~/.claude/codeindex/codeindex.mjs file <path>         # symbols in one file
 node ~/.claude/codeindex/codeindex.mjs deps <file>         # what a file imports and calls into
 node ~/.claude/codeindex/codeindex.mjs arch                # module dependency map
 node ~/.claude/codeindex/codeindex.mjs flow <module>       # up/downstream of a module
-node ~/.claude/codeindex/codeindex.mjs lint [rule…] [path…] # cycles, tangles, field leaks, shallow modules
+node ~/.claude/codeindex/codeindex.mjs lint [rule…] [path…] # cycles, tangles, field leaks, shallow and hidden modules
 node ~/.claude/codeindex/codeindex.mjs index               # incremental reindex
 ```
 
@@ -39,14 +39,15 @@ store/user-methods.js:42   saveUser(user, opts)   (method)  in UserMethods → U
 
 Methods laid onto a class from another file (`Object.assign(T.prototype, S.prototype)`, `mixInto(T, S)`, `applyMixins(T, [A, B])`) are filed under the class they land in: `members UserStore` lists them, `where UserStore.saveUser` finds them, and a stale copy in `old/` does not pass for the real one.
 
-## Lint: deep modules, narrow interfaces
+## Lint: an opinionated linter against sloppy code
 
-The same index tells when the structure goes wrong, after [deslop-please](https://github.com/deterministic-machines/deslop-please) and *A Philosophy of Software Design*, for every language ctags reads:
+It follows *A Philosophy of Software Design*: deep modules, narrow interfaces. A deep module hides a lot behind a few calls, so Claude and you only need to know those calls. The same index shows where that breaks, after [deslop-please](https://github.com/deterministic-machines/deslop-please) (Rust), for every language ctags reads:
 
 - `module-cycle` — files that import each other in a ring.
 - `tangle` — two classes of one file, each using the other.
 - `field-leak` — a class's fields written or reached into from other files wired to it; a plain read is no leak.
 - `shallow-module` — one client calls most of a file's functions.
+- `hidden-modules` — a big file whose functions fall into groups that never call each other: modules living in one file.
 
 The session-start hook lints the whole project. After a turn that edited files, a `Stop` hook runs `lint --new` and hands Claude only what that change broke, once.
 

@@ -94,7 +94,7 @@ node ~/.claude/codeindex/codeindex.mjs arch             # module dependency map 
 node ~/.claude/codeindex/codeindex.mjs flow <module>    # up/downstream of a module (who needs it / what it needs)
 
 # Structure — deep modules, narrow interfaces (exit 1 when it finds problems)
-node ~/.claude/codeindex/codeindex.mjs lint [rule…] [path…]  # module-cycle, tangle, field-leak, shallow-module
+node ~/.claude/codeindex/codeindex.mjs lint [rule…] [path…]  # module-cycle, tangle, field-leak, shallow-module, hidden-modules
 
 # Maintain
 node ~/.claude/codeindex/codeindex.mjs stats            # files, symbols, edges, languages, freshness
@@ -122,11 +122,12 @@ edges resolved to local files and `callers` of uniquely-named symbols are exact;
 `arch` edges are name-based heuristics, so treat `arch`/`flow` as a strong hint and
 `where`/`callers` as ground truth.
 
-`lint` reindexes and reports four structural smells, after
+`lint` reindexes and reports five structural smells, after
 [deslop-please](https://github.com/deterministic-machines/deslop-please) and *A Philosophy
 of Software Design*: `module-cycle` (files importing each other in a ring), `tangle` (two
 classes of one file using each other), `field-leak` (a class's fields written or reached
-into — `q.items.push()`, `q.head++` — from another file wired to it; a plain read is not a leak) and `shallow-module` (one client calling most of a file's functions).
+into — `q.items.push()`, `q.head++` — from another file wired to it; a plain read is not a leak) `shallow-module` (one client calling most of a file's functions) and `hidden-modules`
+(a big file whose functions fall into groups that never call each other — modules living in one file).
 Give rule names and/or paths to narrow it; it exits 1 when it finds something.
 It also runs by itself: the session-start hook lints the whole project and shows the
 total, and a Stop hook (`lint-hook.mjs`) runs `lint --new` after any turn that edited

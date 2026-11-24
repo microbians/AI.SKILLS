@@ -4,7 +4,7 @@
 
 ## Pages
 
-- [CodeIndex](https://microbians.github.io/AI.SKILLS/plugins/code-index/index.md): Claude's index to your codebase — every class, function and method with file:line, signature and doc, so Claude finds code without searching it.
+- [CodeIndex](https://microbians.github.io/AI.SKILLS/plugins/code-index/index.md): Claude's index to your codebase — every class, function and method with file:line, signature and doc, so Claude finds code without searching it; plus an opinionated linter for deep modules and narrow interfaces.
 - [The Secretary](https://microbians.github.io/AI.SKILLS/plugins/secretary/index.md): local memory for Claude Code — conversations kept verbatim, handoffs between sessions, recall by words and meaning.
 - [Meslo Code](https://microbians.github.io/AI.SKILLS/fonts/index.md): a monospaced font for code with Menlo's line spacing, Fira Code ligatures and Nerd Fonts icons.
 

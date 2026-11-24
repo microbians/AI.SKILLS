@@ -1,7 +1,7 @@
 ---
 name: code-index
 description: Fast symbol lookup for large codebases. Use BEFORE reading files or spawning search agents to locate where a class/function/method is defined and what references it. Backed by an incremental SQLite + universal-ctags index, scoped per project. Answers "where is X?" in milliseconds instead of reading thousands of files.
-version: 1.4.0
+version: 1.5.0
 updated: 2026-11-24
 license: MIT
 metadata:
@@ -131,7 +131,7 @@ elsewhere in the tree (old versions kept for A/B) stay out.
 
 ## Lint — deep modules, narrow interfaces
 
-`lint` reindexes, then reports four structural smells (after deslop-please and
+`lint` reindexes, then reports five structural smells (after deslop-please and
 *A Philosophy of Software Design*):
 
 | Rule | What it means |
@@ -140,6 +140,7 @@ elsewhere in the tree (old versions kept for A/B) stay out.
 | `tangle` | two classes of one file that each use the other |
 | `field-leak` | a class's fields (declared, or set as `this.x` / `$this->x` in its methods) written (`q.head++`) or reached into (`q.items.push()`, `q.items[i]`) from another file wired to it — a plain read is not a leak |
 | `shallow-module` | one client file calls at least 6 functions, and at least half, of another file |
+| `hidden-modules` | a file of 40+ functions whose functions fall into groups that never call each other, once the most-called shared helpers are set aside — modules living in one file |
 
 It also runs on its own:
 - **Session start** — the reindex hook lints the whole project and shows the total and the first findings.
@@ -154,6 +155,7 @@ only in a file that imports or calls the class's file — what it reports is rea
 Fix from first principles, never by moving code to silence a finding:
 - `module-cycle` / `tangle`: which layer does each file or class belong to? The lower one must stop knowing the higher one.
 - `field-leak` / `shallow-module`: why do outsiders need these fields or functions? Look at the patterns of use and hide them behind a few calls that say what the client wants — all leaks of a class together, not one by one.
+- `hidden-modules`: each group is a module waiting for its own file; move a group out with the shared helpers it needs, one group at a time, and keep the file's callers working through the new file's few exports.
 - Show the user the before/after structure in a small diagram.
 
 ---

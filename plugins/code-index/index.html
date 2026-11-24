@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CodeIndex — Claude’s index to your codebase</title>
-<meta name="description" content="A plugin for Claude Code: an index of every class, function and method in your project, so Claude finds your code without searching it.">
+<meta name="description" content="A Claude Code plugin: an index of every class, function and method in your project, and an opinionated linter against sloppy code.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AI.SKILLS">
 <link rel="alternate" type="text/markdown" href="index.md" title="CodeIndex for LLMs">
 <meta property="og:url" content="https://microbians.github.io/AI.SKILLS/plugins/code-index/">
 <meta property="og:title" content="CodeIndex — Claude’s index to your codebase">
-<meta property="og:description" content="A Claude Code plugin: every class, function and method with its file and line, so Claude finds your code without searching.">
+<meta property="og:description" content="A Claude Code plugin: every function with its file and line, and a linter for deep modules and narrow interfaces.">
 <meta property="og:image" content="https://microbians.github.io/AI.SKILLS/plugins/code-index/assets/og.png?v=2">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -224,7 +224,7 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
   <header class="g top">
     <div class="l"><a href="https://github.com/microbians/AI.SKILLS">AI.SKILLS</a></div>
     <div class="k"><a href="#top" id="top">CodeIndex</a></div>
-    <div class="r"><nav aria-label="Sections"><a href="#why">Why</a><a href="#members">Mixins</a><a href="#index">How</a><a href="#install">Install</a><a href="https://github.com/microbians/AI.SKILLS/tree/main/plugins/code-index">GitHub</a></nav></div>
+    <div class="r"><nav aria-label="Sections"><a href="#why">Why</a><a href="#members">Mixins</a><a href="#lint">Lint</a><a href="#index">How</a><a href="#install">Install</a><a href="https://github.com/microbians/AI.SKILLS/tree/main/plugins/code-index">GitHub</a></nav></div>
   </header>
 
   <main>
@@ -234,6 +234,7 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
       <div class="r">
         <p>When Claude Code needs a function in your project, it usually goes looking for it: searching files, opening them, reading until it finds the right one. Every time.</p>
         <p style="margin-top: 12px"><strong>CodeIndex keeps a list of everything in your code</strong>: each class, function and method, the file and line where it lives, what it takes and what it does. Claude asks the list and goes straight to that line. Answers come faster and spend fewer tokens.</p>
+        <p style="margin-top: 12px"><strong>And it’s an opinionated linter against sloppy code.</strong> It follows <i>A Philosophy of Software Design</i>: deep modules, narrow interfaces. At the start of a session, and after any turn that changed code, it tells Claude what the structure broke.</p>
         <div class="install-line">
           <code id="install-cmd">git clone https://github.com/microbians/AI.SKILLS.git &amp;&amp; bash AI.SKILLS/plugins/code-index/install.sh</code>
           <button class="copy" type="button" data-copy="install-cmd">Copy</button>
@@ -285,13 +286,13 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
 
     <section class="part" id="lint" aria-labelledby="lint-h">
       <div class="g head">
-        <div class="l"><span class="tag">Lint</span><h2 id="lint-h">Deep modules, narrow interfaces.</h2></div>
+        <div class="l"><span class="tag">Lint</span><h2 id="lint-h">An opinionated linter against sloppy&nbsp;code.</h2></div>
         <div class="k">lint</div>
         <div class="r">
-          <p>The same index tells when the structure goes wrong: files that need each other in a ring, classes whose insides are used from outside, modules that hide nothing. After <a href="https://github.com/deterministic-machines/deslop-please">deslop-please</a> and <i>A Philosophy of Software Design</i>, for every language ctags reads.</p>
+          <p>It follows <i>A Philosophy of Software Design</i>: <b>deep modules, narrow interfaces</b>. A deep module hides a lot behind a few calls, so Claude and you only need to know those calls. The same index shows where that breaks: files that need each other in a ring, classes whose insides are used from outside, modules that hide nothing, big files that are several modules in one. After <a href="https://github.com/deterministic-machines/deslop-please">deslop-please</a> (Rust), for every language ctags reads.</p>
           <ul class="points">
             <li><b>At session start:</b> the hook lints the whole project and shows what it found.</li>
-            <li><b>After a piece of work:</b> when a turn edited files, a Stop hook runs <code>lint --new</code> and hands Claude only what that change broke, once.</li>
+            <li><b>After a piece of work:</b> when a turn edited files, a Stop hook runs <code style="white-space: nowrap">lint --new</code> and hands Claude only what that change broke, once.</li>
             <li><b>Fixed from first principles:</b> the skill asks which layer each piece belongs to and what clients really need, not for code moved to silence it.</li>
           </ul>
         </div>
@@ -509,6 +510,7 @@ document.getElementById('lint-rows').append(...[
   ['kernel.js: Tasks ↔ Timers', 'tangle', 'Two classes of one file, each using the other.'],
   ['RunQueue.items ◀ 4 places', 'field-leak', 'A class’s fields written or reached into from other files wired to it; a plain read is no leak.'],
   ['app.js → 9 of 15 in store.js', 'shallow-module', 'One client calls most of a file’s functions: the module hides nothing.'],
+  ['summarize.mjs: 206 functions, 10 groups', 'hidden-modules', 'A big file whose functions fall into groups that never call each other: modules living in one file.'],
 ].map(([example, rule, what]) => row({ l: example, k: rule, r: '', doc: what })));
 
 // How it works, one line per step: the tool, the step, what it does.

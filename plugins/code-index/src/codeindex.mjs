@@ -992,16 +992,17 @@ function flow(mod) {
 }
 
 // ─── lint: deep modules, narrow interfaces ───────────────────────
-// Four structural smells, after deslop-please and "A Philosophy of Software Design",
+// Five structural smells, after deslop-please and "A Philosophy of Software Design",
 // read from the same index (reindexed first, so it judges the code on disk):
-//   module-cycle    files that import / call each other in a ring
+//   module-cycle    files that import each other in a ring
 //   tangle          two classes of one file that each use the other
 //   field-leak      a class's fields written or reached into from other files
 //   shallow-module  one client file calls most of another file's functions
+//   hidden-modules  a big file whose functions form groups that never call each other
 // Text and name based like the rest of the graph: a field counts only when its name
 // belongs to one class in the whole index, and an access only in a file wired to that
 // class's file — so what it reports is real, and some leaks go unseen.
-const LINT_RULES = ['module-cycle', 'tangle', 'field-leak', 'shallow-module'];
+const LINT_RULES = ['module-cycle', 'tangle', 'field-leak', 'shallow-module', 'hidden-modules'];
 const TYPE_KINDS = new Set(['class', 'struct', 'interface', 'trait']);
 const FIELD_KINDS = new Set(['field', 'property', 'variable']);
 // What makes an outside access to a field a leak: writing it (x.f = …, x.f += …, x.f++,
@@ -1009,7 +1010,10 @@ const FIELD_KINDS = new Set(['field', 'property', 'variable']);
 const FIELD_WRITE = /^\s*(?:(?:\*\*|<<|>>>?|&&|\|\||\?\?|[-+*/%&|^])?=(?!=)|\+\+|--)/;
 const FIELD_REACH = /^\s*(?:\??\.(?!\.)|\[|->)/;
 const FIELD_PREFIX_STEP = /(?:\+\+|--)\s*$/;
-const SHALLOW_MIN_USED = 6; // a client calling fewer functions of a file is not judged
+const HIDDEN_MIN_FUNCTIONS = 40; // a file with fewer functions is not searched for hidden modules
+const HIDDEN_MIN_GROUP = 4;      // functions a group needs to count as a module
+const HIDDEN_MAX_SHARED = 0.1;   // share of a file's functions that may be set aside as shared helpers
+const SHALLOW_MIN_USED = 6;// a client calling fewer functions of a file is not judged
 const SHALLOW_SHARE = 0.5;   // …and is flagged when it calls at least this share of them
 const LINT_DETAIL_MAX = 8;   // detail lines shown per finding
 
@@ -1249,6 +1253,61 @@ function lint(args, { reindex = true, onlyNew = false } = {}) {
     report({
       rule: 'shallow-module', subject: k, path: target, line: 1,
       title: `${client} calls ${used.size} of its ${total} functions`, details: [[...used].sort().join(', ')],
+    });
+  }
+
+  // hidden-modules: a big file whose functions fall into groups that never call each
+  // other — modules living in one file. Shared helpers everyone calls (log, paths…) tie
+  // every group together, so the most connected functions are set aside first, one at a
+  // time, until the largest group holds at most a third of the file's linked functions.
+  const inFile = new Map();            // file → Map(function → Set(function it calls or is called by))
+  for (const e of edges) {
+    if (e.kind !== 'uses' || e.src_path !== e.dst_path || !e.src_name || e.src_name === e.dst_name) continue;
+    if (!inFile.has(e.src_path)) inFile.set(e.src_path, new Map());
+    const adj = inFile.get(e.src_path);
+    for (const [a, b] of [[e.src_name, e.dst_name], [e.dst_name, e.src_name]]) {
+      if (!adj.has(a)) adj.set(a, new Set());
+      adj.get(a).add(b);
+    }
+  }
+  for (const [path, adj] of inFile) {
+    const lineOf = new Map((symbolsIn.get(path) || []).filter((s) => CALLABLE.has(s.kind)).map((s) => [s.name, s.line]));
+    if (lineOf.size < HIDDEN_MIN_FUNCTIONS) continue;
+    for (const n of [...adj.keys()]) if (!lineOf.has(n)) adj.delete(n);
+    const linked = [...adj.keys()];
+    const groupsWithout = (shared) => {
+      const seen = new Set(), out = [];
+      for (const n of linked) {
+        if (seen.has(n) || shared.has(n)) continue;
+        const group = [], stack = [n];
+        seen.add(n);
+        while (stack.length) {
+          const v = stack.pop();
+          group.push(v);
+          for (const w of adj.get(v)) if (adj.has(w) && !seen.has(w) && !shared.has(w)) { seen.add(w); stack.push(w); }
+        }
+        out.push(group);
+      }
+      return out.sort((a, b) => b.length - a.length);
+    };
+    const byDegree = [...linked].sort((a, b) => adj.get(b).size - adj.get(a).size);
+    const shared = new Set();
+    let groups = groupsWithout(shared);
+    while (groups[0]?.length > linked.length / 3 && shared.size < linked.length * HIDDEN_MAX_SHARED) {
+      shared.add(byDegree[shared.size]);
+      groups = groupsWithout(shared);
+    }
+    groups = groups.filter((g) => g.length >= HIDDEN_MIN_GROUP);
+    if (groups.length < 2) continue;
+    const details = groups.map((g) => {
+      const names = g.sort((a, b) => lineOf.get(a) - lineOf.get(b));
+      const lines = names.map((n) => lineOf.get(n));
+      return `${g.length} functions, lines ${Math.min(...lines)}–${Math.max(...lines)}: ${names.slice(0, 6).join(', ')}${g.length > 6 ? `, +${g.length - 6}` : ''}`;
+    });
+    if (shared.size) details.push(`shared helpers, left out: ${[...shared].join(', ')}`);
+    report({
+      rule: 'hidden-modules', subject: path, path, line: 1, details,
+      title: `${lineOf.size} functions fall into ${groups.length} groups that don't call each other — modules hidden in one file`,
     });
   }
 
