@@ -624,6 +624,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-11-24 | TheSecretary v2.26.2: a session opened right after closing a window mid-turn resumes from that turn — restore adds the verbatim tail of the previous session when its own handoff is still being written |
 | 2026-11-24 | CodeIndex v1.5.1: `lint` leaves test files out — a test exercising a module's whole interface is not a client, so it no longer raises `shallow-module` (or any other rule) |
 | 2026-11-24 | CodeIndex v1.5.0: `hidden-modules` lint rule — a big file whose functions fall into groups that never call each other (most-called shared helpers set aside first); `field-leak` counts writes and reaching into a field, not plain reads; the landing presents CodeIndex as an opinionated linter too |
 | 2026-11-24 | CodeIndex v1.4.0: `lint` — deep modules, narrow interfaces (`module-cycle`, `tangle`, `field-leak`, `shallow-module`); the session-start hook lints the whole project, and a `Stop` hook runs `lint --new` after a turn that edited files. CLAUDE.Global v1.4.12: `lint` in the CodeIndex commands |

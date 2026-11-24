@@ -1147,6 +1147,21 @@ function previousSessionId(cwd, sessionId) {
   } catch { return ''; }
 }
 
+// Most recently written transcript in `dir` other than `sessionId`'s, or ''.
+// On a fresh start it is the session this project ran last.
+function latestOtherTranscriptId(dir, sessionId) {
+  let best = '';
+  let bestAt = 0;
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.jsonl') || f === `${sessionId}.jsonl`) continue;
+      const at = statSync(join(dir, f)).mtimeMs;
+      if (at > bestAt) { bestAt = at; best = f.slice(0, -6); }
+    }
+  } catch { /* no transcript folder */ }
+  return best;
+}
+
 // ═══════════════════ STATUS LINE EVENTS ═══════════════════
 
 // One-off message (memory recovered, handoff included) that the status line
@@ -2814,15 +2829,27 @@ async function restore(hookInput) {
       }
     }
 
-    // 2a'. After /clear, the literal tail of the session just left. A summary
-    //      says what was done; only the raw end shows whether the last reply
-    //      finished or broke off mid-task. Transcripts of one project share a
-    //      folder, so the previous one sits next to this session's.
-    const prevSessionId = source === 'clear' && cwd && transcript_path ? previousSessionId(cwd, session_id) : '';
+    // 2a'. The literal tail of the previous session, when the handoff may not
+    //      cover its end. A summary says what was done; only the raw end shows
+    //      whether the last reply finished or broke off mid-task. After /clear
+    //      it always goes in (the handoff is still being written). On a fresh
+    //      start it goes in when that session's last message is newer than its
+    //      own last handoff: a window closed mid-turn writes its handoff in the
+    //      background, and a session opened right after read the older one.
+    //      Transcripts of one project share a folder, so the previous one sits
+    //      next to this session's.
+    const prevSessionId = !cwd || !transcript_path ? ''
+      : source === 'clear' ? previousSessionId(cwd, session_id)
+      : source === 'startup' ? latestOtherTranscriptId(dirname(transcript_path), session_id) : '';
     if (prevSessionId) {
       const tailChars = Math.max(500, parseInt(config.restore_tail_chars, 10) || 12000);
       const { messages } = parseTranscript(join(dirname(transcript_path), `${prevSessionId}.jsonl`));
-      const tail = transcriptTail(messages, tailChars);
+      const handoffAt = db.prepare(`
+        SELECT MAX(created_at) AS at FROM all_items
+        WHERE session_id = ? AND summary LIKE '[HANDOFF]%'
+      `).get(prevSessionId)?.at;
+      const covered = handoffAt && Date.parse(`${handoffAt.replace(' ', 'T')}Z`) >= Date.parse(messages.at(-1)?.ts || '');
+      const tail = source === 'clear' || !covered ? transcriptTail(messages, tailChars) : '';
       if (tail) {
         output += `## 🧵 End of the previous conversation (last ~${tailChars} chars, verbatim)\n\n`
           + `_Check this before anything else: if the last turns left work unfinished (a step announced but not run, an edit not applied, a question unanswered), tell the user in one line what was pending and offer to resume it. If they show the task finished, do not reopen it._\n\n`

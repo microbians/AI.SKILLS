@@ -252,7 +252,7 @@ The status line starts with a small face and `Secretary`. The face blinks every 
    - **Manually injected context** — items added with `inject` are printed **verbatim**, never LLM-consolidated: they are hand-curated, so paraphrasing them only loses detail
    - **Session handoff brief** (📋) from the previous session's Stop hook — the dense "how to resume" doc
    - **Handoffs from earlier sessions** — the 2 previous handoffs, truncated to 900 chars each. A handoff is the distilled state of an entire session, so restoring only the last one (`LIMIT 1`) discarded most of the project history; truncation keeps them from dwarfing the rest of the recall
-   - **End of the previous conversation** (🧵, `/clear` only) — the verbatim tail of the session just left (`restore_tail_chars`, default 12000), always starting with its last user request; tool turns are cut to one line. A summary says what was done, only the raw end shows whether the last reply finished or broke off, so Claude is told to check it and offer to resume unfinished work. The previous session is the one recorded in this terminal's handoff lock
+   - **End of the previous conversation** (🧵, after `/clear`, or on a fresh start when the previous session's last message is newer than its own last handoff) — the verbatim tail of the session just left (`restore_tail_chars`, default 12000), always starting with its last user request; tool turns are cut to one line. A summary says what was done, only the raw end shows whether the last reply finished or broke off, so Claude is told to check it and offer to resume unfinished work. The previous session is the one recorded in this terminal's handoff lock after `/clear`, and the most recently written transcript of the project on a fresh start (a window closed mid-turn writes its handoff in the background, so a session opened right after would read the older one)
    - **Latest N items** (🕑) — the N most recent summaries across the project tree, newest-first (`restore_recent_items`, default 15)
    - Consolidated conversation summary (loaded from per-project cache — see below) as background
    - Saved items — one flat list, oldest first
@@ -556,7 +556,7 @@ Edit `~/.claude/the-secretary/config.json`:
 | `min_new_chars` | `2000` | Minimum new content before summarizing |
 | `max_summary_tokens` | `800` | Max tokens for summary output |
 | `restore_recent_items` | `15` | How many recent items the `🕑 Latest N items` restore block shows (newest-first, across the whole project tree) |
-| `restore_tail_chars` | `12000` | Size of the `🧵 End of the previous conversation` block restore injects after `/clear` |
+| `restore_tail_chars` | `12000` | Size of the `🧵 End of the previous conversation` block restore injects after `/clear` or when the previous session's own handoff is older than its last message |
 | `llm_url` | `http://localhost:8922/v1/chat/completions` | OpenAI-compatible endpoint (used when `provider=local`) |
 | `claude_bin` | `~/.local/bin/claude` | Path to the `claude` binary (used when `provider=claude_cli`). Defaults to the native installer's copy, the one that updates itself. If it does not exist, `~/.local/bin/claude`, `/opt/homebrew/bin/claude` and `/usr/local/bin/claude` are tried |
 | `claude_model` | `claude-haiku-4-5` | Model passed to `claude -p --model` |
@@ -675,6 +675,7 @@ TheSecretary/
 
 | Version | Date | Change |
 |---|---|---|
+| 2.26.2 | 2026-11-24 | A session opened right after closing a window mid-turn resumes from that turn: the closed session's handoff is written in the background and landed seconds after the new session read the older one. On a fresh start, restore now also injects the `🧵` verbatim tail of the project's latest transcript when its last message is newer than that session's own last handoff |
 | 2.26.1 | 2026-11-23 | A `/secretary send` message is delivered once: the session start or `📥` notice that shows it deletes it, so a later start or `/clear` no longer repeats it |
 | 2.26.0 | 2026-11-23 | `/secretary send <project> <message>`: a message for another project, saved as a reminder due today in its DB — its next session opens with it, an open one gets it on its next prompt and can be woken with `SendMessage`. Live sessions are read from `~/.claude/sessions` as well as the account's folder: under `CLAUDE_CONFIG_DIR` the record was never found, so the launcher always took the session for busy. The `📥` notice no longer guesses that a late handoff caused it |
 | 2.25.1 | 2026-11-22 | Context trim: the `secretary` launcher no longer restarts while Claude is in a turn or a background agent is running. The session stays whole and the next prompt you type tries again. Agent reports and task notifications never trigger a restart |
