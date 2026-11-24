@@ -1016,6 +1016,10 @@ const HIDDEN_MAX_SHARED = 0.1;   // share of a file's functions that may be set 
 const SHALLOW_MIN_USED = 6;// a client calling fewer functions of a file is not judged
 const SHALLOW_SHARE = 0.5;   // …and is flagged when it calls at least this share of them
 const LINT_DETAIL_MAX = 8;   // detail lines shown per finding
+// Tests exercise a module's whole interface on purpose, so they are not clients:
+// lint leaves test files out (foo.test.ts, foo_spec.rb, test_foo.py, __tests__/, tests/…).
+const TEST_FILE = /(^|\/)(__tests__|__mocks__|tests?|spec|e2e)\/|[._-](test|spec)\.[^/]+$|(^|\/)test_[^/]+$|_test\.[^/]+$/i;
+const isTestFile = (p) => TEST_FILE.test(p);
 
 // (the strongly connected components with more than one node: every ring in a graph
 // given as node → Set(node). Tarjan, iterative so a deep chain can't blow the stack)
@@ -1063,9 +1067,10 @@ function lint(args, { reindex = true, onlyNew = false } = {}) {
   const db = openDbReadonly();
   const seenRow = db.prepare('SELECT value FROM meta WHERE key = ?').get(LINT_SEEN_KEY);
   const seen = seenRow ? new Set(JSON.parse(seenRow.value)) : null;
-  const symbols = db.prepare('SELECT name, kind, path, line, scope FROM symbols').all();
-  const edges = db.prepare('SELECT kind, src_name, src_path, src_line, dst_name, dst_path FROM refs WHERE dst_path IS NOT NULL').all();
-  const codePaths = db.prepare('SELECT path FROM files').all().map((r) => r.path).filter(isCodeFile);
+  const symbols = db.prepare('SELECT name, kind, path, line, scope FROM symbols').all().filter((s) => !isTestFile(s.path));
+  const edges = db.prepare('SELECT kind, src_name, src_path, src_line, dst_name, dst_path FROM refs WHERE dst_path IS NOT NULL').all()
+    .filter((e) => !isTestFile(e.src_path) && !isTestFile(e.dst_path));
+  const codePaths = db.prepare('SELECT path FROM files').all().map((r) => r.path).filter((p) => isCodeFile(p) && !isTestFile(p));
   const targets = callableTargets(db);
   db.close();
 
