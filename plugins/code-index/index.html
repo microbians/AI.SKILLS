@@ -212,6 +212,53 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
   .head { row-gap: 12px; }
   .head h2 { font-size: clamp(28px, 8vw, 38px); }
 }
+/* ---------- Lint figures: one before → after diagram per rule, looping while in view ---------- */
+:root { --bad: #c4352b; --good: #23824a; --dim: #9aa1aa; --c2: #b05a14; --c3: #6b3fb0; }
+.fig { padding: 18px 0; border-top: 1px solid var(--ink-5); align-items: start; }
+.fig .l .ex { margin: 2px 0 6px; font: 400 13px/1.5 var(--mono); color: var(--ink-3); }
+.fig .l .cap { margin: 0; font: 400 15px/1.45 var(--sans); color: var(--ink-2); }
+.fig .k { font: 700 14px/1.5 var(--mono); padding-top: 2px; }
+.fig svg { display: block; width: 100%; max-width: 620px; height: auto; background: #fff; border: 1px solid var(--ink-5); border-radius: 6px; cursor: pointer; }
+.fig .hint { margin: 6px 0 0; font-size: 13px; color: var(--ink-4); }
+.fig svg .t { font: 400 12px var(--mono); fill: var(--ink-1); }
+.fig svg .t.b-name { font-weight: 700; }
+.fig svg .s { font: 400 10.5px var(--mono); fill: var(--ink-3); }
+.fig svg .n { font: 400 10px var(--mono); }
+.fig svg .fl { font: 400 11px var(--mono); fill: var(--ink-3); }
+.fig svg .capt { font: 500 12.5px var(--sans); fill: var(--ink-3); }
+.fig svg .pt { font: 650 12px var(--sans); }
+.fig svg .fr { fill: rgba(13, 16, 21, .025); stroke: var(--ink-5); stroke-width: 1.5; }
+.fig svg .box { fill: #fff; stroke: #8d949d; stroke-width: 1.2; }
+.fig svg .fld { stroke-dasharray: 4 3; }
+.fig svg .tick { fill: #e6f3ea; stroke: var(--good); }
+.fig svg .hl { fill: none; stroke-width: 1.6; }
+.fig svg .hl.bad, .fig svg .pill.bad { stroke: var(--bad); }
+.fig svg .hl.good, .fig svg .pill.good { stroke: var(--good); }
+.fig svg .hl.dash { stroke: #8d949d; stroke-dasharray: 3 3; }
+.fig svg .pill.bad { fill: #fbecea; } .fig svg .pill.good { fill: #e6f3ea; }
+.fig svg .pt.bad { fill: var(--bad); } .fig svg .pt.good { fill: var(--good); }
+.fig svg .ar { fill: none; stroke-width: 1.6; }
+.fig svg .ar.bad { stroke: var(--bad); marker-end: url(#ah-bad); }
+.fig svg .ar.good { stroke: var(--good); marker-end: url(#ah-good); }
+.fig svg .ar.dim { stroke: var(--dim); stroke-width: 1.2; marker-end: url(#ah-dim); }
+.fig svg .ed { stroke-width: 1.3; }
+.fig svg .hub { stroke: var(--dim); stroke-width: 1.2; stroke-dasharray: 3 3; }
+.fig svg .c1 { stroke: var(--cobalt); fill: var(--cobalt); } .fig svg .c2 { stroke: var(--c2); fill: var(--c2); } .fig svg .c3 { stroke: var(--c3); fill: var(--c3); }
+.fig svg rect.c1, .fig svg rect.c2, .fig svg rect.c3 { fill: #fff; stroke-width: 1.3; }
+.fig svg text.c1, .fig svg text.c2, .fig svg text.c3 { stroke: none; }
+.fig svg .a { opacity: 0; }
+.fig.run:not(.held) .b { animation: fig-before 9s ease-in-out infinite; }
+.fig.run:not(.held) .a { animation: fig-after 9s ease-in-out infinite; }
+.fig.run:not(.held) .mv { animation: fig-move 9s var(--ease) infinite; }
+.fig .b, .fig .a { transition: opacity .45s ease-in-out; }
+.fig .mv { transition: transform .6s var(--ease); }
+.fig.held.after .b { opacity: 0; }
+.fig.held.after .a { opacity: 1; }
+.fig.held.after .mv { transform: translate(var(--dx), var(--dy)); }
+@keyframes fig-before { 0%, 42% { opacity: 1; } 52%, 92% { opacity: 0; } 100% { opacity: 1; } }
+@keyframes fig-after { 0%, 46% { opacity: 0; } 56%, 90% { opacity: 1; } 98%, 100% { opacity: 0; } }
+@keyframes fig-move { 0%, 44% { transform: none; } 58%, 90% { transform: translate(var(--dx), var(--dy)); } 100% { transform: none; } }
+
 /* Powered by microbians: the logo (lib/microbians.png, inlined so the mask also loads from file://) as a mask, in the text color */
 .powered { display: inline-flex; align-items: center; gap: 8px; margin-top: 20px; font-size: 14px; color: var(--ink-2); text-decoration: none; }
 .powered i { width: 22px; height: 18px; background: currentColor; --logo: url(data:image/png;base64,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); -webkit-mask: var(--logo) center / contain no-repeat; mask: var(--logo) center / contain no-repeat; }
@@ -297,7 +344,186 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
           </ul>
         </div>
       </div>
-      <ol class="conc" id="lint-rows"></ol>
+      <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+        <defs>
+          <marker id="ah-bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c4352b"/></marker>
+          <marker id="ah-good" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#23824a"/></marker>
+          <marker id="ah-dim" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9aa1aa"/></marker>
+        </defs>
+      </svg>
+
+      <div class="g fig">
+        <div class="l"><p class="ex">sched/policy.js ↔ queue/ring.js</p><p class="cap">Files that import each other in a ring. Move what closes the ring to the file that uses it.</p></div>
+        <div class="k">module-cycle</div>
+        <div class="r">
+          <svg viewBox="0 0 520 220" role="img" aria-label="Before: policy.js imports RunQueue from ring.js, and ring.js imports BACKLOG_MOST back from policy.js. After: BACKLOG_MOST moves into ring.js and the ring is gone.">
+            <rect class="fr" x="20" y="44" width="220" height="164" rx="6"/><text class="fl" x="32" y="62">sched/policy.js</text>
+            <rect class="fr" x="280" y="44" width="220" height="164" rx="6"/><text class="fl" x="292" y="62">queue/ring.js</text>
+            <rect class="box" x="55" y="84" width="130" height="30" rx="4"/><text class="t" x="120" y="103" text-anchor="middle">admit()</text>
+            <rect class="box" x="320" y="84" width="140" height="30" rx="4"/><text class="t" x="390" y="103" text-anchor="middle">RunQueue</text>
+            <g class="mv" style="--dx: 255px; --dy: 0px"><rect class="box" x="55" y="150" width="130" height="30" rx="4"/><text class="t" x="120" y="169" text-anchor="middle">BACKLOG_MOST</text></g>
+            <g class="b">
+              <path class="ar bad" d="M185,99 L316,99"/><path class="ar bad" d="M390,114 C390,162 262,165 188,165"/>
+              <rect class="pill bad" x="8" y="8" width="62" height="22" rx="11"/><text class="pt bad" x="39" y="23" text-anchor="middle">Before</text>
+              <text class="capt" x="510" y="23" text-anchor="end">2 files import each other in a ring</text>
+            </g>
+            <g class="a">
+              <path class="ar good" d="M185,99 L316,99"/><path class="ar dim" d="M390,114 L390,146"/>
+              <rect class="pill good" x="8" y="8" width="56" height="22" rx="11"/><text class="pt good" x="36" y="23" text-anchor="middle">After</text>
+              <text class="capt" x="510" y="23" text-anchor="end">BACKLOG_MOST moves to the file that uses it</text>
+            </g>
+          </svg>
+          <p class="hint">Click a diagram to hold it and step between before and after.</p>
+        </div>
+      </div>
+
+      <div class="g fig">
+        <div class="l"><p class="ex">kernel.js: Tasks ↔ Timers</p><p class="cap">Two classes of one file, each using the other. A layer above calls both.</p></div>
+        <div class="k">tangle</div>
+        <div class="r">
+          <svg viewBox="0 0 520 220" role="img" aria-label="Before: Tasks arms Timers and Timers wakes Tasks. After: a tick function calls both, and Timers no longer knows Tasks.">
+            <rect class="fr" x="20" y="44" width="480" height="164" rx="6"/><text class="fl" x="32" y="62">kernel.js</text>
+            <rect class="box" x="55" y="128" width="140" height="44" rx="4"/><text class="t b-name" x="125" y="147" text-anchor="middle">Tasks</text><text class="s" x="125" y="163" text-anchor="middle">timers.arm(id)</text>
+            <rect class="box" x="325" y="128" width="140" height="44" rx="4"/><text class="t b-name" x="395" y="147" text-anchor="middle">Timers</text>
+            <g class="b">
+              <text class="s" x="395" y="163" text-anchor="middle">tasks.wake(id)</text>
+              <path class="ar bad" d="M170,128 C210,86 300,86 345,124"/><path class="ar bad" d="M345,172 C300,208 210,208 172,177"/>
+              <rect class="pill bad" x="8" y="8" width="62" height="22" rx="11"/><text class="pt bad" x="39" y="23" text-anchor="middle">Before</text>
+              <text class="capt" x="510" y="23" text-anchor="end">Tasks and Timers each use the other</text>
+            </g>
+            <g class="a">
+              <text class="s" x="395" y="163" text-anchor="middle">fire(now) → ids</text>
+              <rect class="box tick" x="190" y="70" width="140" height="30" rx="4"/><text class="t b-name" x="260" y="89" text-anchor="middle">tick()</text>
+              <path class="ar good" d="M228,100 L162,125"/><path class="ar good" d="M292,100 L358,125"/><path class="ar dim" d="M195,150 L321,150"/>
+              <rect class="pill good" x="8" y="8" width="56" height="22" rx="11"/><text class="pt good" x="36" y="23" text-anchor="middle">After</text>
+              <text class="capt" x="510" y="23" text-anchor="end">tick() calls both; Timers no longer knows Tasks</text>
+            </g>
+          </svg>
+        </div>
+      </div>
+
+      <div class="g fig">
+        <div class="l"><p class="ex">RunQueue.items ◀ 4 places</p><p class="cap">A class’s fields written or reached into from other files. A plain read is no leak. Hide them behind a few calls.</p></div>
+        <div class="k">field-leak</div>
+        <div class="r">
+          <svg viewBox="0 0 520 220" role="img" aria-label="Before: admit, next and backlog in other files push to, index and bump the items and head fields of RunQueue. After: they call push, pop and backlog, and only RunQueue touches its fields.">
+            <rect class="fr" x="20" y="44" width="200" height="164" rx="6"/><text class="fl" x="32" y="62">sched/*.js</text>
+            <rect class="fr" x="300" y="44" width="200" height="164" rx="6"/><text class="fl" x="312" y="62">RunQueue</text>
+            <rect class="box" x="36" y="70" width="168" height="36" rx="4"/><text class="t b-name" x="46" y="85">admit</text>
+            <rect class="box" x="36" y="114" width="168" height="36" rx="4"/><text class="t b-name" x="46" y="129">next</text>
+            <rect class="box" x="36" y="158" width="168" height="36" rx="4"/><text class="t b-name" x="46" y="173">backlog</text>
+            <rect class="box fld" x="420" y="84" width="66" height="24" rx="4"/><text class="t" x="453" y="100" text-anchor="middle">items</text>
+            <rect class="box fld" x="420" y="160" width="66" height="24" rx="4"/><text class="t" x="453" y="176" text-anchor="middle">head</text>
+            <g class="b">
+              <text class="s" x="46" y="99">q.items.push(x)</text><text class="s" x="46" y="143">q.items[q.head++]</text><text class="s" x="46" y="187">q.items.length</text>
+              <path class="ar bad" d="M204,86 L416,92"/><path class="ar bad" d="M204,128 L416,99"/><path class="ar bad" d="M204,138 L416,168"/><path class="ar bad" d="M204,172 L417,104"/>
+              <rect class="pill bad" x="8" y="8" width="62" height="22" rx="11"/><text class="pt bad" x="39" y="23" text-anchor="middle">Before</text>
+              <text class="capt" x="510" y="23" text-anchor="end">other files write items and head</text>
+            </g>
+            <g class="a">
+              <text class="s" x="46" y="99">q.push(x)</text><text class="s" x="46" y="143">q.pop()</text><text class="s" x="46" y="187">q.backlog()</text>
+              <rect class="box tick" x="318" y="74" width="82" height="24" rx="4"/><text class="t" x="359" y="90" text-anchor="middle">push()</text>
+              <rect class="box tick" x="318" y="118" width="82" height="24" rx="4"/><text class="t" x="359" y="134" text-anchor="middle">pop()</text>
+              <rect class="box tick" x="318" y="162" width="82" height="24" rx="4"/><text class="t" x="359" y="178" text-anchor="middle">backlog()</text>
+              <path class="ar good" d="M204,88 L314,86"/><path class="ar good" d="M204,132 L314,130"/><path class="ar good" d="M204,176 L314,174"/>
+              <path class="ar dim" d="M400,86 L416,92"/><path class="ar dim" d="M400,128 L416,102"/><path class="ar dim" d="M400,136 L416,164"/><path class="ar dim" d="M400,174 L416,172"/>
+              <rect class="pill good" x="8" y="8" width="56" height="22" rx="11"/><text class="pt good" x="36" y="23" text-anchor="middle">After</text>
+              <text class="capt" x="510" y="23" text-anchor="end">three calls; only RunQueue touches its fields</text>
+            </g>
+          </svg>
+        </div>
+      </div>
+
+      <div class="g fig">
+        <div class="l"><p class="ex">app.js → 7 of 8 in store.js</p><p class="cap">One client calls most of a file’s functions: the module hides nothing. Give it a few calls that say what the client wants.</p></div>
+        <div class="k">shallow-module</div>
+        <div class="r">
+          <svg viewBox="0 0 520 220" role="img" aria-label="Before: app.js calls 7 of the 8 functions of store.js. After: it calls new, load and summary, and the other five stay inside store.js.">
+            <rect class="box" x="30" y="112" width="76" height="30" rx="4"/><text class="t" x="68" y="131" text-anchor="middle">app.js</text>
+            <rect class="fr" x="170" y="44" width="330" height="168" rx="6"/><text class="fl" x="182" y="62">store.js</text>
+            <g>
+              <rect class="box" x="250" y="70" width="120" height="15" rx="3"/><rect class="box" x="250" y="87" width="120" height="15" rx="3"/>
+              <rect class="box" x="250" y="104" width="120" height="15" rx="3"/><rect class="box" x="250" y="121" width="120" height="15" rx="3"/>
+              <rect class="box" x="250" y="138" width="120" height="15" rx="3"/><rect class="box" x="250" y="155" width="120" height="15" rx="3"/>
+              <rect class="box" x="250" y="172" width="120" height="15" rx="3"/><rect class="box" x="250" y="189" width="120" height="15" rx="3"/>
+            </g>
+            <g class="b">
+              <rect class="hl bad" x="250" y="70" width="120" height="15" rx="3"/><rect class="hl bad" x="250" y="87" width="120" height="15" rx="3"/>
+              <rect class="hl bad" x="250" y="104" width="120" height="15" rx="3"/><rect class="hl bad" x="250" y="121" width="120" height="15" rx="3"/>
+              <rect class="hl bad" x="250" y="138" width="120" height="15" rx="3"/><rect class="hl bad" x="250" y="155" width="120" height="15" rx="3"/>
+              <rect class="hl bad" x="250" y="172" width="120" height="15" rx="3"/>
+              <path class="ar bad" d="M106,124 L246,77.5"/><path class="ar bad" d="M106,125 L246,94.5"/><path class="ar bad" d="M106,126 L246,111.5"/><path class="ar bad" d="M106,127 L246,128.5"/>
+              <path class="ar bad" d="M106,128 L246,145.5"/><path class="ar bad" d="M106,129 L246,162.5"/><path class="ar bad" d="M106,130 L246,179.5"/>
+              <rect class="pill bad" x="8" y="8" width="62" height="22" rx="11"/><text class="pt bad" x="39" y="23" text-anchor="middle">Before</text>
+              <text class="capt" x="510" y="23" text-anchor="end">app.js calls 7 of store.js’s 8 functions</text>
+            </g>
+            <g class="a">
+              <rect class="hl good" x="250" y="70" width="120" height="15" rx="3"/><rect class="hl dash" x="250" y="87" width="120" height="15" rx="3"/>
+              <rect class="hl dash" x="250" y="104" width="120" height="15" rx="3"/><rect class="hl dash" x="250" y="121" width="120" height="15" rx="3"/>
+              <rect class="hl dash" x="250" y="138" width="120" height="15" rx="3"/><rect class="hl dash" x="250" y="155" width="120" height="15" rx="3"/>
+              <rect class="hl good" x="250" y="172" width="120" height="15" rx="3"/><rect class="hl good" x="250" y="189" width="120" height="15" rx="3"/>
+              <path class="ar good" d="M106,124 L246,77.5"/><path class="ar good" d="M106,128 L246,179.5"/><path class="ar good" d="M106,131 L246,196.5"/>
+              <text class="s" x="384" y="140">stay inside</text>
+              <rect class="pill good" x="8" y="8" width="56" height="22" rx="11"/><text class="pt good" x="36" y="23" text-anchor="middle">After</text>
+              <text class="capt" x="510" y="23" text-anchor="end">3 calls; the other 5 stay inside store.js</text>
+            </g>
+            <g class="n">
+              <text class="t n" x="310" y="81" text-anchor="middle">new()</text><text class="t n" x="310" y="98" text-anchor="middle">insert()</text>
+              <text class="t n" x="310" y="115" text-anchor="middle">get()</text><text class="t n" x="310" y="132" text-anchor="middle">remove()</text>
+              <text class="t n" x="310" y="149" text-anchor="middle">room()</text><text class="t n" x="310" y="166" text-anchor="middle">total()</text>
+              <text class="t n" x="310" y="183" text-anchor="middle">load()</text><text class="t n" x="310" y="200" text-anchor="middle">summary()</text>
+            </g>
+          </svg>
+        </div>
+      </div>
+
+      <div class="g fig">
+        <div class="l"><p class="ex">summarize.mjs: 206 functions, 10 groups</p><p class="cap">A big file whose functions fall into groups that never call each other: modules living in one file. Shared helpers are set aside first.</p></div>
+        <div class="k">hidden-modules</div>
+        <div class="r">
+          <svg viewBox="0 0 520 220" role="img" aria-label="Before: one file holds three groups of functions tied together only by a shared log helper. After: the helper is set aside and each group moves to its own file.">
+            <g class="b">
+              <rect class="fr" x="20" y="40" width="480" height="172" rx="6"/><text class="fl" x="32" y="58">summarize.mjs</text>
+              <path class="hub" d="M205,67 L144,77"/><path class="hub" d="M235,76 L235,128"/><path class="hub" d="M265,67 L289,82"/>
+            </g>
+            <g class="a">
+              <rect class="fr" x="20" y="50" width="155" height="120" rx="6"/><text class="fl" x="30" y="68">search.mjs</text>
+              <rect class="fr" x="183" y="50" width="155" height="120" rx="6"/><text class="fl" x="193" y="68">gpu.mjs</text>
+              <rect class="fr" x="346" y="50" width="155" height="120" rx="6"/><text class="fl" x="356" y="68">accounts.mjs</text>
+              <text class="s" x="296" y="201">shared helper, kept apart</text>
+            </g>
+            <g transform="translate(70 70)"><g class="mv" style="--dx: -46px; --dy: 26px">
+              <path class="ed c1" d="M35,18 L35,40 M70,9 L78,25 M70,49 L78,33"/>
+              <rect class="c1" x="0" y="0" width="70" height="18" rx="3"/><text class="n c1" x="35" y="13" text-anchor="middle">search()</text>
+              <rect class="c1" x="0" y="40" width="70" height="18" rx="3"/><text class="n c1" x="35" y="53" text-anchor="middle">dateRange()</text>
+              <rect class="c1" x="78" y="20" width="70" height="18" rx="3"/><text class="n c1" x="113" y="33" text-anchor="middle">recall()</text>
+            </g></g>
+            <g transform="translate(200 130)"><g class="mv" style="--dx: -13px; --dy: -34px">
+              <path class="ed c2" d="M35,18 L35,40 M70,9 L78,25 M70,49 L78,33"/>
+              <rect class="c2" x="0" y="0" width="70" height="18" rx="3"/><text class="n c2" x="35" y="13" text-anchor="middle">embed()</text>
+              <rect class="c2" x="0" y="40" width="70" height="18" rx="3"/><text class="n c2" x="35" y="53" text-anchor="middle">gpuLock()</text>
+              <rect class="c2" x="78" y="20" width="70" height="18" rx="3"/><text class="n c2" x="113" y="33" text-anchor="middle">vectors()</text>
+            </g></g>
+            <g transform="translate(290 78)"><g class="mv" style="--dx: 60px; --dy: 18px">
+              <path class="ed c3" d="M35,18 L35,40 M70,9 L78,25 M70,49 L78,33"/>
+              <rect class="c3" x="0" y="0" width="70" height="18" rx="3"/><text class="n c3" x="35" y="13" text-anchor="middle">accounts()</text>
+              <rect class="c3" x="0" y="40" width="70" height="18" rx="3"/><text class="n c3" x="35" y="53" text-anchor="middle">backend()</text>
+              <rect class="c3" x="78" y="20" width="70" height="18" rx="3"/><text class="n c3" x="113" y="33" text-anchor="middle">resolve()</text>
+            </g></g>
+            <g transform="translate(205 58)"><g class="mv" style="--dx: 25px; --dy: 130px">
+              <rect class="box" x="0" y="0" width="60" height="18" rx="3"/><text class="t n" x="30" y="13" text-anchor="middle">log()</text>
+            </g></g>
+            <g class="b">
+              <rect class="pill bad" x="8" y="8" width="62" height="22" rx="11"/><text class="pt bad" x="39" y="23" text-anchor="middle">Before</text>
+              <text class="capt" x="510" y="23" text-anchor="end">206 functions in one file</text>
+            </g>
+            <g class="a">
+              <rect class="pill good" x="8" y="8" width="56" height="22" rx="11"/><text class="pt good" x="36" y="23" text-anchor="middle">After</text>
+              <text class="capt" x="510" y="23" text-anchor="end">3 groups that never call each other → 3 files</text>
+            </g>
+          </svg>
+        </div>
+      </div>
     </section>
 
     <section class="part" id="index" aria-labelledby="index-h">
@@ -504,14 +730,19 @@ document.getElementById('mixins').append(
     .map(s => row({ l: `${s.file}:${s.line}`, k: s.name, r: `${s.sig}   (${s.kind})` })),
 );
 
-// Lint, one line per rule: an example finding, the rule, what it means.
-document.getElementById('lint-rows').append(...[
-  ['sched/policy.js ↔ queue/ring.js', 'module-cycle', 'Files that import each other in a ring.'],
-  ['kernel.js: Tasks ↔ Timers', 'tangle', 'Two classes of one file, each using the other.'],
-  ['RunQueue.items ◀ 4 places', 'field-leak', 'A class’s fields written or reached into from other files wired to it; a plain read is no leak.'],
-  ['app.js → 9 of 15 in store.js', 'shallow-module', 'One client calls most of a file’s functions: the module hides nothing.'],
-  ['summarize.mjs: 206 functions, 10 groups', 'hidden-modules', 'A big file whose functions fall into groups that never call each other: modules living in one file.'],
-].map(([example, rule, what]) => row({ l: example, k: rule, r: '', doc: what })));
+// Lint figures loop before → after only while on screen (none with reduced motion);
+// a click holds one and steps between its two states.
+const figs = document.querySelectorAll('.fig');
+if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  const seen = new IntersectionObserver((entries) => {
+    for (const e of entries) e.target.classList.toggle('run', e.isIntersecting);
+  }, { rootMargin: '-10% 0px' });
+  figs.forEach((f) => seen.observe(f));
+}
+figs.forEach((f) => f.querySelector('svg').addEventListener('click', () => {
+  f.classList.toggle('after', f.classList.contains('held') ? !f.classList.contains('after') : true);
+  f.classList.add('held');
+}));
 
 // How it works, one line per step: the tool, the step, what it does.
 document.getElementById('steps').append(...[
