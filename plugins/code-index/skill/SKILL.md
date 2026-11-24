@@ -1,8 +1,8 @@
 ---
 name: code-index
 description: Fast symbol lookup for large codebases. Use BEFORE reading files or spawning search agents to locate where a class/function/method is defined and what references it. Backed by an incremental SQLite + universal-ctags index, scoped per project. Answers "where is X?" in milliseconds instead of reading thousands of files.
-version: 1.3.0
-updated: 2026-11-13
+version: 1.4.0
+updated: 2026-11-24
 license: MIT
 metadata:
   type: code-intelligence
@@ -63,6 +63,11 @@ node ~/.claude/codeindex/codeindex.mjs deps <file>      # what a file imports + 
 node ~/.claude/codeindex/codeindex.mjs arch             # module dependency map (from -> to, weighted)
 node ~/.claude/codeindex/codeindex.mjs flow <module>    # up/downstream of a module
 
+# Structure — deep modules, narrow interfaces (exit 1 when it finds problems)
+node ~/.claude/codeindex/codeindex.mjs lint                     # every rule, whole project
+node ~/.claude/codeindex/codeindex.mjs lint field-leak src/sched  # one rule, one subtree
+node ~/.claude/codeindex/codeindex.mjs lint --new               # only problems the last whole-project lint didn't have
+
 node ~/.claude/codeindex/codeindex.mjs stats            # files, symbols, edges, languages, freshness
 node ~/.claude/codeindex/codeindex.mjs index            # incremental reindex (changed files only)
 node ~/.claude/codeindex/codeindex.mjs index --full     # full rebuild
@@ -121,6 +126,35 @@ Then a mixed-in member shows its real home and the class it lands in:
 class's own members and each mixin's, with where it is wired. With mixins, members are read
 only from the wiring file and each source class's file, so stale copies of the class
 elsewhere in the tree (old versions kept for A/B) stay out.
+
+---
+
+## Lint — deep modules, narrow interfaces
+
+`lint` reindexes, then reports four structural smells (after deslop-please and
+*A Philosophy of Software Design*):
+
+| Rule | What it means |
+|---|---|
+| `module-cycle` | files that import each other in a ring (local imports only — exact) |
+| `tangle` | two classes of one file that each use the other |
+| `field-leak` | a class's fields (declared, or set as `this.x` / `$this->x` in its methods) written (`q.head++`) or reached into (`q.items.push()`, `q.items[i]`) from another file wired to it — a plain read is not a leak |
+| `shallow-module` | one client file calls at least 6 functions, and at least half, of another file |
+
+It also runs on its own:
+- **Session start** — the reindex hook lints the whole project and shows the total and the first findings.
+- **After a turn that edited files** — a Stop hook runs `lint --new`: only problems the last
+  whole-project lint did not have. If there are some, the turn continues with them: fix them if
+  the change introduced them, else tell the user in one line. Each problem is raised once; a
+  turn without edits runs nothing.
+
+A field counts only when its name belongs to one class in the whole index, and an access
+only in a file that imports or calls the class's file — what it reports is real; some leaks go unseen.
+
+Fix from first principles, never by moving code to silence a finding:
+- `module-cycle` / `tangle`: which layer does each file or class belong to? The lower one must stop knowing the higher one.
+- `field-leak` / `shallow-module`: why do outsiders need these fields or functions? Look at the patterns of use and hide them behind a few calls that say what the client wants — all leaks of a class together, not one by one.
+- Show the user the before/after structure in a small diagram.
 
 ---
 

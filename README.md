@@ -171,10 +171,11 @@ A fast, incremental **symbol index** so the agent can answer *"where is `X` defi
 - **Loose search** — `grep` takes plain words and finds a symbol by the words of its name (`_loadUser` → load, user), its doc or its signature, ranked by bm25 (FTS5, accents ignored); a misspelt name gets the closest names
 - **Mixins** — a class whose methods are kept in other classes laid onto its prototype (`Object.assign(T.prototype, S.prototype)`, `mixInto(T, S)`, `applyMixins`) is indexed as one: members show `in Source → Target (mixin)`
 - **Relational thread** (deterministic edge graph, no LLM): `callers` (who uses a symbol), `deps` (what a file imports + calls into), `arch` (module dependency map), `flow` (up/downstream of a module)
+- **Lint** — deep modules, narrow interfaces (after [deslop-please](https://github.com/deterministic-machines/deslop-please)): `module-cycle`, `tangle`, `field-leak`, `shallow-module`; runs at session start, and a `Stop` hook runs `lint --new` after a turn that edited files, handing Claude only the new problems, once
 - **Also indexes** JS embedded in PHP/HTML templates; non-git projects fall back to a scoped file scan
 - **Shortcut, not a replacement** — ctags indexes definitions; `refs` augments with a ripgrep textual scan
 
-**Includes:** `src/codeindex.mjs`, `src/reindex-hook.mjs`, `hooks.json`, `install.sh`, `skill/SKILL.md`, `src/claude-md-snippet.md`
+**Includes:** `src/codeindex.mjs`, `src/reindex-hook.mjs`, `src/lint-hook.mjs`, `hooks.json`, `install.sh`, `skill/SKILL.md`, `src/claude-md-snippet.md`
 
 **Install path:** `~/.claude/codeindex/` (engine + hook), `~/.claude/skills/code-index/` (behavior rules).
 
@@ -623,6 +624,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-11-24 | CodeIndex v1.4.0: `lint` — deep modules, narrow interfaces (`module-cycle`, `tangle`, `field-leak`, `shallow-module`); the session-start hook lints the whole project, and a `Stop` hook runs `lint --new` after a turn that edited files. CLAUDE.Global v1.4.12: `lint` in the CodeIndex commands |
 | 2026-11-23 | TheSecretary v2.26.1: a `/secretary send` message is shown once — a later session start or `/clear` no longer repeats it |
 | 2026-11-23 | TheSecretary v2.26.0: `/secretary send <project> <message>` leaves a message for another project — shown at its next session start, or delivered to its open sessions |
 | 2026-11-22 | TheSecretary v2.25.1: the `secretary` launcher waits for the next typed prompt instead of restarting while Claude or a background agent is working |

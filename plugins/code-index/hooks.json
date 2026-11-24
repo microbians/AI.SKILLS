@@ -11,6 +11,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ~/.claude/codeindex/lint-hook.mjs",
+            "timeout": 90
+          }
+        ]
+      }
     ]
   }
 }

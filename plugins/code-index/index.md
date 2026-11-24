@@ -23,6 +23,7 @@ node ~/.claude/codeindex/codeindex.mjs file <path>         # symbols in one file
 node ~/.claude/codeindex/codeindex.mjs deps <file>         # what a file imports and calls into
 node ~/.claude/codeindex/codeindex.mjs arch                # module dependency map
 node ~/.claude/codeindex/codeindex.mjs flow <module>       # up/downstream of a module
+node ~/.claude/codeindex/codeindex.mjs lint [rule…] [path…] # cycles, tangles, field leaks, shallow modules
 node ~/.claude/codeindex/codeindex.mjs index               # incremental reindex
 ```
 
@@ -37,6 +38,17 @@ store/user-methods.js:42   saveUser(user, opts)   (method)  in UserMethods → U
 ## Mixins
 
 Methods laid onto a class from another file (`Object.assign(T.prototype, S.prototype)`, `mixInto(T, S)`, `applyMixins(T, [A, B])`) are filed under the class they land in: `members UserStore` lists them, `where UserStore.saveUser` finds them, and a stale copy in `old/` does not pass for the real one.
+
+## Lint: deep modules, narrow interfaces
+
+The same index tells when the structure goes wrong, after [deslop-please](https://github.com/deterministic-machines/deslop-please) and *A Philosophy of Software Design*, for every language ctags reads:
+
+- `module-cycle` — files that import each other in a ring.
+- `tangle` — two classes of one file, each using the other.
+- `field-leak` — a class's fields written or reached into from other files wired to it; a plain read is no leak.
+- `shallow-module` — one client calls most of a file's functions.
+
+The session-start hook lints the whole project. After a turn that edited files, a `Stop` hook runs `lint --new` and hands Claude only what that change broke, once.
 
 ## How it works
 
@@ -69,4 +81,5 @@ Uninstall: `bash install.sh --uninstall`.
 
 - `where` and `callers` of uniquely named functions are exact; `arch` and `flow` are strong hints (built from names).
 - `refs` is a word scan, not semantic usage.
+- `lint` counts a field only when one class owns its name: what it reports is real, some leaks go unseen.
 - Two symbols with the same name both come back; the path tells them apart.

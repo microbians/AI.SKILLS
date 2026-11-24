@@ -22,6 +22,8 @@
 //   deps <file>      Relational thread: what a file imports + the local files it calls into.
 //   arch             Relational thread: module dependency map, derived from the edge graph.
 //   flow <module>    Relational thread: up/downstream of a module.
+//   lint [rule…] [path…]  Structure: module-cycle, tangle, field-leak, shallow-module.
+//   lint --new       Only the problems the last whole-project lint didn't have.
 //   --help
 //
 // Requires: universal-ctags (NOT the BSD ctags shipped with macOS) and node >= 22 (node:sqlite).
@@ -412,29 +414,36 @@ function isCodeFile(p) {
   return CODE_EXTS.has(ext);
 }
 
+// (line → the last of `defs` defined at or above it: the symbol a line sits inside)
+function enclosingOf(defs) {
+  const sorted = [...defs].sort((a, b) => a.line - b.line);
+  return (lineNo) => {
+    let cur = null;
+    for (const d of sorted) { if (d.line <= lineNo) cur = d; else break; }
+    return cur;
+  };
+}
+
+// (a code line without its strings and trailing comment: only identifiers that are code)
+const codeOnly = (line) => line.replace(/(["'`]).*?\1/g, '').replace(/(?:\/\/|#).*$/, '');
+
 // ─── Call/usage extraction (symbol → symbol edges) ───────────────
 // For one file, find which KNOWN symbols (defined anywhere in the index) are
 // referenced, and attribute each reference to the enclosing defined symbol of
 // this file. Deterministic and conservative: we only emit an edge when the
 // referenced token is a real indexed definition (in defByName) AND it isn't the
 // definition site itself — so the graph stays exact instead of guessing.
-// `localDefs` is this file's own definitions sorted by line, used to attribute
-// each call site to the function/method it sits inside.
+// `localDefs` is this file's own definitions, used to attribute each call site
+// to the function/method it sits inside.
 function extractCalls(relPath, lines, localDefs, defByName) {
   const edges = [];
-  // Sort this file's defs by line so we can map any line to its enclosing symbol.
-  const defs = [...localDefs].sort((a, b) => a.line - b.line);
-  const enclosing = (lineNo) => {
-    let cur = null;
-    for (const d of defs) { if (d.line <= lineNo) cur = d; else break; }
-    return cur ? cur.name : null;
-  };
+  const enclosingDef = enclosingOf(localDefs);
+  const enclosing = (lineNo) => enclosingDef(lineNo)?.name ?? null;
   // Match identifier-shaped tokens; for each, if it names a known definition
   // elsewhere, record an edge. Cap per-file work to keep indexing fast.
   const seen = new Set(); // dedupe (srcName, dstName) within the file
   for (let i = 0; i < lines.length; i++) {
-    const code = lines[i].replace(/(["'`]).*?\1/g, '').replace(/(?:\/\/|#).*$/, ''); // strip strings/comments
-    const ids = code.match(/[A-Za-z_$][\w$]*/g);
+    const ids = codeOnly(lines[i]).match(/[A-Za-z_$][\w$]*/g);
     if (!ids) continue;
     for (const id of ids) {
       const dst = defByName.get(id);
@@ -525,6 +534,22 @@ function nameWords(name) {
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim();
   return split === name ? name : `${name} ${split}`;
+}
+
+// (the names a 'uses' edge can point at: callable definitions whose name is defined once
+// in the whole index, name → { path, line, kind }. An ambiguous name — a start() in two
+// subprojects — can't be attributed without guessing, so it is left out)
+const CALLABLE = new Set(['function', 'method', 'class', 'interface', 'struct', 'trait', 'enum', 'func', 'def', 'member']);
+function callableTargets(db) {
+  const defCount = new Map();
+  const defByName = new Map();
+  for (const r of db.prepare('SELECT name, path, line, kind FROM symbols').all()) {
+    if (!CALLABLE.has((r.kind || '').toLowerCase())) continue;
+    defCount.set(r.name, (defCount.get(r.name) || 0) + 1);
+    if (!defByName.has(r.name)) defByName.set(r.name, { path: r.path, line: r.line, kind: r.kind });
+  }
+  for (const [n, c] of defCount) if (c > 1) defByName.delete(n);
+  return defByName;
 }
 
 // Bump when the schema gains a table a full rebuild must fill.
@@ -661,15 +686,7 @@ function doIndex({ full = false, verbose = false } = {}) {
       // Also drop names that resolve to MORE THAN ONE callable definition: an
       // ambiguous name (e.g. a `start()` defined in two projects) can't be
       // attributed to one target without guessing, so we skip it entirely.
-      const CALLABLE = new Set(['function', 'method', 'class', 'interface', 'struct', 'trait', 'enum', 'func', 'def', 'member']);
-      const defCount = new Map();
-      const defByName = new Map();
-      for (const r of db.prepare('SELECT name, path, line, kind FROM symbols').all()) {
-        if (!CALLABLE.has((r.kind || '').toLowerCase())) continue;
-        defCount.set(r.name, (defCount.get(r.name) || 0) + 1);
-        if (!defByName.has(r.name)) defByName.set(r.name, { path: r.path, line: r.line, kind: r.kind });
-      }
-      for (const [n, c] of defCount) if (c > 1) defByName.delete(n); // ambiguous → not resolvable
+      const defByName = callableTargets(db);
       let linkIndex = 0;
       for (const [path, lines] of touched) {
         progress.step('links', linkIndex++, touched.size);
@@ -974,6 +991,287 @@ function flow(mod) {
   if (!down.size) console.log('  (none)'); else dump(down);
 }
 
+// ─── lint: deep modules, narrow interfaces ───────────────────────
+// Four structural smells, after deslop-please and "A Philosophy of Software Design",
+// read from the same index (reindexed first, so it judges the code on disk):
+//   module-cycle    files that import / call each other in a ring
+//   tangle          two classes of one file that each use the other
+//   field-leak      a class's fields written or reached into from other files
+//   shallow-module  one client file calls most of another file's functions
+// Text and name based like the rest of the graph: a field counts only when its name
+// belongs to one class in the whole index, and an access only in a file wired to that
+// class's file — so what it reports is real, and some leaks go unseen.
+const LINT_RULES = ['module-cycle', 'tangle', 'field-leak', 'shallow-module'];
+const TYPE_KINDS = new Set(['class', 'struct', 'interface', 'trait']);
+const FIELD_KINDS = new Set(['field', 'property', 'variable']);
+// What makes an outside access to a field a leak: writing it (x.f = …, x.f += …, x.f++,
+// ++x.f) or reaching into it (x.f.push(…), x.f.length, x.f[i]). A plain read is not one.
+const FIELD_WRITE = /^\s*(?:(?:\*\*|<<|>>>?|&&|\|\||\?\?|[-+*/%&|^])?=(?!=)|\+\+|--)/;
+const FIELD_REACH = /^\s*(?:\??\.(?!\.)|\[|->)/;
+const FIELD_PREFIX_STEP = /(?:\+\+|--)\s*$/;
+const SHALLOW_MIN_USED = 6; // a client calling fewer functions of a file is not judged
+const SHALLOW_SHARE = 0.5;   // …and is flagged when it calls at least this share of them
+const LINT_DETAIL_MAX = 8;   // detail lines shown per finding
+
+// (the strongly connected components with more than one node: every ring in a graph
+// given as node → Set(node). Tarjan, iterative so a deep chain can't blow the stack)
+function rings(adj) {
+  let next = 0;
+  const order = new Map(), low = new Map(), onStack = new Set(), stack = [], out = [];
+  const visit = (v) => { order.set(v, next); low.set(v, next++); stack.push(v); onStack.add(v); };
+  for (const start of adj.keys()) {
+    if (order.has(start)) continue;
+    visit(start);
+    const work = [[start, (adj.get(start) || new Set()).values()]];
+    while (work.length) {
+      const [v, it] = work[work.length - 1];
+      const step = it.next();
+      if (!step.done) {
+        const w = step.value;
+        if (!order.has(w)) { visit(w); work.push([w, (adj.get(w) || new Set()).values()]); }
+        else if (onStack.has(w)) low.set(v, Math.min(low.get(v), order.get(w)));
+        continue;
+      }
+      work.pop();
+      if (work.length) { const u = work[work.length - 1][0]; low.set(u, Math.min(low.get(u), low.get(v))); }
+      if (low.get(v) !== order.get(v)) continue;
+      const ring = [];
+      let w;
+      do { w = stack.pop(); onStack.delete(w); ring.push(w); } while (w !== v);
+      if (ring.length > 1) out.push(ring);
+    }
+  }
+  return out;
+}
+
+// lint(args): reindex: false when the caller has just indexed; onlyNew: show only the
+// findings the last whole-project run did not have (silent when there are none).
+const LINT_SEEN_KEY = 'lint_seen';
+function lint(args, { reindex = true, onlyNew = false } = {}) {
+  const rules = args.filter((a) => LINT_RULES.includes(a));
+  const prefixes = args.filter((a) => !LINT_RULES.includes(a)).map((p) => relative(ROOT, resolve(p)));
+  const unknown = args.filter((a) => !LINT_RULES.includes(a) && !existsSync(resolve(a)));
+  if (unknown.length) { console.error(`Not a rule or a path: ${unknown.join(', ')}  (rules: ${LINT_RULES.join(', ')})`); process.exit(1); }
+  const ruleOn = (r) => !rules.length || rules.includes(r);
+  const inScope = (p) => !prefixes.length || prefixes.some((x) => x === '' || p === x || p.startsWith(x + '/'));
+
+  if (reindex) doIndex();
+  const db = openDbReadonly();
+  const seenRow = db.prepare('SELECT value FROM meta WHERE key = ?').get(LINT_SEEN_KEY);
+  const seen = seenRow ? new Set(JSON.parse(seenRow.value)) : null;
+  const symbols = db.prepare('SELECT name, kind, path, line, scope FROM symbols').all();
+  const edges = db.prepare('SELECT kind, src_name, src_path, src_line, dst_name, dst_path FROM refs WHERE dst_path IS NOT NULL').all();
+  const codePaths = db.prepare('SELECT path FROM files').all().map((r) => r.path).filter(isCodeFile);
+  const targets = callableTargets(db);
+  db.close();
+
+  const symbolsIn = new Map();
+  for (const s of symbols) {
+    if (!symbolsIn.has(s.path)) symbolsIn.set(s.path, []);
+    symbolsIn.get(s.path).push(s);
+  }
+  // (the function, method or class a line sits inside — a local or property tag is not one)
+  const enclosingIn = new Map();
+  const enclosing = (path, line) => {
+    if (!enclosingIn.has(path)) enclosingIn.set(path, enclosingOf((symbolsIn.get(path) || []).filter((s) => CALLABLE.has(s.kind))));
+    return enclosingIn.get(path)(line);
+  };
+  // (the class a definition belongs to, as "path#Class", or null outside any class)
+  const typesIn = (path) => new Set((symbolsIn.get(path) || []).filter((s) => TYPE_KINDS.has(s.kind)).map((s) => s.name));
+  const typeNames = new Map(codePaths.map((p) => [p, typesIn(p)]));
+  const classOf = (sym) => {
+    if (!sym) return null;
+    const types = typeNames.get(sym.path) || new Set();
+    if (TYPE_KINDS.has(sym.kind)) return `${sym.path}#${sym.name}`;
+    // (innermost type in the scope: this.x in a constructor is scoped Class.constructor)
+    const owner = (sym.scope || '').split('.').reverse().find((n) => types.has(n));
+    return owner ? `${sym.path}#${owner}` : null;
+  };
+  const symbolAt = new Map(symbols.map((s) => [`${s.path}:${s.line}:${s.name}`, s]));
+  const lines = new Map();
+  const linesOf = (path) => {
+    if (!lines.has(path)) {
+      try { lines.set(path, readFileSync(join(ROOT, path), 'utf-8').split('\n')); } catch { lines.set(path, []); }
+    }
+    return lines.get(path);
+  };
+  const callerLabel = (path, line) => {
+    const at = enclosing(path, line);
+    return `${path}:${line}${at ? ` ${at.name}()` : ''}`;
+  };
+
+  // A finding's key is its rule and what it is about (a ring's files, a class and the
+  // fields it leaks…), not its counts — so the same problem, grown, is not news.
+  const findings = [];
+  const report = (f) => {
+    if (!ruleOn(f.rule) || !(f.paths || [f.path]).some(inScope)) return;
+    findings.push({ ...f, key: `${f.rule} ${f.subject}` });
+  };
+
+  // module-cycle: rings in the file graph of imports resolved to local files (exact;
+  // name-matched calls would join unrelated subprojects that share a word like `local`)
+  const fileAdj = new Map(), via = new Map();
+  for (const e of edges) {
+    if (e.kind !== 'import' || e.src_path === e.dst_path) continue;
+    if (!fileAdj.has(e.src_path)) fileAdj.set(e.src_path, new Set());
+    fileAdj.get(e.src_path).add(e.dst_path);
+    const k = `${e.src_path} ${e.dst_path}`;
+    if (!via.has(k)) via.set(k, e);
+  }
+  for (const ring of rings(fileAdj)) {
+    const members = new Set(ring);
+    const inside = [...via.values()].filter((e) => members.has(e.src_path) && members.has(e.dst_path));
+    const files = [...ring].sort();
+    report({
+      rule: 'module-cycle', subject: files.join(' '), paths: files, path: files[0], line: 1,
+      title: `${ring.length} files depend on each other in a ring`,
+      details: inside.map((e) => `${e.src_path}:${e.src_line} → ${e.dst_path}`),
+    });
+  }
+
+  // tangle: two classes of one file, each using the other
+  const classEdges = new Map();
+  for (const e of edges) {
+    if (e.kind !== 'uses') continue;
+    const from = classOf(enclosing(e.src_path, e.src_line));
+    const target = targets.get(e.dst_name);
+    const to = target && classOf(symbolAt.get(`${target.path}:${target.line}:${e.dst_name}`));
+    if (!from || !to || from === to || from.split('#')[0] !== to.split('#')[0]) continue;
+    const k = `${from} ${to}`;
+    if (!classEdges.has(k)) classEdges.set(k, e);
+  }
+  for (const [k, e] of classEdges) {
+    const [a, b] = k.split(' ');
+    if (a > b || !classEdges.has(`${b} ${a}`)) continue;
+    const back = classEdges.get(`${b} ${a}`);
+    const [path, nameA] = a.split('#'), nameB = b.split('#')[1];
+    report({
+      rule: 'tangle', subject: k, path, line: e.src_line,
+      title: `${nameA} and ${nameB} each use the other`,
+      details: [
+        `${callerLabel(e.src_path, e.src_line)} → ${e.dst_name}  (${nameA} → ${nameB})`,
+        `${callerLabel(back.src_path, back.src_line)} → ${back.dst_name}  (${nameB} → ${nameA})`,
+      ],
+    });
+  }
+
+  // field-leak: fields declared in a class, or assigned as this.x / $this->x in its methods,
+  // whose name no other class or object has — then every .x on something else, in another
+  // file wired to the class's file, is a place that knows the class's insides
+  if (ruleOn('field-leak')) {
+    const fieldsOf = new Map();       // classKey → Map(field → line)
+    const holders = new Map();        // field name → Set(classKey, or another scope)
+    const hold = (name, holder) => { if (!holders.has(name)) holders.set(name, new Set()); holders.get(name).add(holder); };
+    const addField = (cls, name, line) => {
+      if (!fieldsOf.has(cls)) fieldsOf.set(cls, new Map());
+      if (!fieldsOf.get(cls).has(name)) fieldsOf.get(cls).set(name, line);
+      hold(name, cls);
+    };
+    for (const s of symbols) {
+      if (!FIELD_KINDS.has(s.kind) || !s.scope) continue;
+      const cls = classOf(s);
+      if (cls) addField(cls, s.name, s.line); else hold(s.name, `${s.path}#${s.scope}`);
+    }
+    for (const path of codePaths) {
+      if (!typeNames.get(path)?.size) continue;
+      linesOf(path).forEach((text, i) => {
+        for (const m of codeOnly(text).matchAll(/(?:\bthis\.|\$this->)([A-Za-z_$][\w$]*)\s*=(?!=)/g)) {
+          const cls = classOf(enclosing(path, i + 1));
+          if (cls) addField(cls, m[1], i + 1);
+        }
+      });
+    }
+    const ownerOf = new Map();        // field name → its one class
+    for (const [name, h] of holders) if (h.size === 1 && fieldsOf.has([...h][0])) ownerOf.set(name, [...h][0]);
+    const wiredTo = new Map();        // file → files it imports or calls
+    for (const e of edges) {
+      if (!wiredTo.has(e.src_path)) wiredTo.set(e.src_path, new Set());
+      wiredTo.get(e.src_path).add(e.dst_path);
+    }
+    const leaks = new Map();          // classKey → Map(field → [label])
+    for (const path of codePaths) {
+      const wired = wiredTo.get(path);
+      if (!wired) continue;
+      linesOf(path).forEach((text, i) => {
+        const code = codeOnly(text);
+        for (const m of code.matchAll(/(\$?[A-Za-z_][\w$]*|\)|\])\s*(?:\?\.|\.|->)\s*([A-Za-z_$][\w$]*)(?![\w$]|\s*\()/g)) {
+          const cls = ownerOf.get(m[2]);
+          if (!cls) continue;
+          // (a plain read is no leak; writing the field or reaching into it is)
+          const after = code.slice(m.index + m[0].length), before = code.slice(0, m.index);
+          if (!FIELD_WRITE.test(after) && !FIELD_REACH.test(after) && !FIELD_PREFIX_STEP.test(before)) continue;
+          const [classPath, className] = cls.split('#');
+          if (classPath === path || !wired.has(classPath)) continue;
+          if (['this', 'self', '$this', className].includes(m[1])) continue;
+          if (!leaks.has(cls)) leaks.set(cls, new Map());
+          const at = leaks.get(cls);
+          if (!at.has(m[2])) at.set(m[2], []);
+          at.get(m[2]).push({ path, line: i + 1 });
+        }
+      });
+    }
+    for (const [cls, byField] of leaks) {
+      const [path, name] = cls.split('#');
+      const sites = [...byField.values()].flat();
+      const files = new Set(sites.map((s) => s.path));
+      const kept = [...fieldsOf.get(cls).keys()].filter((f) => !byField.has(f));
+      const details = [...byField].map(([field, at]) => {
+        const shown = at.slice(0, 4).map((s) => callerLabel(s.path, s.line)).join(', ');
+        return `${field} ◀ ${shown}${at.length > 4 ? `, +${at.length - 4} more` : ''}`;
+      });
+      if (kept.length) details.push(`kept inside: ${kept.join(', ')}`);
+      const line = Math.min(...[...byField.keys()].map((f) => fieldsOf.get(cls).get(f)));
+      report({
+        rule: 'field-leak', subject: `${cls} ${[...byField.keys()].sort().join(',')}`, path, line, details,
+        title: `${name}: ${byField.size} field${byField.size > 1 ? 's' : ''} known outside it — ${sites.length} places in ${files.size} file${files.size > 1 ? 's' : ''}`,
+      });
+    }
+  }
+
+  // shallow-module: one client file calls most of another file's functions
+  const offered = new Map();          // file → its functions an outside call can resolve to
+  for (const [name, t] of targets) {
+    if (TYPE_KINDS.has(t.kind)) continue;
+    if (!offered.has(t.path)) offered.set(t.path, new Set());
+    offered.get(t.path).add(name);
+  }
+  const called = new Map();           // "client target" → Set(function)
+  for (const e of edges) {
+    if (e.kind !== 'uses' || e.src_path === e.dst_path || !offered.get(e.dst_path)?.has(e.dst_name)) continue;
+    const k = `${e.src_path} ${e.dst_path}`;
+    if (!called.has(k)) called.set(k, new Set());
+    called.get(k).add(e.dst_name);
+  }
+  for (const [k, used] of called) {
+    const [client, target] = k.split(' ');
+    const total = offered.get(target).size;
+    if (used.size < SHALLOW_MIN_USED || used.size / total < SHALLOW_SHARE) continue;
+    report({
+      rule: 'shallow-module', subject: k, path: target, line: 1,
+      title: `${client} calls ${used.size} of its ${total} functions`, details: [[...used].sort().join(', ')],
+    });
+  }
+
+  // ── print ── (a whole-project run remembers what it found; --new shows only the rest)
+  if (!rules.length && !prefixes.length) {
+    const rw = new DatabaseSync(DB_PATH);
+    rw.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)').run(LINT_SEEN_KEY, JSON.stringify(findings.map((f) => f.key)));
+    rw.close();
+  }
+  const shown = onlyNew && seen ? findings.filter((f) => !seen.has(f.key)) : findings;
+  if (onlyNew && !shown.length) return;
+  shown.sort((a, b) => LINT_RULES.indexOf(a.rule) - LINT_RULES.indexOf(b.rule) || a.path.localeCompare(b.path));
+  for (const f of shown) {
+    console.log(`${f.rule}  ${f.path}:${f.line}  ${f.title}`);
+    for (const d of f.details.slice(0, LINT_DETAIL_MAX)) console.log(`    ${d}`);
+    if (f.details.length > LINT_DETAIL_MAX) console.log(`    … ${f.details.length - LINT_DETAIL_MAX} more`);
+  }
+  const counts = LINT_RULES.filter(ruleOn).map((r) => `${r} ${shown.filter((f) => f.rule === r).length}`).join(', ');
+  const what = onlyNew && seen ? 'new problem' : 'problem';
+  console.log(`[CodeIndex] lint: ${shown.length ? `${shown.length} ${what}${shown.length > 1 ? 's' : ''}` : 'no problems'} (${counts})`);
+  if (shown.length) process.exitCode = 1;
+}
+
 function stats() {
   const db = openDbReadonly();
   const files = db.prepare('SELECT COUNT(*) c FROM files').get().c;
@@ -1023,6 +1321,11 @@ Usage: node codeindex.mjs <command> [arg]
   deps <file>        What a file imports + the local files it calls into
   arch               Module dependency map (from → to, by edge weight)
   flow <module>      Up/downstream of a module (who needs it / what it needs)
+
+ Structure (deep modules, narrow interfaces):
+  lint [rule…] [path…]  module-cycle, tangle, field-leak, shallow-module; exit 1 on problems
+  lint --new         Only problems the last whole-project lint didn't have (silent if none)
+  index --lint       Reindex, then lint the whole project (the session-start hook)
   --help
 
 Index lives at: <project-root>/.claude/codeindex.db`);
@@ -1035,6 +1338,7 @@ switch (cmd) {
     const verbose = rest.includes('-v') || rest.includes('--verbose');
     const r = doIndex({ full: rest.includes('--full'), verbose });
     console.log(`[CodeIndex] indexed: +${r.added} new, ~${r.changed} changed, -${r.removed} removed, ${r.skipped} unchanged (of ${r.total} files)`);
+    if (rest.includes('--lint')) lint([], { reindex: false });
     break;
   }
   case 'where':   if (!rest[0]) { help(); process.exit(1); } where(rest[0]); break;
@@ -1046,6 +1350,7 @@ switch (cmd) {
   case 'deps':    if (!rest[0]) { help(); process.exit(1); } deps(rest[0]); break;
   case 'arch':    arch(); break;
   case 'flow':    if (!rest[0]) { help(); process.exit(1); } flow(rest[0]); break;
+  case 'lint':    lint(rest.filter((a) => a !== '--new'), { onlyNew: rest.includes('--new') }); break;
   case 'stats':   stats(); break;
   case '--help':
   case '-h':

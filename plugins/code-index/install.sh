@@ -103,9 +103,10 @@ info "Creating $DEST"
 mkdir -p "$DEST"
 cp "$SCRIPT_DIR/src/codeindex.mjs" "$DEST/"
 cp "$SCRIPT_DIR/src/reindex-hook.mjs" "$DEST/"
+cp "$SCRIPT_DIR/src/lint-hook.mjs" "$DEST/"  # Stop hook: lint --new after a turn that edited files
 cp "$SCRIPT_DIR/src/read.mjs" "$DEST/"     # read side, for other tools (The Secretary)
 cp "$SCRIPT_DIR/src/search.mjs" "$DEST/"   # shared with The Secretary (AI.SKILLS/lib/search.mjs)
-chmod +x "$DEST/codeindex.mjs" "$DEST/reindex-hook.mjs"
+chmod +x "$DEST/codeindex.mjs" "$DEST/reindex-hook.mjs" "$DEST/lint-hook.mjs"
 
 info "Installing code-index skill..."
 mkdir -p "$SKILL_DEST"

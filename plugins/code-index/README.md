@@ -58,9 +58,9 @@ bash plugins/code-index/install.sh
 ```
 
 The installer:
-- copies the engine + hook to `~/.claude/codeindex/`,
+- copies the engine + hooks to `~/.claude/codeindex/`,
 - installs the `code-index` skill to `~/.claude/skills/code-index/`,
-- merges a `SessionStart` reindex hook into `~/.claude/settings.json`,
+- merges a `SessionStart` reindex hook and a `Stop` lint hook into `~/.claude/settings.json`,
 - adds a permission allow-entry for the query command (no prompts),
 - appends a usage snippet to `~/.claude/CLAUDE.md`.
 
@@ -93,6 +93,9 @@ node ~/.claude/codeindex/codeindex.mjs deps <file>      # what a file imports + 
 node ~/.claude/codeindex/codeindex.mjs arch             # module dependency map (from → to, by edge weight)
 node ~/.claude/codeindex/codeindex.mjs flow <module>    # up/downstream of a module (who needs it / what it needs)
 
+# Structure — deep modules, narrow interfaces (exit 1 when it finds problems)
+node ~/.claude/codeindex/codeindex.mjs lint [rule…] [path…]  # module-cycle, tangle, field-leak, shallow-module
+
 # Maintain
 node ~/.claude/codeindex/codeindex.mjs stats            # files, symbols, edges, languages, freshness
 node ~/.claude/codeindex/codeindex.mjs index            # incremental reindex (changed files only)
@@ -119,6 +122,27 @@ edges resolved to local files and `callers` of uniquely-named symbols are exact;
 `arch` edges are name-based heuristics, so treat `arch`/`flow` as a strong hint and
 `where`/`callers` as ground truth.
 
+`lint` reindexes and reports four structural smells, after
+[deslop-please](https://github.com/deterministic-machines/deslop-please) and *A Philosophy
+of Software Design*: `module-cycle` (files importing each other in a ring), `tangle` (two
+classes of one file using each other), `field-leak` (a class's fields written or reached
+into — `q.items.push()`, `q.head++` — from another file wired to it; a plain read is not a leak) and `shallow-module` (one client calling most of a file's functions).
+Give rule names and/or paths to narrow it; it exits 1 when it finds something.
+It also runs by itself: the session-start hook lints the whole project and shows the
+total, and a Stop hook (`lint-hook.mjs`) runs `lint --new` after any turn that edited
+files — only problems the last lint didn't have, each raised once, handed back to Claude
+to fix or report. A turn without edits runs nothing. What the last lint found is kept in
+the project's index (`meta.lint_seen`).
+
+```
+$ node ~/.claude/codeindex/codeindex.mjs lint field-leak
+field-leak  src/queue/ring.js:3  RunQueue: 2 fields known outside it — 5 places in 2 files
+    items ◀ src/sched/policy.js:2 admit(), src/sched/policy.js:3 next(), src/sched/report.js:2 backlog(), src/sched/report.js:3 drained()
+    head ◀ src/sched/policy.js:3 next()
+    kept inside: limit
+[CodeIndex] lint: 1 problem (field-leak 1)
+```
+
 Example:
 
 ```
@@ -137,8 +161,9 @@ Edges:        450
 Languages:    JavaScript(657) Markdown(389) JSON(149) TypeScript(117) ...
 ```
 
-The `SessionStart` hook runs `index -v` and lists what it reindexed (capped at 20 files)
-so you see exactly what changed when a session starts.
+The `SessionStart` hook runs `index -v --lint` and lists what it reindexed (capped at 20
+files), then the lint total and its first findings, so you see exactly what changed when a
+session starts.
 
 ---
 
@@ -164,6 +189,7 @@ so you see exactly what changed when a session starts.
 |--------------------------|----------------------------------------|
 | Engine + queries         | `src/codeindex.mjs`                     |
 | SessionStart reindex hook| `src/reindex-hook.mjs`                  |
+| Stop lint hook           | `src/lint-hook.mjs`                     |
 | Hook registration        | `hooks.json`                            |
 | Skill (behavior rules)   | `skill/SKILL.md`                        |
 | CLAUDE.md snippet         | `src/claude-md-snippet.md`             |

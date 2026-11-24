@@ -2,7 +2,8 @@
 // CodeIndex SessionStart hook.
 //
 // Fires when a Claude Code session starts. Runs an incremental reindex of the current
-// project and prints a one-line summary to stdout (surfaced to Claude as session context).
+// project, then the structure lint, and prints a short summary of both to stdout
+// (surfaced to Claude as session context).
 //
 // The reindex runs as a detached child writing to a log file, never killed by this hook:
 // the index commits in one transaction, so killing a slow run threw all its work away and
@@ -23,7 +24,7 @@ const key = createHash('sha1').update(process.cwd()).digest('hex').slice(0, 12);
 const logPath = join(tmpdir(), `codeindex-${key}.log`);
 const fd = openSync(logPath, 'w');
 
-const child = spawn(process.execPath, [engine, 'index', '-v'], {
+const child = spawn(process.execPath, [engine, 'index', '-v', '--lint'], {
   cwd: process.cwd(),
   detached: true,
   stdio: ['ignore', fd, fd],
@@ -52,6 +53,14 @@ if (summary) {
   for (const l of detail.slice(0, MAX)) console.log(`  ${l.trim()}`);
   if (detail.length > MAX) console.log(`   … and ${detail.length - MAX} more`);
   console.log('   Query symbols fast: node ~/.claude/codeindex/codeindex.mjs where <Name>  (also: refs, file, grep, stats)');
+  // The structure lint that ran after the index: its total and the first findings' titles.
+  const lintSummary = lines.find((l) => l.startsWith('[CodeIndex] lint:'));
+  const lintTitles = lines.filter((l) => /^(module-cycle|tangle|field-leak|shallow-module)\s/.test(l));
+  if (lintSummary && lintTitles.length) {
+    console.log(`🧱 ${lintSummary.replace('[CodeIndex] ', 'CodeIndex ')} — details: codeindex.mjs lint`);
+    for (const l of lintTitles.slice(0, 5)) console.log(`  ${l}`);
+    if (lintTitles.length > 5) console.log(`   … and ${lintTitles.length - 5} more`);
+  }
 } else if (/universal-ctags not found/.test(out)) {
   // Most common failure: universal-ctags not installed. Don't break the session.
   console.log('🔎 CodeIndex: universal-ctags not installed — run `brew install universal-ctags` to enable the symbol index.');

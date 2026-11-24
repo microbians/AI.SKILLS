@@ -212,9 +212,9 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
   .head { row-gap: 12px; }
   .head h2 { font-size: clamp(28px, 8vw, 38px); }
 }
-/* Powered by microbians: the logo (lib/microbians.png) as a mask, in the text color */
+/* Powered by microbians: the logo (lib/microbians.png, inlined so the mask also loads from file://) as a mask, in the text color */
 .powered { display: inline-flex; align-items: center; gap: 8px; margin-top: 20px; font-size: 14px; color: var(--ink-2); text-decoration: none; }
-.powered i { width: 22px; height: 18px; background: currentColor; -webkit-mask: url(../../lib/microbians.png) center / contain no-repeat; mask: url(../../lib/microbians.png) center / contain no-repeat; }
+.powered i { width: 22px; height: 18px; background: currentColor; --logo: url(data:image/png;base64,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); -webkit-mask: var(--logo) center / contain no-repeat; mask: var(--logo) center / contain no-repeat; }
 .powered:hover { color: var(--ink-1); }
 </style>
 </head>
@@ -281,6 +281,22 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
         </div>
       </div>
       <ol class="conc" id="mixins"></ol>
+    </section>
+
+    <section class="part" id="lint" aria-labelledby="lint-h">
+      <div class="g head">
+        <div class="l"><span class="tag">Lint</span><h2 id="lint-h">Deep modules, narrow interfaces.</h2></div>
+        <div class="k">lint</div>
+        <div class="r">
+          <p>The same index tells when the structure goes wrong: files that need each other in a ring, classes whose insides are used from outside, modules that hide nothing. After <a href="https://github.com/deterministic-machines/deslop-please">deslop-please</a> and <i>A Philosophy of Software Design</i>, for every language ctags reads.</p>
+          <ul class="points">
+            <li><b>At session start:</b> the hook lints the whole project and shows what it found.</li>
+            <li><b>After a piece of work:</b> when a turn edited files, a Stop hook runs <code>lint --new</code> and hands Claude only what that change broke, once.</li>
+            <li><b>Fixed from first principles:</b> the skill asks which layer each piece belongs to and what clients really need, not for code moved to silence it.</li>
+          </ul>
+        </div>
+      </div>
+      <ol class="conc" id="lint-rows"></ol>
     </section>
 
     <section class="part" id="index" aria-labelledby="index-h">
@@ -487,6 +503,14 @@ document.getElementById('mixins').append(
     .map(s => row({ l: `${s.file}:${s.line}`, k: s.name, r: `${s.sig}   (${s.kind})` })),
 );
 
+// Lint, one line per rule: an example finding, the rule, what it means.
+document.getElementById('lint-rows').append(...[
+  ['sched/policy.js ↔ queue/ring.js', 'module-cycle', 'Files that import each other in a ring.'],
+  ['kernel.js: Tasks ↔ Timers', 'tangle', 'Two classes of one file, each using the other.'],
+  ['RunQueue.items ◀ 4 places', 'field-leak', 'A class’s fields written or reached into from other files wired to it; a plain read is no leak.'],
+  ['app.js → 9 of 15 in store.js', 'shallow-module', 'One client calls most of a file’s functions: the module hides nothing.'],
+].map(([example, rule, what]) => row({ l: example, k: rule, r: '', doc: what })));
+
 // How it works, one line per step: the tool, the step, what it does.
 document.getElementById('steps').append(...[
   ['git ls-files', 'list', 'Files the repository tracks, so .gitignore is honored. Files over 2 MB are skipped.'],
@@ -500,6 +524,7 @@ document.getElementById('limits-rows').append(...[
   ['ground truth', 'where', 'Definitions and the callers of uniquely named functions are exact.'],
   ['strong hint', 'arch', 'Module maps come from names, so two subprojects sharing a name like init can add a stray edge.'],
   ['word scan', 'refs', 'Every line mentioning the word, not semantic usage.'],
+  ['sure, not complete', 'lint', 'A field counts only when one class owns its name, so what it reports is real and some leaks go unseen.'],
   ['both returned', 'same name', 'Two symbols with one name both come back; the path tells them apart.'],
 ].map(([what, k, why]) => row({ l: what, k, r: '', doc: why })));
 
