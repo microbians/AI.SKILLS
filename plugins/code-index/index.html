@@ -213,31 +213,31 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
   .head h2 { font-size: clamp(28px, 8vw, 38px); }
 }
 /* ---------- Lint figures: one before → after diagram per rule, looping while in view ---------- */
-:root { --bad: #c4352b; --good: #23824a; --dim: #9aa1aa; --c2: #b05a14; --c3: #6b3fb0; }
+:root { --bad: var(--ink-1); --good: var(--cobalt); --dim: #9aa1aa; --c2: var(--ink-1); --c3: var(--ink-4); }
 .fig { padding: 18px 0; border-top: 1px solid var(--ink-5); align-items: start; }
 .fig .l .ex { margin: 2px 0 6px; font: 400 13px/1.5 var(--mono); color: var(--ink-3); }
 .fig .l .cap { margin: 0; font: 400 15px/1.45 var(--sans); color: var(--ink-2); }
 .fig .k { font: 700 14px/1.5 var(--mono); padding-top: 2px; }
-.fig svg { display: block; width: 100%; max-width: 620px; height: auto; background: #fff; border: 1px solid var(--ink-5); border-radius: 6px; cursor: pointer; }
+.fig svg { display: block; width: 100%; max-width: 620px; height: auto; cursor: pointer; overflow: visible; }
 .fig .hint { margin: 6px 0 0; font-size: 13px; color: var(--ink-4); }
 .fig svg .t { font: 400 12px var(--mono); fill: var(--ink-1); }
 .fig svg .t.b-name { font-weight: 700; }
 .fig svg .s { font: 400 10.5px var(--mono); fill: var(--ink-3); }
 .fig svg .n { font: 400 10px var(--mono); }
 .fig svg .fl { font: 400 11px var(--mono); fill: var(--ink-3); }
-.fig svg .capt { font: 500 12.5px var(--sans); fill: var(--ink-3); }
+.fig svg .capt { font: 600 13px var(--sans); fill: var(--ink-2); }
 .fig svg .pt { font: 650 12px var(--sans); }
-.fig svg .fr { fill: rgba(13, 16, 21, .025); stroke: var(--ink-5); stroke-width: 1.5; }
-.fig svg .box { fill: #fff; stroke: #8d949d; stroke-width: 1.2; }
+.fig svg .fr { fill: rgba(13, 16, 21, .035); stroke: var(--ink-5); stroke-width: 1; }
+.fig svg .box { fill: #fff; stroke: var(--ink-1); stroke-width: 1.2; }
 .fig svg .fld { stroke-dasharray: 4 3; }
-.fig svg .tick { fill: #e6f3ea; stroke: var(--good); }
+.fig svg .tick { fill: #e7ebfb; stroke: var(--cobalt); stroke-width: 1.5; }
 .fig svg .hl { fill: none; stroke-width: 1.6; }
 .fig svg .hl.bad, .fig svg .pill.bad { stroke: var(--bad); }
 .fig svg .hl.good, .fig svg .pill.good { stroke: var(--good); }
-.fig svg .hl.dash { stroke: #8d949d; stroke-dasharray: 3 3; }
-.fig svg .pill.bad { fill: #fbecea; } .fig svg .pill.good { fill: #e6f3ea; }
-.fig svg .pt.bad { fill: var(--bad); } .fig svg .pt.good { fill: var(--good); }
-.fig svg .ar { fill: none; stroke-width: 1.6; }
+.fig svg .hl.dash { stroke: var(--ink-4); stroke-dasharray: 3 3; }
+.fig svg .pill { stroke-width: 1.5; } .fig svg .pill.bad { fill: none; } .fig svg .pill.good { fill: var(--cobalt); }
+.fig svg .pt.bad { fill: var(--ink-1); } .fig svg .pt.good { fill: var(--on-cobalt); }
+.fig svg .ar { fill: none; stroke-width: 1.8; }
 .fig svg .ar.bad { stroke: var(--bad); marker-end: url(#ah-bad); }
 .fig svg .ar.good { stroke: var(--good); marker-end: url(#ah-good); }
 .fig svg .ar.dim { stroke: var(--dim); stroke-width: 1.2; marker-end: url(#ah-dim); }
@@ -247,17 +247,12 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
 .fig svg rect.c1, .fig svg rect.c2, .fig svg rect.c3 { fill: #fff; stroke-width: 1.3; }
 .fig svg text.c1, .fig svg text.c2, .fig svg text.c3 { stroke: none; }
 .fig svg .a { opacity: 0; }
-.fig.run:not(.held) .b { animation: fig-before 9s ease-in-out infinite; }
-.fig.run:not(.held) .a { animation: fig-after 9s ease-in-out infinite; }
-.fig.run:not(.held) .mv { animation: fig-move 9s var(--ease) infinite; }
-.fig .b, .fig .a { transition: opacity .45s ease-in-out; }
-.fig .mv { transition: transform .6s var(--ease); }
-.fig.held.after .b { opacity: 0; }
-.fig.held.after .a { opacity: 1; }
-.fig.held.after .mv { transform: translate(var(--dx), var(--dy)); }
-@keyframes fig-before { 0%, 42% { opacity: 1; } 52%, 92% { opacity: 0; } 100% { opacity: 1; } }
-@keyframes fig-after { 0%, 46% { opacity: 0; } 56%, 90% { opacity: 1; } 98%, 100% { opacity: 0; } }
-@keyframes fig-move { 0%, 44% { transform: none; } 58%, 90% { transform: translate(var(--dx), var(--dy)); } 100% { transform: none; } }
+/* One state switch: .after, flipped by a timer while in view or by a click; transitions do the motion */
+.fig .b, .fig .a { transition: opacity .6s ease-in-out; }
+.fig .mv { transition: transform .9s var(--ease); }
+.fig.after .b { opacity: 0; }
+.fig.after .a { opacity: 1; }
+.fig.after .mv { transform: translate(var(--dx), var(--dy)); }
 
 /* Powered by microbians: the logo (lib/microbians.png, inlined so the mask also loads from file://) as a mask, in the text color */
 .powered { display: inline-flex; align-items: center; gap: 8px; margin-top: 20px; font-size: 14px; color: var(--ink-2); text-decoration: none; }
@@ -346,8 +341,8 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
       </div>
       <svg width="0" height="0" style="position: absolute" aria-hidden="true">
         <defs>
-          <marker id="ah-bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c4352b"/></marker>
-          <marker id="ah-good" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#23824a"/></marker>
+          <marker id="ah-bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0d1015"/></marker>
+          <marker id="ah-good" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1f3fd1"/></marker>
           <marker id="ah-dim" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9aa1aa"/></marker>
         </defs>
       </svg>
@@ -364,13 +359,13 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
             <g class="mv" style="--dx: 255px; --dy: 0px"><rect class="box" x="55" y="150" width="130" height="30" rx="4"/><text class="t" x="120" y="169" text-anchor="middle">BACKLOG_MOST</text></g>
             <g class="b">
               <path class="ar bad" d="M185,99 L316,99"/><path class="ar bad" d="M390,114 C390,162 262,165 188,165"/>
-              <rect class="pill bad" x="8" y="8" width="62" height="22" rx="11"/><text class="pt bad" x="39" y="23" text-anchor="middle">Before</text>
-              <text class="capt" x="510" y="23" text-anchor="end">2 files import each other in a ring</text>
+              <rect class="pill bad" x="1" y="6" width="64" height="24" rx="12"/><text class="pt bad" x="33" y="22.5" text-anchor="middle">Before</text>
+              <text class="capt" x="519" y="23" text-anchor="end">2 files import each other in a ring</text>
             </g>
             <g class="a">
               <path class="ar good" d="M185,99 L316,99"/><path class="ar dim" d="M390,114 L390,146"/>
-              <rect class="pill good" x="8" y="8" width="56" height="22" rx="11"/><text class="pt good" x="36" y="23" text-anchor="middle">After</text>
-              <text class="capt" x="510" y="23" text-anchor="end">BACKLOG_MOST moves to the file that uses it</text>
+              <rect class="pill good" x="1" y="6" width="56" height="24" rx="12"/><text class="pt good" x="29" y="22.5" text-anchor="middle">After</text>
+              <text class="capt" x="519" y="23" text-anchor="end">BACKLOG_MOST moves to the file that uses it</text>
             </g>
           </svg>
           <p class="hint">Click a diagram to hold it and step between before and after.</p>
@@ -388,15 +383,15 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
             <g class="b">
               <text class="s" x="395" y="163" text-anchor="middle">tasks.wake(id)</text>
               <path class="ar bad" d="M170,128 C210,86 300,86 345,124"/><path class="ar bad" d="M345,172 C300,208 210,208 172,177"/>
-              <rect class="pill bad" x="8" y="8" width="62" height="22" rx="11"/><text class="pt bad" x="39" y="23" text-anchor="middle">Before</text>
-              <text class="capt" x="510" y="23" text-anchor="end">Tasks and Timers each use the other</text>
+              <rect class="pill bad" x="1" y="6" width="64" height="24" rx="12"/><text class="pt bad" x="33" y="22.5" text-anchor="middle">Before</text>
+              <text class="capt" x="519" y="23" text-anchor="end">Tasks and Timers each use the other</text>
             </g>
             <g class="a">
               <text class="s" x="395" y="163" text-anchor="middle">fire(now) → ids</text>
               <rect class="box tick" x="190" y="70" width="140" height="30" rx="4"/><text class="t b-name" x="260" y="89" text-anchor="middle">tick()</text>
               <path class="ar good" d="M228,100 L162,125"/><path class="ar good" d="M292,100 L358,125"/><path class="ar dim" d="M195,150 L321,150"/>
-              <rect class="pill good" x="8" y="8" width="56" height="22" rx="11"/><text class="pt good" x="36" y="23" text-anchor="middle">After</text>
-              <text class="capt" x="510" y="23" text-anchor="end">tick() calls both; Timers no longer knows Tasks</text>
+              <rect class="pill good" x="1" y="6" width="56" height="24" rx="12"/><text class="pt good" x="29" y="22.5" text-anchor="middle">After</text>
+              <text class="capt" x="519" y="23" text-anchor="end">tick() calls both; Timers no longer knows Tasks</text>
             </g>
           </svg>
         </div>
@@ -417,8 +412,8 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
             <g class="b">
               <text class="s" x="46" y="99">q.items.push(x)</text><text class="s" x="46" y="143">q.items[q.head++]</text><text class="s" x="46" y="187">q.items.length</text>
               <path class="ar bad" d="M204,86 L416,92"/><path class="ar bad" d="M204,128 L416,99"/><path class="ar bad" d="M204,138 L416,168"/><path class="ar bad" d="M204,172 L417,104"/>
-              <rect class="pill bad" x="8" y="8" width="62" height="22" rx="11"/><text class="pt bad" x="39" y="23" text-anchor="middle">Before</text>
-              <text class="capt" x="510" y="23" text-anchor="end">other files write items and head</text>
+              <rect class="pill bad" x="1" y="6" width="64" height="24" rx="12"/><text class="pt bad" x="33" y="22.5" text-anchor="middle">Before</text>
+              <text class="capt" x="519" y="23" text-anchor="end">other files write items and head</text>
             </g>
             <g class="a">
               <text class="s" x="46" y="99">q.push(x)</text><text class="s" x="46" y="143">q.pop()</text><text class="s" x="46" y="187">q.backlog()</text>
@@ -427,8 +422,8 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
               <rect class="box tick" x="318" y="162" width="82" height="24" rx="4"/><text class="t" x="359" y="178" text-anchor="middle">backlog()</text>
               <path class="ar good" d="M204,88 L314,86"/><path class="ar good" d="M204,132 L314,130"/><path class="ar good" d="M204,176 L314,174"/>
               <path class="ar dim" d="M400,86 L416,92"/><path class="ar dim" d="M400,128 L416,102"/><path class="ar dim" d="M400,136 L416,164"/><path class="ar dim" d="M400,174 L416,172"/>
-              <rect class="pill good" x="8" y="8" width="56" height="22" rx="11"/><text class="pt good" x="36" y="23" text-anchor="middle">After</text>
-              <text class="capt" x="510" y="23" text-anchor="end">three calls; only RunQueue touches its fields</text>
+              <rect class="pill good" x="1" y="6" width="56" height="24" rx="12"/><text class="pt good" x="29" y="22.5" text-anchor="middle">After</text>
+              <text class="capt" x="519" y="23" text-anchor="end">three calls; only RunQueue touches its fields</text>
             </g>
           </svg>
         </div>
@@ -454,8 +449,8 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
               <rect class="hl bad" x="250" y="172" width="120" height="15" rx="3"/>
               <path class="ar bad" d="M106,124 L246,77.5"/><path class="ar bad" d="M106,125 L246,94.5"/><path class="ar bad" d="M106,126 L246,111.5"/><path class="ar bad" d="M106,127 L246,128.5"/>
               <path class="ar bad" d="M106,128 L246,145.5"/><path class="ar bad" d="M106,129 L246,162.5"/><path class="ar bad" d="M106,130 L246,179.5"/>
-              <rect class="pill bad" x="8" y="8" width="62" height="22" rx="11"/><text class="pt bad" x="39" y="23" text-anchor="middle">Before</text>
-              <text class="capt" x="510" y="23" text-anchor="end">app.js calls 7 of store.js’s 8 functions</text>
+              <rect class="pill bad" x="1" y="6" width="64" height="24" rx="12"/><text class="pt bad" x="33" y="22.5" text-anchor="middle">Before</text>
+              <text class="capt" x="519" y="23" text-anchor="end">app.js calls 7 of store.js’s 8 functions</text>
             </g>
             <g class="a">
               <rect class="hl good" x="250" y="70" width="120" height="15" rx="3"/><rect class="hl dash" x="250" y="87" width="120" height="15" rx="3"/>
@@ -464,8 +459,8 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
               <rect class="hl good" x="250" y="172" width="120" height="15" rx="3"/><rect class="hl good" x="250" y="189" width="120" height="15" rx="3"/>
               <path class="ar good" d="M106,124 L246,77.5"/><path class="ar good" d="M106,128 L246,179.5"/><path class="ar good" d="M106,131 L246,196.5"/>
               <text class="s" x="384" y="140">stay inside</text>
-              <rect class="pill good" x="8" y="8" width="56" height="22" rx="11"/><text class="pt good" x="36" y="23" text-anchor="middle">After</text>
-              <text class="capt" x="510" y="23" text-anchor="end">3 calls; the other 5 stay inside store.js</text>
+              <rect class="pill good" x="1" y="6" width="56" height="24" rx="12"/><text class="pt good" x="29" y="22.5" text-anchor="middle">After</text>
+              <text class="capt" x="519" y="23" text-anchor="end">3 calls; the other 5 stay inside store.js</text>
             </g>
             <g class="n">
               <text class="t n" x="310" y="81" text-anchor="middle">new()</text><text class="t n" x="310" y="98" text-anchor="middle">insert()</text>
@@ -514,12 +509,12 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
               <rect class="box" x="0" y="0" width="60" height="18" rx="3"/><text class="t n" x="30" y="13" text-anchor="middle">log()</text>
             </g></g>
             <g class="b">
-              <rect class="pill bad" x="8" y="8" width="62" height="22" rx="11"/><text class="pt bad" x="39" y="23" text-anchor="middle">Before</text>
-              <text class="capt" x="510" y="23" text-anchor="end">206 functions in one file</text>
+              <rect class="pill bad" x="1" y="6" width="64" height="24" rx="12"/><text class="pt bad" x="33" y="22.5" text-anchor="middle">Before</text>
+              <text class="capt" x="519" y="23" text-anchor="end">206 functions in one file</text>
             </g>
             <g class="a">
-              <rect class="pill good" x="8" y="8" width="56" height="22" rx="11"/><text class="pt good" x="36" y="23" text-anchor="middle">After</text>
-              <text class="capt" x="510" y="23" text-anchor="end">3 groups that never call each other → 3 files</text>
+              <rect class="pill good" x="1" y="6" width="56" height="24" rx="12"/><text class="pt good" x="29" y="22.5" text-anchor="middle">After</text>
+              <text class="capt" x="519" y="23" text-anchor="end">3 groups that never call each other → 3 files</text>
             </g>
           </svg>
         </div>
@@ -730,18 +725,26 @@ document.getElementById('mixins').append(
     .map(s => row({ l: `${s.file}:${s.line}`, k: s.name, r: `${s.sig}   (${s.kind})` })),
 );
 
-// Lint figures loop before → after only while on screen (none with reduced motion);
-// a click holds one and steps between its two states.
+// Lint figures flip before ⇄ after every FIG_STEP_MS while on screen (not with reduced
+// motion); a click stops a figure and flips it by hand.
+const FIG_STEP_MS = 2800, FIG_FIRST_MS = 900;
+const figTimers = new Map();
+const stopFig = (f) => { clearTimeout(figTimers.get(f)); figTimers.delete(f); };
+const runFig = (f, wait) => figTimers.set(f, setTimeout(() => { f.classList.toggle('after'); runFig(f, FIG_STEP_MS); }, wait));
 const figs = document.querySelectorAll('.fig');
 if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
   const seen = new IntersectionObserver((entries) => {
-    for (const e of entries) e.target.classList.toggle('run', e.isIntersecting);
+    for (const { target: f, isIntersecting } of entries) {
+      stopFig(f);
+      if (isIntersecting && !f.dataset.held) runFig(f, FIG_FIRST_MS);
+    }
   }, { rootMargin: '-10% 0px' });
   figs.forEach((f) => seen.observe(f));
 }
 figs.forEach((f) => f.querySelector('svg').addEventListener('click', () => {
-  f.classList.toggle('after', f.classList.contains('held') ? !f.classList.contains('after') : true);
-  f.classList.add('held');
+  stopFig(f);
+  f.dataset.held = '1';
+  f.classList.toggle('after');
 }));
 
 // How it works, one line per step: the tool, the step, what it does.
