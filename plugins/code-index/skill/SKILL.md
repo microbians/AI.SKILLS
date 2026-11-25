@@ -1,7 +1,7 @@
 ---
 name: code-index
 description: Fast symbol lookup for large codebases. Use BEFORE reading files or spawning search agents to locate where a class/function/method is defined and what references it. Backed by an incremental SQLite + universal-ctags index, scoped per project. Answers "where is X?" in milliseconds instead of reading thousands of files.
-version: 1.6.0
+version: 1.6.1
 updated: 2026-11-25
 license: MIT
 metadata:
@@ -145,9 +145,10 @@ elsewhere in the tree (old versions kept for A/B) stay out.
 
 It also runs on its own:
 - **Session start** — the reindex hook lints the whole project and shows the total and the first findings.
-- **After a turn that edited files** — a Stop hook runs `lint --new module-cycle tangle`: only
-  those problems new or worse than last time. If there are some, the turn continues with them:
-  fix them if the change introduced them, else tell the user in one line. A problem is raised
+- **After a turn that edited files** — a Stop hook starts `lint --new module-cycle tangle` in the
+  background (the turn is not held up): only those problems new or worse than last time. The
+  next turn's Stop hands them over and that turn continues with them: fix them if a recent change
+  introduced them, else tell the user in one line. A problem is raised
   again only if it grows; a turn without edits runs nothing. `field-leak`, `shallow-module` and
   `hidden-modules` are judgment calls: session start and on demand only.
 

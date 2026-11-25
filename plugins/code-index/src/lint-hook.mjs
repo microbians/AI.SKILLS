@@ -2,23 +2,60 @@
 // CodeIndex Stop hook: the structure lint after a piece of work, not after every edit.
 //
 // Fires when Claude finishes a turn. If that turn edited files (Edit / Write / MultiEdit /
-// NotebookEdit since the user's last prompt), it runs `lint --new` with the rules that
-// almost never cry wolf (HOOK_RULES): only problems new or worse than the last lint of
-// those rules. When there are some, it hands them back to Claude (decision "block") so
-// they are fixed or reported before the turn ends; the lint has already remembered them,
-// so the same problem is raised again only if it grows. field-leak, shallow-module and
-// hidden-modules are judgment calls: they run at session start and on demand, not here.
-// A turn without edits costs nothing.
+// NotebookEdit since the user's last prompt), it starts `lint --new` with the rules that
+// almost never cry wolf (HOOK_RULES) in the background, so the turn ends at once. The
+// worker (this same file with `--worker <cwd>`) writes the problems new or worse than the
+// last lint to a report file; the next Stop in that project hands them to Claude (decision
+// "block") so they are fixed or reported. The lint has already remembered them, so the same
+// problem is raised again only if it grows. field-leak, shallow-module and hidden-modules
+// are judgment calls: they run at session start and on demand, not here. A turn without
+// edits, with no report waiting, costs nothing.
 
-import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
-const TIMEOUT_MS = 60000;
+const TIMEOUT_MS = 120000;
 const HOOK_RULES = ['module-cycle', 'tangle'];
-const engine = join(dirname(fileURLToPath(import.meta.url)), 'codeindex.mjs');
+const self = fileURLToPath(import.meta.url);
+const engine = join(dirname(self), 'codeindex.mjs');
+
+// (the report and running-worker files of one project, keyed by its directory)
+function lintFiles(cwd) {
+  const base = join(tmpdir(), `codeindex-lint-${createHash('sha1').update(cwd).digest('hex').slice(0, 12)}`);
+  return { report: `${base}.txt`, running: `${base}.pid` };
+}
+
+// (is the process that wrote this pid file still alive?)
+function workerAlive(pidFile) {
+  try { process.kill(Number(readFileSync(pidFile, 'utf-8')), 0); return true; } catch { return false; }
+}
+
+if (process.argv[2] === '--worker') {
+  const cwd = process.argv[3];
+  const { report, running } = lintFiles(cwd);
+  writeFileSync(running, String(process.pid));
+  let out = '';
+  try {
+    out = execFileSync(process.execPath, ['--no-warnings', engine, 'lint', '--new', ...HOOK_RULES], {
+      cwd, encoding: 'utf-8', timeout: TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch (e) {
+    out = e.stdout || ''; // exit 1 = problems found; a timeout or crash leaves nothing to say
+  }
+  if (out.trim()) {
+    // (appended to a report not yet delivered; renamed into place so a reader never sees half)
+    const previous = existsSync(report) ? readFileSync(report, 'utf-8') : '';
+    writeFileSync(`${report}.tmp`, previous + out);
+    renameSync(`${report}.tmp`, report);
+  }
+  try { unlinkSync(running); } catch {}
+  process.exit(0);
+}
 
 let input = {};
 try { input = JSON.parse(readFileSync(0, 'utf-8')); } catch { process.exit(0); }
@@ -41,21 +78,20 @@ function turnEdited(transcriptPath) {
   return false;
 }
 
-if (!input.transcript_path || !turnEdited(input.transcript_path)) process.exit(0);
+const cwd = input.cwd || process.cwd();
+const { report, running } = lintFiles(cwd);
+
+if (input.transcript_path && turnEdited(input.transcript_path) && !workerAlive(running)) {
+  spawn(process.execPath, ['--no-warnings', self, '--worker', cwd], { detached: true, stdio: 'ignore' }).unref();
+}
 
 let out = '';
-try {
-  out = execFileSync(process.execPath, ['--no-warnings', engine, 'lint', '--new', ...HOOK_RULES], {
-    cwd: input.cwd || process.cwd(), encoding: 'utf-8', timeout: TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'],
-  });
-} catch (e) {
-  out = e.stdout || ''; // exit 1 = problems found; a timeout or crash leaves nothing to say
-}
+try { out = readFileSync(report, 'utf-8'); unlinkSync(report); } catch {}
 if (!out.trim()) process.exit(0);
 
 console.log(JSON.stringify({
   decision: 'block',
-  reason: `CodeIndex lint — structural problems that are new or worse since the last lint:\n${out.trim()}\n\n` +
-    'If this turn\'s change introduced them, fix them now from first principles (code-index skill, "Lint" section). ' +
+  reason: `CodeIndex lint (ran in the background after an earlier turn) — structural problems that are new or worse since the last lint:\n${out.trim()}\n\n` +
+    'If a recent change introduced them, fix them now from first principles (code-index skill, "Lint" section). ' +
     'Otherwise tell the user in one line. They are raised again only if they get worse.',
 }));
