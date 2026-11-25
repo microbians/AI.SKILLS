@@ -22,8 +22,9 @@
 //   deps <file>      Relational thread: what a file imports + the local files it calls into.
 //   arch             Relational thread: module dependency map, derived from the edge graph.
 //   flow <module>    Relational thread: up/downstream of a module.
-//   lint [rule…] [path…]  Structure: module-cycle, tangle, field-leak, shallow-module.
-//   lint --new       Only the problems the last whole-project lint didn't have.
+//   lint [rule…] [path…]  Structure: module-cycle, tangle, field-leak, shallow-module, hidden-modules.
+//   lint --new       Only the problems new or worse since the last lint of those rules.
+//   lint --all       Nothing cut short.  lint --json: the findings as JSON.
 //   --help
 //
 // Requires: universal-ctags (NOT the BSD ctags shipped with macOS) and node >= 22 (node:sqlite).
@@ -206,9 +207,9 @@ function gitignoreMatcher(root) {
     // with no slash matches a path segment anywhere; with a slash it anchors.
     const rx = pat
       .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-      .replace(/\*\*/g, ' ')
+      .replace(/\*\*/g, '\0')
       .replace(/\*/g, '[^/]*')
-      .replace(/ /g, '.*');
+      .replace(/\0/g, '.*');
     const anchored = line.includes('/');
     const re = new RegExp(anchored ? `^${rx}(/|$)` : `(^|/)${rx}(/|$)`);
     rules.push({ re, negate });
@@ -952,7 +953,7 @@ function arch() {
   for (const r of rows) {
     const from = moduleOf(r.src_path), to = moduleOf(r.dst_path);
     if (from === to) continue; // intra-module wiring isn't an architecture edge
-    const k = `${from} ${to}`;
+    const k = `${from}\0${to}`;
     edges.set(k, (edges.get(k) || 0) + 1);
   }
   db.close();
@@ -960,7 +961,7 @@ function arch() {
   console.log('— module dependency map (from → to, weight = cross-module edges) —');
   if (!sorted.length) console.log('  (no cross-module edges indexed)');
   else for (const [k, w] of sorted) {
-    const [from, to] = k.split(' ');
+    const [from, to] = k.split('\0');
     console.log(`  ${from}  →  ${to}\t(${w})`);
   }
 }
@@ -1000,8 +1001,10 @@ function flow(mod) {
 //   shallow-module  one client file calls most of another file's functions
 //   hidden-modules  a big file whose functions form groups that never call each other
 // Text and name based like the rest of the graph: a field counts only when its name
-// belongs to one class in the whole index, and an access only in a file wired to that
-// class's file — so what it reports is real, and some leaks go unseen.
+// belongs to one class in the whole index — so what it reports is real, and some leaks
+// go unseen. Fields a class hands out on purpose (a record its engines read in hot loops)
+// are its contract, named in a comment in or just above the class:
+//   // @contract-fields x y width      (or `*` for every field)
 const LINT_RULES = ['module-cycle', 'tangle', 'field-leak', 'shallow-module', 'hidden-modules'];
 const TYPE_KINDS = new Set(['class', 'struct', 'interface', 'trait']);
 const FIELD_KINDS = new Set(['field', 'property', 'variable']);
@@ -1010,12 +1013,14 @@ const FIELD_KINDS = new Set(['field', 'property', 'variable']);
 const FIELD_WRITE = /^\s*(?:(?:\*\*|<<|>>>?|&&|\|\||\?\?|[-+*/%&|^])?=(?!=)|\+\+|--)/;
 const FIELD_REACH = /^\s*(?:\??\.(?!\.)|\[|->)/;
 const FIELD_PREFIX_STEP = /(?:\+\+|--)\s*$/;
+const CONTRACT_TAG = /@contract-fields\b([^\n]*)/;
 const HIDDEN_MIN_FUNCTIONS = 40; // a file with fewer functions is not searched for hidden modules
 const HIDDEN_MIN_GROUP = 4;      // functions a group needs to count as a module
 const HIDDEN_MAX_SHARED = 0.1;   // share of a file's functions that may be set aside as shared helpers
 const SHALLOW_MIN_USED = 6;// a client calling fewer functions of a file is not judged
 const SHALLOW_SHARE = 0.5;   // …and is flagged when it calls at least this share of them
-const LINT_DETAIL_MAX = 8;   // detail lines shown per finding
+const LINT_DETAIL_MAX = 8;   // detail lines shown per finding (lint --all: every one)
+const LINT_LIST_MAX = 4;     // sites or names shown inside one detail line (lint --all: every one)
 // Tests exercise a module's whole interface on purpose, so they are not clients:
 // lint leaves test files out (foo.test.ts, foo_spec.rb, test_foo.py, __tests__/, tests/…).
 const TEST_FILE = /(^|\/)(__tests__|__mocks__|tests?|spec|e2e)\/|[._-](test|spec)\.[^/]+$|(^|\/)test_[^/]+$|_test\.[^/]+$/i;
@@ -1052,21 +1057,33 @@ function rings(adj) {
   return out;
 }
 
-// lint(args): reindex: false when the caller has just indexed; onlyNew: show only the
-// findings the last whole-project run did not have (silent when there are none).
+// lint(args): rules, paths and flags — --new: only findings that are new or worse than
+// the last run of those rules (silent when there are none); --all: no list cut short;
+// --json: the findings as JSON, whole. reindex: false when the caller has just indexed.
+// What a run found is kept in meta.lint_seen as { key: size }; a size is how bad the
+// finding is (fields leaked, functions called…), the largest one seen so far.
 const LINT_SEEN_KEY = 'lint_seen';
-function lint(args, { reindex = true, onlyNew = false } = {}) {
-  const rules = args.filter((a) => LINT_RULES.includes(a));
-  const prefixes = args.filter((a) => !LINT_RULES.includes(a)).map((p) => relative(ROOT, resolve(p)));
-  const unknown = args.filter((a) => !LINT_RULES.includes(a) && !existsSync(resolve(a)));
+const LINT_FLAGS = ['--new', '--all', '--json'];
+function lint(args, { reindex = true } = {}) {
+  const onlyNew = args.includes('--new'), asJson = args.includes('--json'), all = asJson || args.includes('--all');
+  const named = args.filter((a) => !LINT_FLAGS.includes(a));
+  const rules = named.filter((a) => LINT_RULES.includes(a));
+  const prefixes = named.filter((a) => !LINT_RULES.includes(a)).map((p) => relative(ROOT, resolve(p)));
+  const unknown = named.filter((a) => !LINT_RULES.includes(a) && !existsSync(resolve(a)));
   if (unknown.length) { console.error(`Not a rule or a path: ${unknown.join(', ')}  (rules: ${LINT_RULES.join(', ')})`); process.exit(1); }
+  // (items joined, cut to LINT_LIST_MAX unless --all)
+  const listed = (items) => all || items.length <= LINT_LIST_MAX ? items.join(', ')
+    : `${items.slice(0, LINT_LIST_MAX).join(', ')}, +${items.length - LINT_LIST_MAX} more`;
   const ruleOn = (r) => !rules.length || rules.includes(r);
   const inScope = (p) => !prefixes.length || prefixes.some((x) => x === '' || p === x || p.startsWith(x + '/'));
 
   if (reindex) doIndex();
   const db = openDbReadonly();
   const seenRow = db.prepare('SELECT value FROM meta WHERE key = ?').get(LINT_SEEN_KEY);
-  const seen = seenRow ? new Set(JSON.parse(seenRow.value)) : null;
+  // (an older index kept a plain list of keys and no sizes: that run is a baseline, not news)
+  const seenValue = seenRow ? JSON.parse(seenRow.value) : null;
+  const seen = Array.isArray(seenValue) ? null : seenValue;
+  const baseline = Array.isArray(seenValue);
   const symbols = db.prepare('SELECT name, kind, path, line, scope FROM symbols').all().filter((s) => !isTestFile(s.path));
   const edges = db.prepare('SELECT kind, src_name, src_path, src_line, dst_name, dst_path FROM refs WHERE dst_path IS NOT NULL').all()
     .filter((e) => !isTestFile(e.src_path) && !isTestFile(e.dst_path));
@@ -1109,8 +1126,9 @@ function lint(args, { reindex = true, onlyNew = false } = {}) {
     return `${path}:${line}${at ? ` ${at.name}()` : ''}`;
   };
 
-  // A finding's key is its rule and what it is about (a ring's files, a class and the
-  // fields it leaks…), not its counts — so the same problem, grown, is not news.
+  // A finding's key is its rule and what it is about (a ring's files, a class…), not its
+  // counts; its size is how bad it is — so the same problem, shrunk or the same, is not
+  // news, and grown, it is.
   const findings = [];
   const report = (f) => {
     if (!ruleOn(f.rule) || !(f.paths || [f.path]).some(inScope)) return;
@@ -1132,7 +1150,7 @@ function lint(args, { reindex = true, onlyNew = false } = {}) {
     const inside = [...via.values()].filter((e) => members.has(e.src_path) && members.has(e.dst_path));
     const files = [...ring].sort();
     report({
-      rule: 'module-cycle', subject: files.join(' '), paths: files, path: files[0], line: 1,
+      rule: 'module-cycle', subject: files.join(' '), size: 1, paths: files, path: files[0], line: 1,
       title: `${ring.length} files depend on each other in a ring`,
       details: inside.map((e) => `${e.src_path}:${e.src_line} → ${e.dst_path}`),
     });
@@ -1155,7 +1173,7 @@ function lint(args, { reindex = true, onlyNew = false } = {}) {
     const back = classEdges.get(`${b} ${a}`);
     const [path, nameA] = a.split('#'), nameB = b.split('#')[1];
     report({
-      rule: 'tangle', subject: k, path, line: e.src_line,
+      rule: 'tangle', subject: k, size: 1, path, line: e.src_line,
       title: `${nameA} and ${nameB} each use the other`,
       details: [
         `${callerLabel(e.src_path, e.src_line)} → ${e.dst_name}  (${nameA} → ${nameB})`,
@@ -1165,8 +1183,10 @@ function lint(args, { reindex = true, onlyNew = false } = {}) {
   }
 
   // field-leak: fields declared in a class, or assigned as this.x / $this->x in its methods,
-  // whose name no other class or object has — then every .x on something else, in another
-  // file wired to the class's file, is a place that knows the class's insides
+  // whose name no other class or object has — then every .x on something else, in any
+  // other file, knows the class's insides. Writing the field or reaching into it is the
+  // leak; the plain reads of a leaked field are listed with it, so the finding names every
+  // file that knows it. Contract fields (@contract-fields) are none of this.
   if (ruleOn('field-leak')) {
     const fieldsOf = new Map();       // classKey → Map(field → line)
     const holders = new Map();        // field name → Set(classKey, or another scope)
@@ -1179,8 +1199,29 @@ function lint(args, { reindex = true, onlyNew = false } = {}) {
     for (const s of symbols) {
       if (!FIELD_KINDS.has(s.kind) || !s.scope) continue;
       const cls = classOf(s);
-      if (cls) addField(cls, s.name, s.line); else hold(s.name, `${s.path}#${s.scope}`);
+      // (a field is declared in the class body itself; a method's local variable is no
+      // field, and an object literal's key only shares the name)
+      if (cls && cls.endsWith(`#${s.scope.split('.').pop()}`)) addField(cls, s.name, s.line);
+      else if (s.kind !== 'variable') hold(s.name, cls || `${s.path}#${s.scope}`);
     }
+    const contract = new Map();       // classKey → Set(field, or '*' for all)
+    for (const path of codePaths) {
+      if (!typeNames.get(path)?.size) continue;
+      const text = linesOf(path);
+      text.forEach((line, i) => {
+        const tag = line.match(CONTRACT_TAG);
+        if (!tag) return;
+        // (in the comment just above a class, or anywhere inside one)
+        let j = i + 1;
+        while (j < text.length && /^\s*(?:\/\/|#|\/?\*|$)/.test(text[j])) j++;
+        const below = (symbolsIn.get(path) || []).find((s) => TYPE_KINDS.has(s.kind) && s.line === j + 1);
+        const cls = below ? `${path}#${below.name}` : classOf(enclosing(path, i + 1));
+        if (!cls) return;
+        if (!contract.has(cls)) contract.set(cls, new Set());
+        for (const f of tag[1].replace(/\*\/.*$/, '').match(/\*|[A-Za-z_$][\w$]*/g) || []) contract.get(cls).add(f);
+      });
+    }
+    const isContract = (cls, field) => !!(contract.get(cls)?.has('*') || contract.get(cls)?.has(field));
     for (const path of codePaths) {
       if (!typeNames.get(path)?.size) continue;
       linesOf(path).forEach((text, i) => {
@@ -1191,53 +1232,66 @@ function lint(args, { reindex = true, onlyNew = false } = {}) {
       });
     }
     const ownerOf = new Map();        // field name → its one class
-    for (const [name, h] of holders) if (h.size === 1 && fieldsOf.has([...h][0])) ownerOf.set(name, [...h][0]);
-    const wiredTo = new Map();        // file → files it imports or calls
-    for (const e of edges) {
-      if (!wiredTo.has(e.src_path)) wiredTo.set(e.src_path, new Set());
-      wiredTo.get(e.src_path).add(e.dst_path);
+    for (const [name, h] of holders) {
+      const cls = [...h][0];
+      if (h.size === 1 && fieldsOf.get(cls)?.has(name) && !isContract(cls, name)) ownerOf.set(name, cls);
     }
-    const leaks = new Map();          // classKey → Map(field → [label])
+    const leaks = new Map();          // classKey → Map(field → [site])
+    const reads = new Map();          // "classKey field" → Map(file → plain reads)
     for (const path of codePaths) {
-      const wired = wiredTo.get(path);
-      if (!wired) continue;
       linesOf(path).forEach((text, i) => {
         const code = codeOnly(text);
         for (const m of code.matchAll(/(\$?[A-Za-z_][\w$]*|\)|\])\s*(?:\?\.|\.|->)\s*([A-Za-z_$][\w$]*)(?![\w$]|\s*\()/g)) {
           const cls = ownerOf.get(m[2]);
           if (!cls) continue;
-          // (a plain read is no leak; writing the field or reaching into it is)
-          const after = code.slice(m.index + m[0].length), before = code.slice(0, m.index);
-          if (!FIELD_WRITE.test(after) && !FIELD_REACH.test(after) && !FIELD_PREFIX_STEP.test(before)) continue;
           const [classPath, className] = cls.split('#');
-          if (classPath === path || !wired.has(classPath)) continue;
-          if (['this', 'self', '$this', className].includes(m[1])) continue;
-          if (!leaks.has(cls)) leaks.set(cls, new Map());
-          const at = leaks.get(cls);
-          if (!at.has(m[2])) at.set(m[2], []);
-          at.get(m[2]).push({ path, line: i + 1 });
+          if (classPath === path || ['this', 'self', '$this', className].includes(m[1])) continue;
+          const after = code.slice(m.index + m[0].length), before = code.slice(0, m.index);
+          if (FIELD_WRITE.test(after) || FIELD_REACH.test(after) || FIELD_PREFIX_STEP.test(before)) {
+            if (!leaks.has(cls)) leaks.set(cls, new Map());
+            const at = leaks.get(cls);
+            if (!at.has(m[2])) at.set(m[2], []);
+            const last = at.get(m[2]).at(-1);
+            if (last?.path !== path || last.line !== i + 1) at.get(m[2]).push({ path, line: i + 1 });
+          } else {
+            const k = `${cls} ${m[2]}`;
+            if (!reads.has(k)) reads.set(k, new Map());
+            reads.get(k).set(path, (reads.get(k).get(path) || 0) + 1);
+          }
         }
       });
     }
+    const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
     for (const [cls, byField] of leaks) {
       const [path, name] = cls.split('#');
       const sites = [...byField.values()].flat();
-      const files = new Set(sites.map((s) => s.path));
-      const kept = [...fieldsOf.get(cls).keys()].filter((f) => !byField.has(f));
+      const files = new Set(sites.map((s) => s.path)), readers = new Set();
       const details = [...byField].map(([field, at]) => {
-        const shown = at.slice(0, 4).map((s) => callerLabel(s.path, s.line)).join(', ');
-        return `${field} ◀ ${shown}${at.length > 4 ? `, +${at.length - 4} more` : ''}`;
+        const readBy = [...(reads.get(`${cls} ${field}`) || [])].sort((a, b) => b[1] - a[1]);
+        for (const [file] of readBy) readers.add(file);
+        const readIn = readBy.length ? `  · read in ${listed(readBy.map(([file, n]) => `${file} ×${n}`))}` : '';
+        return `${field} ◀ ${listed(at.map((s) => callerLabel(s.path, s.line)))}${readIn}`;
       });
-      if (kept.length) details.push(`kept inside: ${kept.join(', ')}`);
+      // (the class's other fields, listed first so a long list of leaks can't hide them:
+      // read outside it, or kept inside)
+      const rest = [...fieldsOf.get(cls).keys()].filter((f) => !byField.has(f) && !isContract(cls, f));
+      const readTotal = (f) => [...reads.get(`${cls} ${f}`).values()].reduce((a, b) => a + b, 0);
+      const readOutside = rest.filter((f) => reads.has(`${cls} ${f}`)).sort((a, b) => readTotal(b) - readTotal(a));
+      const kept = rest.filter((f) => !reads.has(`${cls} ${f}`));
+      if (kept.length) details.unshift(`kept inside (${kept.length}): ${listed(kept)}`);
+      if (readOutside.length) details.unshift(`read outside (${readOutside.length}): ${listed(readOutside.map((f) => `${f} ×${readTotal(f)} in ${plural(reads.get(`${cls} ${f}`).size, 'file')}`))}`);
+      const readOnly = [...readers].filter((f) => !files.has(f)).length;
       const line = Math.min(...[...byField.keys()].map((f) => fieldsOf.get(cls).get(f)));
       report({
-        rule: 'field-leak', subject: `${cls} ${[...byField.keys()].sort().join(',')}`, path, line, details,
-        title: `${name}: ${byField.size} field${byField.size > 1 ? 's' : ''} known outside it — ${sites.length} places in ${files.size} file${files.size > 1 ? 's' : ''}`,
+        rule: 'field-leak', subject: cls, size: byField.size, path, line, details,
+        title: `${name}: ${plural(byField.size, 'field')} written or reached into from outside — ` +
+          `${plural(sites.length, 'place')} in ${plural(files.size, 'file')}${readOnly ? `, read in ${plural(readOnly, 'more file')}` : ''}`,
       });
     }
   }
 
-  // shallow-module: one client file calls most of another file's functions
+  // shallow-module: one client file calls most of another file's functions and methods
+  // (all of them count; only those whose name is unique in the index can be seen called)
   const offered = new Map();          // file → its functions an outside call can resolve to
   for (const [name, t] of targets) {
     if (TYPE_KINDS.has(t.kind)) continue;
@@ -1253,10 +1307,10 @@ function lint(args, { reindex = true, onlyNew = false } = {}) {
   }
   for (const [k, used] of called) {
     const [client, target] = k.split(' ');
-    const total = offered.get(target).size;
+    const total = new Set((symbolsIn.get(target) || []).filter((s) => CALLABLE.has(s.kind) && !TYPE_KINDS.has(s.kind)).map((s) => s.name)).size;
     if (used.size < SHALLOW_MIN_USED || used.size / total < SHALLOW_SHARE) continue;
     report({
-      rule: 'shallow-module', subject: k, path: target, line: 1,
+      rule: 'shallow-module', subject: k, size: used.size, path: target, line: 1,
       title: `${client} calls ${used.size} of its ${total} functions`, details: [[...used].sort().join(', ')],
     });
   }
@@ -1307,28 +1361,37 @@ function lint(args, { reindex = true, onlyNew = false } = {}) {
     const details = groups.map((g) => {
       const names = g.sort((a, b) => lineOf.get(a) - lineOf.get(b));
       const lines = names.map((n) => lineOf.get(n));
-      return `${g.length} functions, lines ${Math.min(...lines)}–${Math.max(...lines)}: ${names.slice(0, 6).join(', ')}${g.length > 6 ? `, +${g.length - 6}` : ''}`;
+      return `${g.length} functions, lines ${Math.min(...lines)}–${Math.max(...lines)}: ${listed(names)}`;
     });
     if (shared.size) details.push(`shared helpers, left out: ${[...shared].join(', ')}`);
     report({
-      rule: 'hidden-modules', subject: path, path, line: 1, details,
+      rule: 'hidden-modules', subject: path, size: groups.length, path, line: 1, details,
       title: `${lineOf.size} functions fall into ${groups.length} groups that don't call each other — modules hidden in one file`,
     });
   }
 
-  // ── print ── (a whole-project run remembers what it found; --new shows only the rest)
-  if (!rules.length && !prefixes.length) {
+  // ── print ── (a run over the whole project remembers what its rules found, at the
+  // largest size seen; --new shows only what is new or grew past that)
+  const isNews = (f) => !seen || !(f.key in seen) || f.size > seen[f.key];
+  if (!prefixes.length) {
+    const kept = Object.entries(seen || {}).filter(([k]) => !ruleOn(k.split(' ')[0]));
+    const now = findings.map((f) => [f.key, Math.max(f.size, seen?.[f.key] ?? 0)]);
     const rw = new DatabaseSync(DB_PATH);
-    rw.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)').run(LINT_SEEN_KEY, JSON.stringify(findings.map((f) => f.key)));
+    rw.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)').run(LINT_SEEN_KEY, JSON.stringify(Object.fromEntries([...kept, ...now])));
     rw.close();
   }
-  const shown = onlyNew && seen ? findings.filter((f) => !seen.has(f.key)) : findings;
-  if (onlyNew && !shown.length) return;
+  const shown = !onlyNew ? findings : baseline ? [] : findings.filter(isNews);
   shown.sort((a, b) => LINT_RULES.indexOf(a.rule) - LINT_RULES.indexOf(b.rule) || a.path.localeCompare(b.path));
+  if (asJson) {
+    console.log(JSON.stringify(shown.map(({ rule, path, line, title, details }) => ({ rule, path, line, title, details })), null, 2));
+    if (shown.length) process.exitCode = 1;
+    return;
+  }
+  if (onlyNew && !shown.length) return;
   for (const f of shown) {
     console.log(`${f.rule}  ${f.path}:${f.line}  ${f.title}`);
-    for (const d of f.details.slice(0, LINT_DETAIL_MAX)) console.log(`    ${d}`);
-    if (f.details.length > LINT_DETAIL_MAX) console.log(`    … ${f.details.length - LINT_DETAIL_MAX} more`);
+    for (const d of all ? f.details : f.details.slice(0, LINT_DETAIL_MAX)) console.log(`    ${d}`);
+    if (!all && f.details.length > LINT_DETAIL_MAX) console.log(`    … ${f.details.length - LINT_DETAIL_MAX} more (lint --all shows every one)`);
   }
   const counts = LINT_RULES.filter(ruleOn).map((r) => `${r} ${shown.filter((f) => f.rule === r).length}`).join(', ');
   const what = onlyNew && seen ? 'new problem' : 'problem';
@@ -1387,8 +1450,9 @@ Usage: node codeindex.mjs <command> [arg]
   flow <module>      Up/downstream of a module (who needs it / what it needs)
 
  Structure (deep modules, narrow interfaces):
-  lint [rule…] [path…]  module-cycle, tangle, field-leak, shallow-module; exit 1 on problems
-  lint --new         Only problems the last whole-project lint didn't have (silent if none)
+  lint [rule…] [path…]  module-cycle, tangle, field-leak, shallow-module, hidden-modules; exit 1 on problems
+  lint --new         Only problems new or worse since the last lint of those rules (silent if none)
+  lint --all         Every detail line, nothing cut short;  lint --json: the findings as JSON
   index --lint       Reindex, then lint the whole project (the session-start hook)
   --help
 
@@ -1414,7 +1478,7 @@ switch (cmd) {
   case 'deps':    if (!rest[0]) { help(); process.exit(1); } deps(rest[0]); break;
   case 'arch':    arch(); break;
   case 'flow':    if (!rest[0]) { help(); process.exit(1); } flow(rest[0]); break;
-  case 'lint':    lint(rest.filter((a) => a !== '--new'), { onlyNew: rest.includes('--new') }); break;
+  case 'lint':    lint(rest); break;
   case 'stats':   stats(); break;
   case '--help':
   case '-h':

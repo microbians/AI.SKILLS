@@ -1,8 +1,8 @@
 ---
 name: code-index
 description: Fast symbol lookup for large codebases. Use BEFORE reading files or spawning search agents to locate where a class/function/method is defined and what references it. Backed by an incremental SQLite + universal-ctags index, scoped per project. Answers "where is X?" in milliseconds instead of reading thousands of files.
-version: 1.5.1
-updated: 2026-11-24
+version: 1.6.0
+updated: 2026-11-25
 license: MIT
 metadata:
   type: code-intelligence
@@ -66,7 +66,8 @@ node ~/.claude/codeindex/codeindex.mjs flow <module>    # up/downstream of a mod
 # Structure — deep modules, narrow interfaces (exit 1 when it finds problems)
 node ~/.claude/codeindex/codeindex.mjs lint                     # every rule, whole project
 node ~/.claude/codeindex/codeindex.mjs lint field-leak src/sched  # one rule, one subtree
-node ~/.claude/codeindex/codeindex.mjs lint --new               # only problems the last whole-project lint didn't have
+node ~/.claude/codeindex/codeindex.mjs lint --new               # only problems new or worse since the last lint of those rules
+node ~/.claude/codeindex/codeindex.mjs lint field-leak --all     # every detail line, nothing cut short (--json: as JSON)
 
 node ~/.claude/codeindex/codeindex.mjs stats            # files, symbols, edges, languages, freshness
 node ~/.claude/codeindex/codeindex.mjs index            # incremental reindex (changed files only)
@@ -138,19 +139,24 @@ elsewhere in the tree (old versions kept for A/B) stay out.
 |---|---|
 | `module-cycle` | files that import each other in a ring (local imports only — exact) |
 | `tangle` | two classes of one file that each use the other |
-| `field-leak` | a class's fields (declared, or set as `this.x` / `$this->x` in its methods) written (`q.head++`) or reached into (`q.items.push()`, `q.items[i]`) from another file wired to it — a plain read is not a leak |
-| `shallow-module` | one client file calls at least 6 functions, and at least half, of another file |
+| `field-leak` | a class's fields (declared, or set as `this.x` / `$this->x` in its methods) written (`q.head++`) or reached into (`q.items.push()`, `q.items[i]`) from any other file — a plain read is not a leak, but each finding lists who reads its fields too |
+| `shallow-module` | one client file calls at least 6 functions, and at least half of all the functions and methods, of another file |
 | `hidden-modules` | a file of 40+ functions whose functions fall into groups that never call each other, once the most-called shared helpers are set aside — modules living in one file |
 
 It also runs on its own:
 - **Session start** — the reindex hook lints the whole project and shows the total and the first findings.
-- **After a turn that edited files** — a Stop hook runs `lint --new`: only problems the last
-  whole-project lint did not have. If there are some, the turn continues with them: fix them if
-  the change introduced them, else tell the user in one line. Each problem is raised once; a
-  turn without edits runs nothing.
+- **After a turn that edited files** — a Stop hook runs `lint --new module-cycle tangle`: only
+  those problems new or worse than last time. If there are some, the turn continues with them:
+  fix them if the change introduced them, else tell the user in one line. A problem is raised
+  again only if it grows; a turn without edits runs nothing. `field-leak`, `shallow-module` and
+  `hidden-modules` are judgment calls: session start and on demand only.
 
-A field counts only when its name belongs to one class in the whole index, and an access
-only in a file that imports or calls the class's file — what it reports is real; some leaks go unseen.
+A field counts only when its name belongs to one class in the whole index — what it reports is
+real; some leaks go unseen (a field also set on hand-built object literals elsewhere is skipped).
+
+Fields a class hands out on purpose — a record its engines read in hot loops — are its
+contract, not leaks. Name them in a comment just above the class or inside it:
+`// @contract-fields x y width`, or `// @contract-fields *` for every field.
 
 Fix from first principles, never by moving code to silence a finding:
 - `module-cycle` / `tangle`: which layer does each file or class belong to? The lower one must stop knowing the higher one.

@@ -624,6 +624,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-11-25 | CodeIndex v1.6.0: `field-leak` looks at every file and lists who reads a leaked field, fields a class hands out on purpose are declared with `@contract-fields`, `shallow-module` counts all of a file's methods, the Stop hook runs only `module-cycle` and `tangle` and raises a problem again only if it grows, `lint --all` / `--json` show everything |
 | 2026-11-24 | TheSecretary v2.26.2: a session opened right after closing a window mid-turn resumes from that turn — restore adds the verbatim tail of the previous session when its own handoff is still being written |
 | 2026-11-24 | CodeIndex v1.5.1: `lint` leaves test files out — a test exercising a module's whole interface is not a client, so it no longer raises `shallow-module` (or any other rule) |
 | 2026-11-24 | CodeIndex v1.5.0: `hidden-modules` lint rule — a big file whose functions fall into groups that never call each other (most-called shared helpers set aside first); `field-leak` counts writes and reaching into a field, not plain reads; the landing presents CodeIndex as an opinionated linter too |

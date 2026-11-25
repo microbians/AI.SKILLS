@@ -126,21 +126,21 @@ edges resolved to local files and `callers` of uniquely-named symbols are exact;
 [deslop-please](https://github.com/deterministic-machines/deslop-please) and *A Philosophy
 of Software Design*: `module-cycle` (files importing each other in a ring), `tangle` (two
 classes of one file using each other), `field-leak` (a class's fields written or reached
-into — `q.items.push()`, `q.head++` — from another file wired to it; a plain read is not a leak) `shallow-module` (one client calling most of a file's functions) and `hidden-modules`
+into — `q.items.push()`, `q.head++` — from any other file; a plain read is not a leak, but readers are listed; fields declared `// @contract-fields a b` are left out), `shallow-module` (one client calling most of a file's functions) and `hidden-modules`
 (a big file whose functions fall into groups that never call each other — modules living in one file).
-Give rule names and/or paths to narrow it; it exits 1 when it finds something.
+Give rule names and/or paths to narrow it; `--all` prints every detail line, `--json` the findings as JSON; it exits 1 when it finds something.
 It also runs by itself: the session-start hook lints the whole project and shows the
-total, and a Stop hook (`lint-hook.mjs`) runs `lint --new` after any turn that edited
-files — only problems the last lint didn't have, each raised once, handed back to Claude
-to fix or report. A turn without edits runs nothing. What the last lint found is kept in
+total, and a Stop hook (`lint-hook.mjs`) runs `lint --new module-cycle tangle` after any turn that
+edited files — only problems new or worse than the last lint, handed back to Claude to fix
+or report; the same problem is raised again only if it grows. A turn without edits runs nothing. What the last lint found is kept in
 the project's index (`meta.lint_seen`).
 
 ```
 $ node ~/.claude/codeindex/codeindex.mjs lint field-leak
-field-leak  src/queue/ring.js:3  RunQueue: 2 fields known outside it — 5 places in 2 files
+field-leak  src/queue/ring.js:3  RunQueue: 2 fields written or reached into from outside — 5 places in 2 files
     items ◀ src/sched/policy.js:2 admit(), src/sched/policy.js:3 next(), src/sched/report.js:2 backlog(), src/sched/report.js:3 drained()
     head ◀ src/sched/policy.js:3 next()
-    kept inside: limit
+    kept inside (1): limit
 [CodeIndex] lint: 1 problem (field-leak 1)
 ```
 

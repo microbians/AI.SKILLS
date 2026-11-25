@@ -334,7 +334,7 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
           <p>It follows <i>A Philosophy of Software Design</i>: <b>deep modules, narrow interfaces</b>. A deep module hides a lot behind a few calls, so Claude and you only need to know those calls. The same index shows where that breaks: files that need each other in a ring, classes whose insides are used from outside, modules that hide nothing, big files that are several modules in one. After <a href="https://github.com/deterministic-machines/deslop-please">deslop-please</a> (Rust), for every language ctags reads.</p>
           <ul class="points">
             <li><b>At session start:</b> the hook lints the whole project and shows what it found.</li>
-            <li><b>After a piece of work:</b> when a turn edited files, a Stop hook runs <code style="white-space: nowrap">lint --new</code> and hands Claude only what that change broke, once.</li>
+            <li><b>After a piece of work:</b> when a turn edited files, a Stop hook runs <code style="white-space: nowrap">lint --new</code> for rings and tangles and hands Claude only what is new or worse. Field leaks and shallow or hidden modules are judgment calls: session start and on demand.</li>
             <li><b>Fixed from first principles:</b> the skill asks which layer each piece belongs to and what clients really need, not for code moved to silence it.</li>
           </ul>
         </div>
@@ -398,7 +398,7 @@ footer .k { font: 800 16px/1 var(--sans); font-stretch: 85%; }
       </div>
 
       <div class="g fig">
-        <div class="l"><p class="ex">RunQueue.items ◀ 4 places</p><p class="cap">A class’s fields written or reached into from other files. A plain read is no leak. Hide them behind a few calls.</p></div>
+        <div class="l"><p class="ex">RunQueue.items ◀ 4 places</p><p class="cap">A class’s fields written or reached into from other files; who reads them is listed too. Fields handed out on purpose are named <code>@contract-fields</code>. Hide the rest behind a few calls.</p></div>
         <div class="k">field-leak</div>
         <div class="r">
           <svg viewBox="0 0 520 220" role="img" aria-label="Before: admit, next and backlog in other files push to, index and bump the items and head fields of RunQueue. After: they call push, pop and backlog, and only RunQueue touches its fields.">

@@ -45,11 +45,11 @@ It follows *A Philosophy of Software Design*: deep modules, narrow interfaces. A
 
 - `module-cycle` — files that import each other in a ring.
 - `tangle` — two classes of one file, each using the other.
-- `field-leak` — a class's fields written or reached into from other files wired to it; a plain read is no leak.
+- `field-leak` — a class's fields written or reached into from other files; a plain read is no leak, but who reads them is listed. Fields handed out on purpose are declared with `// @contract-fields a b` (or `*`).
 - `shallow-module` — one client calls most of a file's functions.
 - `hidden-modules` — a big file whose functions fall into groups that never call each other: modules living in one file.
 
-The session-start hook lints the whole project. After a turn that edited files, a `Stop` hook runs `lint --new` and hands Claude only what that change broke, once.
+The session-start hook lints the whole project. After a turn that edited files, a `Stop` hook runs `lint --new module-cycle tangle` and hands Claude only what is new or worse. `lint --all` shows every detail line, `lint --json` the findings as JSON.
 
 ## How it works
 

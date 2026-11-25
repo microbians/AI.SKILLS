@@ -2,10 +2,12 @@
 // CodeIndex Stop hook: the structure lint after a piece of work, not after every edit.
 //
 // Fires when Claude finishes a turn. If that turn edited files (Edit / Write / MultiEdit /
-// NotebookEdit since the user's last prompt), it runs `lint --new`: only the structural
-// problems the previous whole-project lint did not have. When there are some, it hands
-// them back to Claude (decision "block") so they are fixed or reported before the turn
-// ends; the lint has already remembered them, so the same problem is never raised twice.
+// NotebookEdit since the user's last prompt), it runs `lint --new` with the rules that
+// almost never cry wolf (HOOK_RULES): only problems new or worse than the last lint of
+// those rules. When there are some, it hands them back to Claude (decision "block") so
+// they are fixed or reported before the turn ends; the lint has already remembered them,
+// so the same problem is raised again only if it grows. field-leak, shallow-module and
+// hidden-modules are judgment calls: they run at session start and on demand, not here.
 // A turn without edits costs nothing.
 
 import { execFileSync } from 'node:child_process';
@@ -15,6 +17,7 @@ import { dirname, join } from 'node:path';
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const TIMEOUT_MS = 60000;
+const HOOK_RULES = ['module-cycle', 'tangle'];
 const engine = join(dirname(fileURLToPath(import.meta.url)), 'codeindex.mjs');
 
 let input = {};
@@ -42,7 +45,7 @@ if (!input.transcript_path || !turnEdited(input.transcript_path)) process.exit(0
 
 let out = '';
 try {
-  out = execFileSync(process.execPath, ['--no-warnings', engine, 'lint', '--new'], {
+  out = execFileSync(process.execPath, ['--no-warnings', engine, 'lint', '--new', ...HOOK_RULES], {
     cwd: input.cwd || process.cwd(), encoding: 'utf-8', timeout: TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'],
   });
 } catch (e) {
@@ -52,7 +55,7 @@ if (!out.trim()) process.exit(0);
 
 console.log(JSON.stringify({
   decision: 'block',
-  reason: `CodeIndex lint — structural problems that are new since the last lint:\n${out.trim()}\n\n` +
+  reason: `CodeIndex lint — structural problems that are new or worse since the last lint:\n${out.trim()}\n\n` +
     'If this turn\'s change introduced them, fix them now from first principles (code-index skill, "Lint" section). ' +
-    'Otherwise tell the user in one line. They will not be raised again.',
+    'Otherwise tell the user in one line. They are raised again only if they get worse.',
 }));
