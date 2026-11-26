@@ -32,7 +32,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { execFileSync, execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, statSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, existsSync, mkdirSync, unlinkSync, readdirSync } from 'node:fs';
 import { join, relative, resolve, dirname } from 'node:path';
 import { foldAccents, ftsPrefixQuery, editDistance } from './search.mjs';
 
@@ -184,75 +184,93 @@ const INDEXABLE_EXTS = [
   'html', 'htm', 'vue', 'svelte', 'md',
 ];
 
-// Parse a .gitignore into matcher fns. Supports the subset that matters for
-// pruning a sweep: blank/comment lines, dir globs (`foo/`), trailing `/*`,
-// leading `!` negation, and plain path/glob prefixes. Returns predicate(relPath)
-// → true when the path should be IGNORED. Best-effort, not a full gitignore impl
-// — only used in the non-git fallback to honor the exclusions the user already
-// wrote, so a data tree they'd never commit (storage/, tenants/…) stays out.
-function gitignoreMatcher(root) {
-  const giPath = join(root, '.gitignore');
-  if (!existsSync(giPath)) return () => false;
+// Parse one .gitignore into rules scoped to the directory that holds it (`base`,
+// '' for the root). Supports the subset that matters for pruning a sweep:
+// blank/comment lines, `!` negation, `*`/`**` globs, a trailing `/` (matches
+// directories only) and anchoring — a slash at the start or in the middle ties
+// the pattern to `base`; otherwise it matches a name at any depth below it.
+// Best-effort, not a full gitignore impl — only used in the non-git sweep.
+function gitignoreRules(dir, base) {
   let body;
-  try { body = readFileSync(giPath, 'utf-8'); } catch { return () => false; }
+  try { body = readFileSync(join(dir, '.gitignore'), 'utf-8'); } catch { return []; }
   const rules = [];
   for (let line of body.split('\n')) {
-    line = line.trim();
+    line = line.replace(/\r$/, '').trim();
     if (!line || line.startsWith('#')) continue;
     let negate = false;
     if (line.startsWith('!')) { negate = true; line = line.slice(1); }
-    let pat = line.replace(/^\/+/, '').replace(/\/+$/, '');
-    if (!pat) continue;
-    // Build a regex: ** → any, * → any-but-slash, escape the rest. A pattern
-    // with no slash matches a path segment anywhere; with a slash it anchors.
-    const rx = pat
+    const dirOnly = line.endsWith('/');
+    const pat = line.replace(/\/+$/, '');
+    const anchored = pat.includes('/');
+    const glob = pat.replace(/^\/+/, '');
+    if (!glob) continue;
+    const rx = glob
       .replace(/[.+^${}()|[\]\\]/g, '\\$&')
       .replace(/\*\*/g, '\0')
       .replace(/\*/g, '[^/]*')
+      .replace(/\?/g, '[^/]')
       .replace(/\0/g, '.*');
-    const anchored = line.includes('/');
-    const re = new RegExp(anchored ? `^${rx}(/|$)` : `(^|/)${rx}(/|$)`);
-    rules.push({ re, negate });
+    const re = new RegExp(anchored ? `^${rx}$` : `(^|/)${rx}$`);
+    rules.push({ base, re, negate, dirOnly });
   }
-  return (rel) => {
-    let ignored = false;
-    for (const { re, negate } of rules) if (re.test(rel)) ignored = !negate;
-    return ignored;
-  };
+  return rules;
+}
+
+// Last matching rule wins, as in git. `rel` is relative to ROOT.
+function isIgnored(rules, rel, isDir) {
+  let ignored = false;
+  for (const { base, re, negate, dirOnly } of rules) {
+    if (dirOnly && !isDir) continue;
+    if (base && !rel.startsWith(base + '/')) continue;
+    if (re.test(base ? rel.slice(base.length + 1) : rel)) ignored = !negate;
+  }
+  return ignored;
 }
 
 // ─── File enumeration (git-aware, respects .gitignore) ───────────
-// Directory names that are never source to index: VCS internals, dependency
-// trees, build output, and tool-generated backup dirs (SafeEdit's per-edit
-// snapshots would otherwise duplicate every symbol N times). Pruned in BOTH
-// the git and non-git paths. Tool/VCS conventions, not any one project's layout.
-const PRUNE_DIRS = ['.git', 'node_modules', 'dist', '.safe-edit-backups', '.backups'];
-const inPrunedDir = (p) => PRUNE_DIRS.some((d) => p === d || p.startsWith(d + '/') || p.includes('/' + d + '/'));
+// Directory names that are never source to index, at any depth: VCS internals,
+// dependency trees, build/cache output, and tool-generated backup dirs
+// (SafeEdit's per-edit snapshots would otherwise duplicate every symbol N
+// times). Pruned in BOTH the git and non-git paths. Tool conventions, not any
+// one project's layout.
+const PRUNE_DIRS = new Set([
+  '.git', 'node_modules', 'dist', 'build', 'out', 'coverage', '.next', '.turbo',
+  '.safe-edit-backups', '.backups',
+]);
+const inPrunedDir = (p) => p.split('/').slice(0, -1).some((d) => PRUNE_DIRS.has(d));
+const INDEXABLE_RE = new RegExp(`\\.(${INDEXABLE_EXTS.join('|')})$`);
+
+// No git → walk the tree ourselves, honoring every .gitignore on the way (each
+// scoped to its own directory, as git does) and pruning ignored dirs before
+// descending. Restricted to indexable extensions so a media/data tree that no
+// .gitignore lists can't swallow the sweep.
+function walkFiles(dir, rel, rules, out) {
+  const scoped = rules.concat(gitignoreRules(dir, rel));
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    const childRel = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) {
+      if (PRUNE_DIRS.has(e.name) || isIgnored(scoped, childRel, true)) continue;
+      walkFiles(join(dir, e.name), childRel, scoped, out);
+    } else if (e.isFile() && INDEXABLE_RE.test(e.name) && !isIgnored(scoped, childRel, false)) {
+      out.push(childRel);
+    }
+  }
+  return out;
+}
 
 function listFiles() {
-  // git ls-files gives tracked + cached files and honors .gitignore for free.
-  // Fall back to a find sweep when not in a repo.
+  // git ls-files gives tracked + cached files and honors every .gitignore for
+  // free. Fall back to our own sweep when not in a repo.
   try {
     const out = execSync('git ls-files --cached --others --exclude-standard', {
       cwd: ROOT, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024,
     });
-    // --others can surface untracked tool backups; prune them here too.
+    // Build/vendor output can still be tracked or un-ignored; prune it here too.
     return out.split('\n').filter(Boolean).filter((p) => !inPrunedDir(p));
   } catch {
-    // No git → no `git ls-files` to prune by. Two safeguards: (1) restrict to
-    // indexable extensions so the sweep can't swallow a media/data tree, and
-    // (2) still honor the project's own .gitignore (the user already listed the
-    // heavy dirs there). Always prune the usual junk dirs too.
-    const extExpr = INDEXABLE_EXTS.map((e) => `-name '*.${e}'`).join(' -o ');
-    const pruneExpr = PRUNE_DIRS.map((d) => `-not -path '*/${d}/*'`).join(' ');
-    const out = execSync(
-      `find . -type f ${pruneExpr} \\( ${extExpr} \\)`,
-      { cwd: ROOT, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 }
-    );
-    const ignored = gitignoreMatcher(ROOT);
-    return out.split('\n').filter(Boolean)
-      .map((p) => p.replace(/^\.\//, ''))
-      .filter((p) => !ignored(p));
+    return walkFiles(ROOT, '', [], []);
   }
 }
 

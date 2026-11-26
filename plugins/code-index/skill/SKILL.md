@@ -1,7 +1,7 @@
 ---
 name: code-index
 description: Fast symbol lookup for large codebases. Use BEFORE reading files or spawning search agents to locate where a class/function/method is defined and what references it. Backed by an incremental SQLite + universal-ctags index, scoped per project. Answers "where is X?" in milliseconds instead of reading thousands of files.
-version: 1.6.1
+version: 1.6.2
 updated: 2026-11-25
 license: MIT
 metadata:
@@ -175,6 +175,7 @@ Fix from first principles, never by moving code to silence a finding:
 - If results look stale or wrong after a big refactor: `index --full`.
 - If `where`/`refs` say "no index yet", run `index` once.
 - After an upgrade that adds a table (schema version), the first `index` rebuilds the whole index once — on a large tree (30k files) that takes minutes.
+- What gets indexed: in a git repo, `git ls-files` (every `.gitignore` honored); outside one, a sweep that honors every `.gitignore` in the tree, each scoped to its own folder. Either way, build/vendor folders are skipped at any depth: `node_modules`, `.next`, `.turbo`, `dist`, `build`, `out`, `coverage`.
 
 ## Limitations (be honest about these)
 

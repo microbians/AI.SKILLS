@@ -624,6 +624,7 @@ Or use the [boilerplate](#boilerplate) to get everything set up at once.
 
 | Date       | Change                                                                                      |
 |------------|---------------------------------------------------------------------------------------------|
+| 2026-11-26 | CodeIndex v1.6.2: outside a git repo the index honors `.gitignore` patterns at any depth and nested `.gitignore` files; build/vendor folders (`.next`, `.turbo`, `build`, `out`, `coverage`, `dist`, `node_modules`) are skipped at any depth |
 | 2026-11-25 | CodeIndex v1.6.1: the Stop hook lints in the background and no longer holds up the end of a turn; the problems it finds are handed over at the next turn's end |
 | 2026-11-25 | CodeIndex v1.6.0: `field-leak` looks at every file and lists who reads a leaked field, fields a class hands out on purpose are declared with `@contract-fields`, `shallow-module` counts all of a file's methods, the Stop hook runs only `module-cycle` and `tangle` and raises a problem again only if it grows, `lint --all` / `--json` show everything |
 | 2026-11-24 | TheSecretary v2.26.2: a session opened right after closing a window mid-turn resumes from that turn — restore adds the verbatim tail of the previous session when its own handoff is still being written |
