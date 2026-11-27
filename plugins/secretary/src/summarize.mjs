@@ -2078,26 +2078,49 @@ async function actionSave(content, db, cwd, sessionId, { remind = false } = {}) 
   return insertItem(db, { content, cwd, sessionId, ...itemDates(content, remind) });
 }
 
-// "Recuerda que eso falla en Safari" is saved as typed, then rewritten against
-// the conversation it came from so "eso" names the thing. The user's words stay
-// when the LLM is down or returns nothing usable.
+// Words that point back into the conversation instead of naming a thing. Whole
+// words only ("eso" never hits "proceso"); the longer phrase wins over its prefix.
+// English "that" is left out: in a note it is almost always the conjunction
+// ("remember that…"), and a small model resolves it anyway.
+const VAGUE_REFERENCE = /(?<![\p{L}\p{N}])(?:lo de antes|lo anterior|aquello|esto|eso|it|this)(?![\p{L}\p{N}])/giu;
+
+// "Recuerda que eso falla en Safari" is saved as typed, then made self-contained
+// against the conversation it came from so "eso" names the thing. The code finds
+// each vague word and asks the LLM only what it refers to, then swaps the answer
+// in: the rest of the user's words are never paraphrased, translated or garbled
+// — small on-device models do all three when asked to copy a line — and a note
+// with no vague word costs no LLM call.
 async function rewriteItemSelfContained(db, { id, global, content, context }, llmAvailable) {
   if (!llmAvailable || !context) return;
-  const prompt = `The user asked an AI coding assistant to remember the NOTE below. Rewrite it so it makes sense on its own, months later, to someone who never saw the CONVERSATION.
+  let rewritten = '';
+  let from = 0;
+  for (const match of content.matchAll(VAGUE_REFERENCE)) {
+    const vague = match[0];
+    const prompt = `In the NOTE below, what does the word "${vague}" refer to? Answer with the short name of that thing as the CONVERSATION gives it (a component, file, function, error), in the NOTE's language, without causes or explanations. If "${vague}" is not a reference to something in the CONVERSATION (for example "that" joining two clauses), answer: NONE
 
-RULES:
-- Replace pronouns and vague references ("it", "that", "eso", "lo de antes", "this file") with the concrete names the CONVERSATION gives: file path, function, feature, error, version.
-- Keep the user's language, meaning, dates and wording otherwise. Add nothing the CONVERSATION does not say.
-- If the NOTE is already self-contained, return it unchanged.
-- Output ONLY the note, one line, no quotes, no preamble.
+EXAMPLES
+CONVERSATION: [user] The export button in src/Export.tsx hangs on big files. [assistant] It reads the whole file into memory.
+NOTE: remember that this only happens over 2 GB
+WORD: "that" → NONE
+WORD: "this" → the export button hang in src/Export.tsx
 
-NOTE:
-${content}
+CONVERSATION: [user] El login de app/auth.ts devuelve 500 con emails con tilde. [assistant] normalizeEmail no aplica NFC.
+NOTE: apunta que lo de antes ya pasó en producción
+WORD: "lo de antes" → el 500 del login de app/auth.ts con emails con tilde
 
 CONVERSATION:
-${context}`;
-  const rewritten = (await callLLM(prompt, 200)).trim().split('\n')[0].replace(/^[-*]\s+/, '').trim();
-  if (!rewritten || rewritten === content) return;
+${context}
+
+NOTE: ${content}
+WORD: "${vague}" →`;
+    // Some models echo the `WORD: "eso" →` cue before the answer: keep what follows the arrow
+    const concrete = (await callLLM(prompt, 60)).trim().split('\n')[0].split('→').pop().replace(/^["'\s]+|["'\s]+$/g, '');
+    if (!concrete || /^none$/i.test(concrete)) continue;
+    rewritten += content.slice(from, match.index) + concrete;
+    from = match.index + vague.length;
+  }
+  rewritten += content.slice(from);
+  if (rewritten === content) return;
   db.prepare(`UPDATE ${itemTable(db, global)} SET summary = ? WHERE id = ?`).run(rewritten, id);
   process.stderr.write(`[secretary] ✏️ Self-contained: "${rewritten.slice(0, 80)}"\n`);
 }
