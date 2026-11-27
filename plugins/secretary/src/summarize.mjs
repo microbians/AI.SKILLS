@@ -734,6 +734,11 @@ async function callLLM(prompt, maxTokens = config.max_summary_tokens) {
   return raw;
 }
 
+// Everything the Secretary writes is read back later, away from the conversation
+// that gave "it" or "the fix" its meaning — and a line that names nothing concrete
+// is also one no search finds. Every prompt that writes memory carries this rule.
+const SELF_CONTAINED_RULE = `SELF-CONTAINED (mandatory): every line must make sense to a reader who never saw the conversation. Replace pronouns and vague references ("it", "that bug", "the fix", "this file", "eso", "lo de antes") with the concrete name: file path, function, feature, error, version. A line that cannot be made self-contained is dropped, not kept vague.`;
+
 /**
  * callLLM for prompts whose answer is a summary. Only there does "reports
  * nothing" mean "discard": a one-line answer (`SAVE|…`, a list of ids, a
@@ -2016,8 +2021,8 @@ async function processSecretaryOrders(messages, db, cwd, sessionId) {
   if (candidateLines.length === 0) return;
 
   // Step 2: Classify each candidate via regex (reliable for clear patterns)
-  // Collect LLM-dependent deletions to launch in background
-  const bgDeletions = [];
+  // Collect LLM-dependent actions to launch in background
+  const bgActions = [];
 
   for (const line of candidateLines) {
     const classification = classifyIntentRegex(line);
@@ -2028,35 +2033,38 @@ async function processSecretaryOrders(messages, db, cwd, sessionId) {
     // Use '__global__' as project_dir when the "global" modifier is detected
     const effectiveCwd = classification.global ? '__global__' : cwd;
     switch (classification.intent) {
-      // Sync action (SQLite only, instant):
-      case 'SAVE':
-        await actionSave(classification.content || line, db, effectiveCwd, sessionId, { remind: classification.remind });
+      // Saved at once, verbatim; made self-contained in the background
+      case 'SAVE': {
+        const content = classification.content || line;
+        const id = await actionSave(content, db, effectiveCwd, sessionId, { remind: classification.remind });
+        if (id) bgActions.push({ intent: 'SAVE', id, global: effectiveCwd === '__global__', content, context: messagesToText(messages, 4000) });
         break;
+      }
       // LLM-dependent action — queue for background:
       case 'FORGET':
-        bgDeletions.push({ intent: classification.intent, content: classification.content || line });
+        bgActions.push({ intent: classification.intent, content: classification.content || line });
         break;
     }
   }
 
-  // Launch LLM-dependent deletions in background (don't block the hook).
+  // Launch LLM-dependent actions in background (don't block the hook).
   // Per-project lock prevents pile-up when multiple sessions of the same
-  // project receive deletion orders at once.
-  if (bgDeletions.length > 0) {
+  // project receive orders at once.
+  if (bgActions.length > 0) {
     if (!canSpawnBgWorkerForProject(cwd)) {
-      process.stderr.write(`[secretary] Skipping bg deletions (project worker busy/debounced)\n`);
+      process.stderr.write(`[secretary] Skipping bg orders (project worker busy/debounced)\n`);
       return;
     }
     const { spawn } = await import('child_process');
     const child = spawn('node', [new URL(import.meta.url).pathname,
-      '_bg_delete', cwd || '', JSON.stringify(bgDeletions)
+      '_bg_orders', cwd || '', JSON.stringify(bgActions)
     ], {
       detached: true,
       stdio: 'ignore',
     });
     child.unref();
     registerBgWorkerForProject(cwd, child.pid);
-    process.stderr.write(`[secretary] Deletions launched in background (${bgDeletions.length} action(s))\n`);
+    process.stderr.write(`[secretary] Orders launched in background (${bgActions.length} action(s))\n`);
   }
 }
 
@@ -2067,7 +2075,31 @@ async function processSecretaryOrders(messages, db, cwd, sessionId) {
 // categories, no prefixes and no lifecycle columns: one index, one shape.
 
 async function actionSave(content, db, cwd, sessionId, { remind = false } = {}) {
-  insertItem(db, { content, cwd, sessionId, ...itemDates(content, remind) });
+  return insertItem(db, { content, cwd, sessionId, ...itemDates(content, remind) });
+}
+
+// "Recuerda que eso falla en Safari" is saved as typed, then rewritten against
+// the conversation it came from so "eso" names the thing. The user's words stay
+// when the LLM is down or returns nothing usable.
+async function rewriteItemSelfContained(db, { id, global, content, context }, llmAvailable) {
+  if (!llmAvailable || !context) return;
+  const prompt = `The user asked an AI coding assistant to remember the NOTE below. Rewrite it so it makes sense on its own, months later, to someone who never saw the CONVERSATION.
+
+RULES:
+- Replace pronouns and vague references ("it", "that", "eso", "lo de antes", "this file") with the concrete names the CONVERSATION gives: file path, function, feature, error, version.
+- Keep the user's language, meaning, dates and wording otherwise. Add nothing the CONVERSATION does not say.
+- If the NOTE is already self-contained, return it unchanged.
+- Output ONLY the note, one line, no quotes, no preamble.
+
+NOTE:
+${content}
+
+CONVERSATION:
+${context}`;
+  const rewritten = (await callLLM(prompt, 200)).trim().split('\n')[0].replace(/^[-*]\s+/, '').trim();
+  if (!rewritten || rewritten === content) return;
+  db.prepare(`UPDATE ${itemTable(db, global)} SET summary = ? WHERE id = ?`).run(rewritten, id);
+  process.stderr.write(`[secretary] ✏️ Self-contained: "${rewritten.slice(0, 80)}"\n`);
 }
 
 // '2026-11-03' → '3 nov'.
@@ -2090,7 +2122,8 @@ function itemDates(content, remind) {
 }
 
 // One saved item (message_count = 0) under the session that wrote it. Skipped
-// when an item with the same text is already there. Returns true when written.
+// when an item with the same text is already there. Returns the new row id, or
+// null when skipped.
 function insertItem(db, { content, cwd, sessionId, remindAt = null, expiresAt = null, createdAt = null }) {
   const existing = db.prepare(`
     SELECT summary FROM all_items
@@ -2098,15 +2131,15 @@ function insertItem(db, { content, cwd, sessionId, remindAt = null, expiresAt = 
   `).all().map(r => r.summary.toLowerCase());
 
   const normalized = content.toLowerCase();
-  if (existing.some(e => e.includes(normalized) || normalized.includes(e))) return false;
+  if (existing.some(e => e.includes(normalized) || normalized.includes(e))) return null;
 
   const chunkRow = db.prepare('SELECT MAX(chunk_index) as max_idx FROM all_items WHERE session_id = ?').get(sessionId);
   const chunkIndex = (chunkRow?.max_idx ?? -1) + 1;
-  db.prepare(`INSERT INTO ${itemTable(db, cwd === '__global__')} (session_id, project_dir, chunk_index, summary, message_count, remind_at, expires_at, created_at) VALUES (?, ?, ?, ?, 0, ?, ?, COALESCE(?, datetime('now')))`).run(
+  const { lastInsertRowid } = db.prepare(`INSERT INTO ${itemTable(db, cwd === '__global__')} (session_id, project_dir, chunk_index, summary, message_count, remind_at, expires_at, created_at) VALUES (?, ?, ?, ?, 0, ?, ?, COALESCE(?, datetime('now')))`).run(
     sessionId, cwd || '', chunkIndex, content, remindAt, expiresAt, createdAt
   );
   process.stderr.write(`[secretary] 💾 Saved: "${content.slice(0, 80)}"${remindAt ? ` ⏰ ${remindAt}` : ''}${expiresAt ? ` ⌛ ${expiresAt}` : ''}\n`);
-  return true;
+  return Number(lastInsertRowid);
 }
 
 // ── FORGET ──
@@ -2292,6 +2325,7 @@ RULES:
 - Output ONLY bullets, one per line, starting with "- "
 - Each bullet ≤ 150 characters, single sentence, no markdown inside
 - Include specific file paths, function names, variable names when relevant
+- ${SELF_CONTAINED_RULE}
 - Output at most ${CACHE_BULLETS_PER_CHUNK} bullets. Fewer is fine if nothing new.
 - If nothing genuinely new vs existing bullets, output nothing.${prevBlock}
 
@@ -2351,6 +2385,7 @@ RULES:
 - Output ONLY bullets, one per line, starting with "- "
 - Each bullet ≤ 150 characters
 - Most recent info is most important
+- ${SELF_CONTAINED_RULE}
 - Max ${CACHE_MAX_BULLETS_PER_SESSION} bullets
 
 SUMMARIES:
@@ -2428,6 +2463,7 @@ Otherwise extract:
 
 Be specific: include file paths, function names, error messages.
 Keep each item to 1-2 sentences.
+${SELF_CONTAINED_RULE}
 
 ACCURACY RULES (mandatory):
 - Report ONLY what literally happened. Never infer or extrapolate.
@@ -2501,6 +2537,7 @@ Rules:
 - Quote exact file paths, function names, command names where relevant.
 - Don't pad. Skip sections that have nothing real to say.
 - Maximum 600 words total.
+- ${SELF_CONTAINED_RULE}
 
 ACCURACY RULES (mandatory — a wrong handoff misleads the next session for hours):
 - Report ONLY what literally happened. Never infer, extrapolate, or fill gaps with plausible-sounding work.
@@ -2604,6 +2641,7 @@ async function compact(hookInput) {
 
 Be specific: include file paths, function names, error messages.
 Keep each item to 1-2 sentences.
+${SELF_CONTAINED_RULE}
 
 ACCURACY RULES (mandatory):
 - Report ONLY what literally happened. Never infer or extrapolate.
@@ -4987,19 +5025,22 @@ async function main() {
     process.exit(0);
   }
 
-  // Background deletion worker (forked child process for FORGET)
-  if (command === '_bg_delete') {
+  // Background orders worker (forked child process for SAVE rewrite and FORGET)
+  if (command === '_bg_orders') {
     const [, , , cwd, actionsJson] = process.argv;
     try {
       const actions = JSON.parse(actionsJson);
       const db = openDb(cwd);
       if (!db) process.exit(1);
       try {
-        const llmAvailable = await isLLMAvailable();
-        for (const { intent, content } of actions) {
-          switch (intent) {
+        const llmAvailable = await ensureLLMRunning();
+        for (const action of actions) {
+          switch (action.intent) {
+            case 'SAVE':
+              await rewriteItemSelfContained(db, action, llmAvailable);
+              break;
             case 'FORGET':
-              await actionForget(content, db, cwd, llmAvailable);
+              await actionForget(action.content, db, cwd, llmAvailable);
               break;
           }
         }
@@ -5007,7 +5048,7 @@ async function main() {
         db.close();
       }
     } catch (err) {
-      process.stderr.write(`[secretary-bg] delete error: ${err.message}\n`);
+      process.stderr.write(`[secretary-bg] orders error: ${err.message}\n`);
     }
     clearBgWorkerForProject(cwd);
     process.exit(0);
